@@ -100,6 +100,7 @@ services:
       - DEFAULT_MODELS=qwen2.5:7b
       # Inscriptions libres désactivées — accès par Google SSO uniquement
       - ENABLE_SIGNUP=false
+      - WEBUI_ADMIN_EMAIL=CHANGE_THIS_EMAIL
       # Google OAuth
       - OAUTH_PROVIDER_NAME=Google
       - GOOGLE_CLIENT_ID=CHANGE_THIS_GOOGLE_CLIENT_ID
