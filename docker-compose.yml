@@ -1,0 +1,136 @@
+version: "3.8"
+
+# ============================================================
+# STACK IA — monolithoid.com
+# ============================================================
+# Services exposés :
+#   - chat.monolithoid.com     → Open WebUI
+#   - n8n.monolithoid.com      → n8n
+#   - ollama.monolithoid.com   → API Ollama (protégée par clé)
+#
+# ChromaDB : interne uniquement (pas de sous-domaine)
+#
+# Données stockées dans /opt/ia/ sur le VPS :
+#   /opt/ia/ollama/     → modèles IA (10-20 Go)
+#   /opt/ia/webui/      → agents, utilisateurs, historique
+#   /opt/ia/n8n/        → workflows
+#   /opt/ia/chroma/     → base vectorielle
+#
+# AVANT DE DÉPLOYER :
+#   1. Créer les dossiers sur le VPS :
+#      mkdir -p /opt/ia/ollama /opt/ia/webui /opt/ia/n8n /opt/ia/chroma
+#
+#   2. Remplacer les valeurs CHANGE_THIS_* :
+#      - OLLAMA_KEY  : openssl rand -hex 32
+#      - WEBUI_SECRET: openssl rand -hex 32
+#      - N8N_PASSWORD: mot de passe de ton choix
+#
+# ALLUMER / ÉTEINDRE :
+#   Dans Coolify, chaque service peut être stoppé indépendamment
+#   depuis l'onglet "Services" de ton projet.
+#   Recommandé : créer un projet "IA" séparé de tes serveurs de jeu
+#   pour pouvoir tout éteindre en un clic.
+# ============================================================
+
+services:
+
+  # ----------------------------------------------------------
+  # OLLAMA — moteur LLM
+  # Port interne : 11434
+  # Exposé via : ollama.monolithoid.com
+  # ----------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - /opt/ia/ollama:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+      - OLLAMA_NUM_PARALLEL=2
+      - OLLAMA_NUM_THREAD=8
+      - OLLAMA_API_KEYS=CHANGE_THIS_OLLAMA_KEY
+    networks:
+      - ai-network
+
+  # ----------------------------------------------------------
+  # OPEN WEBUI — interface agents
+  # Port interne : 8080
+  # Exposé via : chat.monolithoid.com
+  # ----------------------------------------------------------
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    restart: unless-stopped
+    ports:
+      - "3000:8080"
+    volumes:
+      - /opt/ia/webui:/app/backend/data
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_API_KEY=CHANGE_THIS_OLLAMA_KEY
+      - WEBUI_SECRET_KEY=CHANGE_THIS_WEBUI_SECRET
+      - CHROMA_HTTP_HOST=chromadb
+      - CHROMA_HTTP_PORT=8000
+      - DEFAULT_MODELS=qwen2.5:7b
+    depends_on:
+      - ollama
+      - chromadb
+    networks:
+      - ai-network
+
+  # ----------------------------------------------------------
+  # N8N — workflows et outils
+  # Port interne : 5678
+  # Exposé via : n8n.monolithoid.com
+  # ----------------------------------------------------------
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    volumes:
+      - /opt/ia/n8n:/home/node/.n8n
+    environment:
+      - N8N_HOST=n8n.monolithoid.com
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - WEBHOOK_URL=https://n8n.monolithoid.com
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=CHANGE_THIS_N8N_PASSWORD
+      - OLLAMA_HOST=http://ollama:11434
+    depends_on:
+      - ollama
+    networks:
+      - ai-network
+
+  # ----------------------------------------------------------
+  # CHROMADB — mémoire vectorielle
+  # Port interne : 8000
+  # Pas d'exposition publique — interne uniquement
+  # ----------------------------------------------------------
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: chromadb
+    restart: unless-stopped
+    volumes:
+      - /opt/ia/chroma:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    networks:
+      - ai-network
+
+# ============================================================
+# RÉSEAU INTERNE
+# Les containers se parlent par leur nom de service
+# ex: http://ollama:11434, http://chromadb:8000
+# Pas de volumes nommés — chemins directs sur /opt/ia/
+# ============================================================
+networks:
+  ai-network:
+    driver: bridge
