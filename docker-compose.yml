@@ -3,12 +3,13 @@ version: "3.8"
 # ============================================================
 # STACK IA — monolithoid.com
 # ============================================================
-# Services exposés :
-#   - chat.monolithoid.com     → Open WebUI
-#   - n8n.monolithoid.com      → n8n
-#   - ollama.monolithoid.com   → API Ollama (protégée par clé)
+# Services exposés publiquement :
+#   - chat.monolithoid.com     → Open WebUI  (port 3000)
+#   - ollama.monolithoid.com   → API Ollama  (port 11434)
 #
-# ChromaDB : interne uniquement (pas de sous-domaine)
+# Services internes uniquement :
+#   - n8n      → port 5678  (voir section N8N ci-dessous)
+#   - chromadb → port 8000  (jamais exposer)
 #
 # Données stockées dans /opt/ia/ sur le VPS :
 #   /opt/ia/ollama/     → modèles IA (10-20 Go)
@@ -21,15 +22,28 @@ version: "3.8"
 #      mkdir -p /opt/ia/ollama /opt/ia/webui /opt/ia/n8n /opt/ia/chroma
 #
 #   2. Remplacer les valeurs CHANGE_THIS_* :
-#      - OLLAMA_KEY  : openssl rand -hex 32
-#      - WEBUI_SECRET: openssl rand -hex 32
-#      - N8N_PASSWORD: mot de passe de ton choix
+#      - OLLAMA_KEY   : openssl rand -hex 32
+#      - WEBUI_SECRET : openssl rand -hex 32
+#      - N8N_PASSWORD : mot de passe de ton choix
+#      - GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET :
+#        → console.cloud.google.com
+#        → APIs & Services → Credentials → OAuth 2.0 Client ID
+#        → Authorized redirect URI :
+#          https://chat.monolithoid.com/oauth/google/callback
+#
+#   3. Firewall — bloquer les ports directs sur le VPS :
+#      ufw allow 22
+#      ufw allow 80
+#      ufw allow 443
+#      ufw deny 11434
+#      ufw deny 3000
+#      ufw deny 5678
+#      ufw enable
 #
 # ALLUMER / ÉTEINDRE :
-#   Dans Coolify, chaque service peut être stoppé indépendamment
-#   depuis l'onglet "Services" de ton projet.
-#   Recommandé : créer un projet "IA" séparé de tes serveurs de jeu
-#   pour pouvoir tout éteindre en un clic.
+#   Créer un projet "IA" séparé dans Coolify.
+#   Stop/Start depuis l'onglet Services du projet.
+#   Les données dans /opt/ia/ sont préservées.
 # ============================================================
 
 services:
@@ -38,6 +52,7 @@ services:
   # OLLAMA — moteur LLM
   # Port interne : 11434
   # Exposé via : ollama.monolithoid.com
+  # Protégé par : OLLAMA_API_KEYS
   # ----------------------------------------------------------
   ollama:
     image: ollama/ollama:latest
@@ -59,6 +74,14 @@ services:
   # OPEN WEBUI — interface agents
   # Port interne : 8080
   # Exposé via : chat.monolithoid.com
+  # Protégé par : Google SSO
+  #
+  # Accès restreint aux comptes Google autorisés.
+  # Les inscriptions libres sont désactivées (ENABLE_SIGNUP=false).
+  # Pour autoriser plusieurs domaines Google :
+  #   GOOGLE_ALLOWED_DOMAINS=domaine1.com,domaine2.com
+  # Pour un accès personnel sans restriction de domaine :
+  #   supprimer la ligne GOOGLE_ALLOWED_DOMAINS
   # ----------------------------------------------------------
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
@@ -75,6 +98,15 @@ services:
       - CHROMA_HTTP_HOST=chromadb
       - CHROMA_HTTP_PORT=8000
       - DEFAULT_MODELS=qwen2.5:7b
+      # Inscriptions libres désactivées — accès par Google SSO uniquement
+      - ENABLE_SIGNUP=false
+      # Google OAuth
+      - OAUTH_PROVIDER_NAME=Google
+      - GOOGLE_CLIENT_ID=CHANGE_THIS_GOOGLE_CLIENT_ID
+      - GOOGLE_CLIENT_SECRET=CHANGE_THIS_GOOGLE_CLIENT_SECRET
+      - OAUTH_REDIRECT_URI=https://chat.monolithoid.com/oauth/google/callback
+      # Restreindre à un domaine Google spécifique (optionnel)
+      # - GOOGLE_ALLOWED_DOMAINS=mondomaine.com
     depends_on:
       - ollama
       - chromadb
@@ -84,21 +116,29 @@ services:
   # ----------------------------------------------------------
   # N8N — workflows et outils
   # Port interne : 5678
-  # Exposé via : n8n.monolithoid.com
+  # ⚠️  NON EXPOSÉ PUBLIQUEMENT — accès via tunnel SSH uniquement
+  #
+  # Pour accéder à l'interface depuis ton PC :
+  #   ssh -L 5678:localhost:5678 user@monolithoid.com
+  #   puis ouvrir : http://localhost:5678
+  #
+  # Si tu veux l'exposer publiquement plus tard (webhooks entrants) :
+  #   1. Décommenter les lignes ports: ci-dessous
+  #   2. Ajouter un sous-domaine n8n.monolithoid.com dans Coolify
+  #   3. Retirer la règle : ufw deny 5678
   # ----------------------------------------------------------
   n8n:
     image: n8nio/n8n:latest
     container_name: n8n
     restart: unless-stopped
-    ports:
-      - "5678:5678"
+    # ports:
+    #   - "5678:5678"
     volumes:
       - /opt/ia/n8n:/home/node/.n8n
     environment:
-      - N8N_HOST=n8n.monolithoid.com
+      - N8N_HOST=localhost
       - N8N_PORT=5678
-      - N8N_PROTOCOL=https
-      - WEBHOOK_URL=https://n8n.monolithoid.com
+      - N8N_PROTOCOL=http
       - N8N_BASIC_AUTH_ACTIVE=true
       - N8N_BASIC_AUTH_USER=admin
       - N8N_BASIC_AUTH_PASSWORD=CHANGE_THIS_N8N_PASSWORD
@@ -111,7 +151,7 @@ services:
   # ----------------------------------------------------------
   # CHROMADB — mémoire vectorielle
   # Port interne : 8000
-  # Pas d'exposition publique — interne uniquement
+  # Interne uniquement — ne jamais exposer publiquement
   # ----------------------------------------------------------
   chromadb:
     image: chromadb/chroma:latest
@@ -127,9 +167,10 @@ services:
 
 # ============================================================
 # RÉSEAU INTERNE
-# Les containers se parlent par leur nom de service
-# ex: http://ollama:11434, http://chromadb:8000
-# Pas de volumes nommés — chemins directs sur /opt/ia/
+# Les containers se parlent par leur nom de service :
+#   http://ollama:11434
+#   http://chromadb:8000
+#   http://n8n:5678
 # ============================================================
 networks:
   ai-network:
