@@ -25,11 +25,12 @@ version: "3.8"
 #      - OLLAMA_KEY   : openssl rand -hex 32
 #      - WEBUI_SECRET : openssl rand -hex 32
 #      - N8N_PASSWORD : mot de passe de ton choix
-#      - GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET :
+#      - OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET :
 #        → console.cloud.google.com
 #        → APIs & Services → Credentials → OAuth 2.0 Client ID
 #        → Authorized redirect URI :
 #          https://chat.monolithoid.com/oauth/google/callback
+#      - OAUTH_REDIRECT_URI=https://chat.monolithoid.com/oauth/google/callback
 #
 #   3. Firewall — bloquer les ports directs sur le VPS :
 #      ufw allow 22
@@ -99,14 +100,15 @@ services:
       - CHROMA_HTTP_PORT=8000
       - DEFAULT_MODELS=qwen2.5:7b
       # Inscriptions libres désactivées — accès par Google SSO uniquement
-      - ENABLE_SIGNUP=true
+      - ENABLE_SIGNUP=false
+      - ENABLE_OAUTH_SIGNUP=true
       - WEBUI_ADMIN_EMAIL=CHANGE_THIS_EMAIL
-      # Google OAuth
+      # Google OAuth (OIDC générique — utiliser OAUTH_CLIENT_ID et non GOOGLE_CLIENT_ID)
       - OAUTH_PROVIDER_NAME=Google
       - OPENID_PROVIDER_URL=https://accounts.google.com/.well-known/openid-configuration
-      - GOOGLE_CLIENT_ID=CHANGE_THIS_GOOGLE_CLIENT_ID
-      - GOOGLE_CLIENT_SECRET=CHANGE_THIS_GOOGLE_CLIENT_SECRET
-      - OAUTH_REDIRECT_URI=CHANGE_THIS_GOOGLE_REDIRECT_URI
+      - OAUTH_CLIENT_ID=CHANGE_THIS_GOOGLE_CLIENT_ID
+      - OAUTH_CLIENT_SECRET=CHANGE_THIS_GOOGLE_CLIENT_SECRET
+      - OAUTH_REDIRECT_URI=https://chat.monolithoid.com/oauth/google/callback
       # Restreindre à un domaine Google spécifique (optionnel)
       # - GOOGLE_ALLOWED_DOMAINS=mondomaine.com
     depends_on:
