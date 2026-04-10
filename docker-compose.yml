@@ -99,18 +99,21 @@ services:
       - CHROMA_HTTP_PORT=8000
       - DEFAULT_MODELS=qwen2.5:7b
       # Inscriptions libres désactivées — accès par Google SSO uniquement
-      - ENABLE_SIGNUP=false
+      - ENABLE_SIGNUP=true
       - WEBUI_ADMIN_EMAIL=CHANGE_THIS_EMAIL
       # Google OAuth
       - OAUTH_PROVIDER_NAME=Google
+      - OPENID_PROVIDER_URL=https://accounts.google.com/.well-known/openid-configuration
       - GOOGLE_CLIENT_ID=CHANGE_THIS_GOOGLE_CLIENT_ID
       - GOOGLE_CLIENT_SECRET=CHANGE_THIS_GOOGLE_CLIENT_SECRET
       - OAUTH_REDIRECT_URI=https://chat.monolithoid.com/oauth/google/callback
       # Restreindre à un domaine Google spécifique (optionnel)
       # - GOOGLE_ALLOWED_DOMAINS=mondomaine.com
     depends_on:
-      - ollama
-      - chromadb
+      ollama:
+        condition: service_started
+      chromadb:
+        condition: service_started
     networks:
       - ai-network
 
@@ -145,7 +148,8 @@ services:
       - N8N_BASIC_AUTH_PASSWORD=CHANGE_THIS_N8N_PASSWORD
       - OLLAMA_HOST=http://ollama:11434
     depends_on:
-      - ollama
+      ollama:
+        condition: service_started
     networks:
       - ai-network
 
