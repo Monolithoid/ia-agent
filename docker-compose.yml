@@ -106,7 +106,7 @@ services:
       - OPENID_PROVIDER_URL=https://accounts.google.com/.well-known/openid-configuration
       - GOOGLE_CLIENT_ID=CHANGE_THIS_GOOGLE_CLIENT_ID
       - GOOGLE_CLIENT_SECRET=CHANGE_THIS_GOOGLE_CLIENT_SECRET
-      - OAUTH_REDIRECT_URI=https://chat.monolithoid.com/oauth/google/callback
+      - OAUTH_REDIRECT_URI=CHANGE_THIS_GOOGLE_REDIRECT_URI
       # Restreindre à un domaine Google spécifique (optionnel)
       # - GOOGLE_ALLOWED_DOMAINS=mondomaine.com
     depends_on:
