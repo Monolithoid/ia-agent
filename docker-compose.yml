@@ -29,8 +29,8 @@ version: "3.8"
 #        → console.cloud.google.com
 #        → APIs & Services → Credentials → OAuth 2.0 Client ID
 #        → Authorized redirect URI :
-#          https://chat.monolithoid.com/oauth/google/callback
-#      - OAUTH_REDIRECT_URI=https://chat.monolithoid.com/oauth/google/callback
+#          https://chat.monolithoid.com/oauth/oidc/callback
+#      - OAUTH_REDIRECT_URI=https://chat.monolithoid.com/oauth/oidc/callback
 #
 #   3. Firewall — bloquer les ports directs sur le VPS :
 #      ufw allow 22
@@ -108,7 +108,7 @@ services:
       - OPENID_PROVIDER_URL=https://accounts.google.com/.well-known/openid-configuration
       - OAUTH_CLIENT_ID=CHANGE_THIS_GOOGLE_CLIENT_ID
       - OAUTH_CLIENT_SECRET=CHANGE_THIS_GOOGLE_CLIENT_SECRET
-      - OAUTH_REDIRECT_URI=https://chat.monolithoid.com/oauth/google/callback
+      - OAUTH_REDIRECT_URI=https://chat.monolithoid.com/oauth/oidc/callback
       # Restreindre à un domaine Google spécifique (optionnel)
       # - GOOGLE_ALLOWED_DOMAINS=mondomaine.com
     depends_on:
