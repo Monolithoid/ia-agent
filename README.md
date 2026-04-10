@@ -4,17 +4,51 @@ Stack IA auto-hébergée sur VPS, déployée via Docker Compose. Elle regroupe u
 
 ## Architecture
 
-```
-Internet
-   │
-   ├── chat.monolithoid.com   → Open WebUI  (port 3000)
-   └── ollama.monolithoid.com → API Ollama  (port 11434)
+```mermaid
+flowchart TB
+    subgraph Internet
+        User(["Utilisateur\n(navigateur)"])
+        DevSSH(["Développeur\n(SSH tunnel)"])
+        Google["Google OAuth\noidc.google.com"]
+    end
 
-Réseau interne Docker (ai-network)
-   ├── ollama    :11434
-   ├── open-webui:8080
-   ├── n8n       :5678  (accès SSH uniquement)
-   └── chromadb  :8000  (jamais exposé)
+    subgraph Coolify["Reverse Proxy — Coolify"]
+        RP_Chat["chat.monolithoid.com\n:443"]
+        RP_Ollama["ollama.monolithoid.com\n:443"]
+    end
+
+    subgraph Docker["Réseau interne Docker — ai-network"]
+        WebUI["Open WebUI\n:8080"]
+        Ollama["Ollama\n:11434"]
+        N8N["N8N\n:5678"]
+        Chroma["ChromaDB\n:8000"]
+
+        subgraph Volumes["/opt/ia/ — Volumes"]
+            V_Ollama["/opt/ia/ollama\nmodèles IA"]
+            V_WebUI["/opt/ia/webui\nagents / historique"]
+            V_N8N["/opt/ia/n8n\nworkflows"]
+            V_Chroma["/opt/ia/chroma\nindex vectoriel"]
+        end
+    end
+
+    User -->|HTTPS| RP_Chat
+    User -->|HTTPS + API Key| RP_Ollama
+    DevSSH -->|"ssh -L 5678"| N8N
+
+    RP_Chat --> WebUI
+    RP_Ollama --> Ollama
+
+    WebUI -->|"authentification OIDC"| Google
+    Google -->|"callback OAuth"| WebUI
+
+    WebUI -->|"inférence LLM\nOLLAMA_API_KEY"| Ollama
+    WebUI -->|"recherche sémantique RAG"| Chroma
+    N8N -->|"inférence LLM"| Ollama
+
+    Ollama --- V_Ollama
+    WebUI --- V_WebUI
+    N8N --- V_N8N
+    Chroma --- V_Chroma
 ```
 
 ## Services
