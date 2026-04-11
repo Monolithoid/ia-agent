@@ -6,17 +6,34 @@ name: Build & Push — Bitterbot image
 # Secrets requis dans GitHub → Settings → Secrets → Actions :
 #   DOCKERHUB_USERNAME : monolithoid
 #   DOCKERHUB_TOKEN    : Docker Hub → Account Settings → Security → New Access Token
+#
+# Pourquoi on épingle un SHA et pas `main` :
+#   Le commit e0d7d12 ("ablation testing", 9 avr. 2026) a supprimé curiosity-math.ts
+#   et remanié des types — la compilation TypeScript échoue sur la tête de main.
+#   On pointe sur be7b696 (8 avr. 2026), dernier état stable vérifié.
+#   Pour avancer vers un nouveau commit : changer BITTERBOT_DEFAULT_REF ci-dessous
+#   ou utiliser l'input "bitterbot_ref" du déclenchement manuel.
+
+env:
+  # Dernier commit vérifié comme compilable.
+  # Changer cette valeur pour avancer vers une nouvelle version de Bitterbot.
+  BITTERBOT_DEFAULT_REF: be7b696
 
 on:
   # Rebuild hebdomadaire automatique (lundi 03h00 UTC)
-  # → récupère les éventuels patches de sécurité upstream
   schedule:
     - cron: '0 3 * * 1'
 
-  # Déclenchement manuel depuis GitHub → Actions → "Run workflow"
+  # Déclenchement manuel avec ref optionnel
+  # → GitHub Actions → "Run workflow" → champ "Bitterbot commit SHA or branch"
   workflow_dispatch:
+    inputs:
+      bitterbot_ref:
+        description: 'Bitterbot commit SHA ou branche (laisser vide = BITTERBOT_DEFAULT_REF)'
+        required: false
+        default: ''
 
-  # Rebuild si ce fichier de workflow est modifié (ex: changement de tag)
+  # Rebuild si ce fichier de workflow est modifié (ex: changement de SHA)
   push:
     paths:
       - '.github/workflows/build-bitterbot.yml'
@@ -29,7 +46,28 @@ jobs:
 
     steps:
       # ----------------------------------------------------------------
-      # 1. Authentification Docker Hub
+      # 1. Résoudre le ref à utiliser
+      #    Priorité : input manuel > BITTERBOT_DEFAULT_REF
+      # ----------------------------------------------------------------
+      - name: Resolve Bitterbot ref
+        id: ref
+        run: |
+          INPUT_REF="${{ github.event.inputs.bitterbot_ref }}"
+          if [ -n "$INPUT_REF" ]; then
+            echo "ref=$INPUT_REF" >> $GITHUB_OUTPUT
+            echo "source=manual input" >> $GITHUB_OUTPUT
+          else
+            echo "ref=${{ env.BITTERBOT_DEFAULT_REF }}" >> $GITHUB_OUTPUT
+            echo "source=default (BITTERBOT_DEFAULT_REF)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Log ref used
+        run: |
+          echo "Building from ref : ${{ steps.ref.outputs.ref }}"
+          echo "Source            : ${{ steps.ref.outputs.source }}"
+
+      # ----------------------------------------------------------------
+      # 2. Authentification Docker Hub
       # ----------------------------------------------------------------
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -38,7 +76,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # ----------------------------------------------------------------
-      # 2. QEMU + Buildx — support multi-plateforme si besoin
+      # 3. QEMU + Buildx
       # ----------------------------------------------------------------
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -47,7 +85,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       # ----------------------------------------------------------------
-      # 3. Métadonnées — tags et labels OCI
+      # 4. Métadonnées — tags OCI
       # ----------------------------------------------------------------
       - name: Docker metadata
         id: meta
@@ -55,43 +93,44 @@ jobs:
         with:
           images: monolithoid/bitterbot
           tags: |
-            # Tag fixe pour le docker-compose du VPS
             type=raw,value=latest
-            # Tag versionné pour rollback : ex. build-42
             type=raw,value=build-${{ github.run_number }}
+            type=raw,value=ref-${{ steps.ref.outputs.ref }}
 
       # ----------------------------------------------------------------
-      # 4. Build depuis le dépôt source officiel + push Docker Hub
+      # 5. Build + push
       #
-      # Le contexte est l'URL GitHub du projet Bitterbot.
-      # Docker clone le repo, exécute son Dockerfile, et pousse
-      # l'image résultante sur monolithoid/bitterbot.
+      # Syntaxe Docker pour pointer un commit précis d'un repo GitHub :
+      #   https://github.com/<org>/<repo>.git#<sha>
+      #
+      # Docker clone le repo, checkout le SHA, exécute le Dockerfile
+      # du projet, puis pousse l'image résultante.
       # ----------------------------------------------------------------
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: https://github.com/Bitterbot-AI/bitterbot-desktop.git
+          context: https://github.com/Bitterbot-AI/bitterbot-desktop.git#${{ steps.ref.outputs.ref }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Cache GitHub Actions — accélère les builds suivants (~2x)
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # Architecture du VPS (linux/amd64)
-          # Ajouter linux/arm64 si tu as un Raspberry Pi ou Mac M1
           platforms: linux/amd64
 
       # ----------------------------------------------------------------
-      # 5. Résumé du build dans l'onglet Actions
+      # 6. Résumé dans l'onglet Actions
       # ----------------------------------------------------------------
       - name: Build summary
         run: |
           echo "## Image publiée" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Tag | Valeur |" >> $GITHUB_STEP_SUMMARY
+          echo "**Ref Bitterbot :** \`${{ steps.ref.outputs.ref }}\` (${{ steps.ref.outputs.source }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | Commande |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|" >> $GITHUB_STEP_SUMMARY
           echo "| latest | \`docker pull monolithoid/bitterbot:latest\` |" >> $GITHUB_STEP_SUMMARY
           echo "| versionné | \`docker pull monolithoid/bitterbot:build-${{ github.run_number }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| par ref | \`docker pull monolithoid/bitterbot:ref-${{ steps.ref.outputs.ref }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Pour mettre à jour le VPS :" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
