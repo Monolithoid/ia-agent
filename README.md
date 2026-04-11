@@ -385,6 +385,226 @@ GitHub → `ia-agent` → **Actions** → **Build & Push — Bitterbot image** �
 
 Depuis l'onglet **Services** du projet Coolify → bouton **Start** / **Stop**. Les données dans `/opt/ia/` sont préservées entre les redémarrages.
 
+## Synchronisation cloud — rclone
+
+Les dossiers `/opt/ia/sync/onedrive` et `/opt/ia/sync/gdrive` sont montés en lecture seule dans le workspace de Bitterbot. Ils sont alimentés par `rclone`, configuré sur le VPS en tant que service systemd.
+
+### Installation de rclone
+
+```bash
+curl https://rclone.org/install.sh | sudo bash
+rclone version   # vérifier l'installation
+```
+
+### Configuration Google Drive
+
+L'authentification OAuth2 nécessite un navigateur. Lancer la config depuis **ton poste local** (pas le VPS), puis copier le fichier de config sur le VPS.
+
+**Sur ton poste local :**
+
+```bash
+rclone config
+```
+
+Répondre aux questions interactives :
+
+```
+n) New remote
+name> gdrive
+Storage> drive                     # Google Drive
+client_id>                         # laisser vide (utilise le client rclone par défaut)
+client_secret>                     # laisser vide
+scope> 1                           # drive — accès complet en lecture/écriture
+root_folder_id>                    # laisser vide (racine du Drive)
+service_account_file>              # laisser vide
+Edit advanced config? n
+Use web browser to authenticate? y → le navigateur s'ouvre, se connecter avec le compte Google
+Configure this as a Shared Drive? n
+```
+
+**Copier la config sur le VPS :**
+
+```bash
+# Le fichier de config contient le refresh token OAuth — le copier en SSH
+scp ~/.config/rclone/rclone.conf user@monolithoid.com:/root/.config/rclone/rclone.conf
+```
+
+**Tester depuis le VPS :**
+
+```bash
+rclone lsd gdrive:                  # lister les dossiers à la racine
+rclone ls gdrive:MonDossier --max-depth 1
+```
+
+### Configuration OneDrive
+
+```bash
+rclone config
+```
+
+```
+n) New remote
+name> onedrive
+Storage> onedrive                  # Microsoft OneDrive
+client_id>                         # laisser vide
+client_secret>                     # laisser vide
+Edit advanced config? n
+Use web browser to authenticate? y → navigateur → connexion Microsoft
+config_type> onedrive              # OneDrive personnel ou business
+drive_id> 0                        # 0 = Drive principal
+Drive OK? y
+```
+
+**Copier la config sur le VPS :** (si pas encore fait lors de la config GDrive)
+
+```bash
+scp ~/.config/rclone/rclone.conf user@monolithoid.com:/root/.config/rclone/rclone.conf
+```
+
+**Tester depuis le VPS :**
+
+```bash
+rclone lsd onedrive:
+rclone ls onedrive:Documents --max-depth 1
+```
+
+### Services systemd — synchronisation périodique
+
+La stratégie retenue est une **synchronisation périodique** (toutes les 15 min) plutôt qu'un montage FUSE. Cela évite les problèmes de dépendances au démarrage et ne bloque pas si le cloud est momentanément inaccessible.
+
+#### Service OneDrive
+
+Créer `/etc/systemd/system/rclone-onedrive.service` :
+
+```ini
+[Unit]
+Description=rclone sync — OneDrive → /opt/ia/sync/onedrive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/rclone sync onedrive: /opt/ia/sync/onedrive \
+    --log-file=/var/log/rclone-onedrive.log \
+    --log-level=INFO \
+    --transfers=4 \
+    --checkers=8 \
+    --contimeout=60s \
+    --timeout=300s \
+    --retries=3 \
+    --low-level-retries=10
+```
+
+Créer `/etc/systemd/system/rclone-onedrive.timer` :
+
+```ini
+[Unit]
+Description=Sync OneDrive toutes les 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Unit=rclone-onedrive.service
+
+[Install]
+WantedBy=timers.target
+```
+
+#### Service Google Drive
+
+Créer `/etc/systemd/system/rclone-gdrive.service` :
+
+```ini
+[Unit]
+Description=rclone sync — Google Drive → /opt/ia/sync/gdrive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/rclone sync gdrive: /opt/ia/sync/gdrive \
+    --log-file=/var/log/rclone-gdrive.log \
+    --log-level=INFO \
+    --transfers=4 \
+    --checkers=8 \
+    --contimeout=60s \
+    --timeout=300s \
+    --retries=3 \
+    --low-level-retries=10
+```
+
+Créer `/etc/systemd/system/rclone-gdrive.timer` :
+
+```ini
+[Unit]
+Description=Sync Google Drive toutes les 15 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+Unit=rclone-gdrive.service
+
+[Install]
+WantedBy=timers.target
+```
+
+#### Activer les timers
+
+```bash
+systemctl daemon-reload
+
+systemctl enable --now rclone-onedrive.timer
+systemctl enable --now rclone-gdrive.timer
+
+# Vérifier l'état
+systemctl status rclone-onedrive.timer
+systemctl status rclone-gdrive.timer
+systemctl list-timers --all | grep rclone
+```
+
+#### Forcer une sync immédiate
+
+```bash
+systemctl start rclone-onedrive.service
+systemctl start rclone-gdrive.service
+
+# Suivre les logs en direct
+journalctl -u rclone-onedrive.service -f
+journalctl -u rclone-gdrive.service -f
+```
+
+#### Consulter les logs
+
+```bash
+tail -f /var/log/rclone-onedrive.log
+tail -f /var/log/rclone-gdrive.log
+```
+
+### Synchronisation d'un sous-dossier spécifique
+
+Pour ne synchroniser qu'un dossier précis de ton Drive (recommandé si le Drive est volumineux) :
+
+```bash
+# Exemple — ne synchroniser que "IA/documents" depuis Google Drive
+rclone sync gdrive:IA/documents /opt/ia/sync/gdrive \
+    --log-level=INFO
+
+# Adapter le service systemd :
+ExecStart=/usr/bin/rclone sync gdrive:IA/documents /opt/ia/sync/gdrive ...
+```
+
+### Vérifier que Bitterbot voit les fichiers
+
+```bash
+# Lister les fichiers visibles depuis le container
+docker exec bitterbot-gateway ls /home/node/.bitterbot/workspace/onedrive/
+docker exec bitterbot-gateway ls /home/node/.bitterbot/workspace/gdrive/
+```
+
+> Les dossiers sont montés en **lecture seule** (`:ro`) dans le container. Bitterbot peut lire et indexer les fichiers, mais ne peut pas les modifier.
+
+---
+
 ## Stockage
 
 | Dossier | Contenu | Taille estimée |
