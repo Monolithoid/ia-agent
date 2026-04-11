@@ -73,6 +73,10 @@ jobs:
           git clone https://github.com/Bitterbot-AI/bitterbot-desktop.git bitterbot-src
           cd bitterbot-src
           git checkout ${{ steps.ref.outputs.ref }}
+          # Le Dockerfile fait `COPY patches ./patches` mais ce répertoire
+          # n'existe pas à ce commit (et package.json n'a pas de patchedDependencies).
+          # On le crée vide pour que le COPY passe sans erreur.
+          mkdir -p patches
           echo "HEAD=$(git rev-parse HEAD)" >> $GITHUB_ENV
           echo "Building from ref : ${{ steps.ref.outputs.ref }}"
           echo "Full SHA          : $(git rev-parse HEAD)"
