@@ -3,11 +3,11 @@
 # qui référence des chemins absents du repo (ui/, patches/, pnpm ui:build).
 #
 # Différences avec l'upstream :
-#   - COPY ui/package.json supprimé  (ui/ n'existe pas dans le repo)
-#   - COPY patches supprimé + mkdir patches (pas de patchedDependencies dans package.json)
-#   - pnpm ui:build supprimé        (script absent du package.json)
-#
-# À mettre à jour si le repo upstream restructure ces chemins.
+#   + RUN apt-get : dépendances système pour les addons natifs
+#                   (absentes de node:22-bookworm par défaut)
+#   - COPY ui/package.json  (ui/ n'existe pas dans le repo)
+#   - COPY patches          (pas de patchedDependencies → mkdir vide suffit)
+#   - RUN pnpm ui:build     (script absent du package.json)
 
 FROM node:22-bookworm
 
@@ -19,7 +19,39 @@ RUN corepack enable
 
 WORKDIR /app
 
-# Packages APT optionnels (addons natifs, etc.)
+# ----------------------------------------------------------------
+# Dépendances système pour les addons natifs (onlyBuiltDependencies)
+#
+# authenticate-pam → node-gyp compile depuis les sources, PAM headers obligatoires
+#   Pas de binaire précompilé npm → libpam0g-dev indispensable
+#
+# @napi-rs/canvas → binaire précompilé NAPI-RS pour linux-x64,
+#   mais le postinstall vérifie les headers Cairo — on les installe
+#   pour le cas où le fallback de compilation est déclenché
+#
+# @lydell/node-pty → node-gyp, build-essential + python3 nécessaires
+#
+# node-llama-cpp → binaire précompilé CPU disponible pour linux-x64,
+#   cmake en fallback si le prebuilt ne correspond pas à l'environnement
+# ----------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Outils de compilation node-gyp
+    build-essential \
+    python3 \
+    # authenticate-pam (compile from source, no prebuilt)
+    libpam0g-dev \
+    # @napi-rs/canvas (Cairo renderer)
+    pkg-config \
+    libcairo2-dev \
+    libpango1.0-dev \
+    libjpeg-dev \
+    libgif-dev \
+    librsvg2-dev \
+    # node-llama-cpp (compile fallback)
+    cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+# Packages APT supplémentaires via build arg (optionnel, hérité de l'upstream)
 ARG BITTERBOT_DOCKER_APT_PACKAGES=""
 RUN if [ -n "$BITTERBOT_DOCKER_APT_PACKAGES" ]; then \
       apt-get update && \
@@ -29,12 +61,11 @@ RUN if [ -n "$BITTERBOT_DOCKER_APT_PACKAGES" ]; then \
     fi
 
 # Copie des manifestes pour optimiser le cache de la couche pnpm install.
-# Note : ui/package.json et patches/ n'existent pas dans ce repo — ignorés.
+# Note : ui/package.json n'existe pas dans ce repo — COPY supprimé.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY scripts ./scripts
 
 # patches/ absent du repo (aucun patchedDependencies dans package.json)
-# On le crée vide pour ne pas casser d'éventuels scripts qui le référencent.
 RUN mkdir -p patches
 
 RUN pnpm install --frozen-lockfile
