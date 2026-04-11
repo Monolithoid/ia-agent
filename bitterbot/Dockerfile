@@ -68,7 +68,10 @@ COPY scripts ./scripts
 # patches/ absent du repo (aucun patchedDependencies dans package.json)
 RUN mkdir -p patches
 
-RUN pnpm install --frozen-lockfile
+# --no-frozen-lockfile : le lockfile upstream est désynchronisé avec package.json
+# (ex: @homebridge/ciao retiré de package.json mais toujours dans pnpm-lock.yaml)
+# pnpm résout et installe la version correcte sans erreur.
+RUN pnpm install --no-frozen-lockfile
 
 COPY . .
 RUN pnpm build
