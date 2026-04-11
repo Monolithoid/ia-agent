@@ -1,0 +1,95 @@
+// Bitterbot — configuration 100% locale
+// Copier ce fichier vers : /opt/ia/bitterbot/config/bitterbot.json
+// Générer le gateway token : openssl rand -hex 32
+//
+// Composants désactivés intentionnellement :
+//   - Tous les canaux messaging (WhatsApp, Telegram, Discord, Signal, Slack)
+//   - Wallet USDC / x402 / marketplace P2P
+//   - Discovery P2P (libp2p / Gossipsub)
+//   - Onramp Stripe (aucune clé cloud configurée)
+//
+// Composants actifs :
+//   - Inférence 100% locale via Ollama (http://ollama:11434)
+//   - Dream Engine (consolidation mémoire toutes les 2h)
+//   - Ingestion documents (workspace, OneDrive, Google Drive en lecture seule)
+//   - Gateway WebSocket + API OpenAI-compatible sur le port 19001
+
+{
+  // ----------------------------------------------------------------
+  // AGENT
+  // ----------------------------------------------------------------
+  agents: {
+    defaults: {
+      // Répertoire de travail — contient aussi les sous-dossiers onedrive/ et gdrive/
+      workspace: "/home/node/.bitterbot/workspace",
+      // Modèle par défaut — changer pour "ollama:dolphin-llama3:8b" si besoin
+      model: "ollama:qwen2.5:7b",
+    },
+  },
+
+  // ----------------------------------------------------------------
+  // FOURNISSEURS LLM — Ollama local uniquement
+  // ----------------------------------------------------------------
+  models: {
+    providers: {
+      ollama: {
+        // Résolution Docker interne (service "ollama" sur le réseau bitterbot-net)
+        baseUrl: "http://ollama:11434",
+        apiKey: "ollama-local",
+        // API native Ollama : streaming + tool calling simultanés
+        // Alternative : "openai-completions" avec baseUrl se terminant par /v1
+        api: "ollama",
+      },
+    },
+  },
+
+  // ----------------------------------------------------------------
+  // CANAUX MESSAGING — tous désactivés
+  // Chaque section doit exister pour pouvoir être désactivée explicitement
+  // ----------------------------------------------------------------
+  channels: {
+    whatsapp: { enabled: false },
+    telegram:  { enabled: false },
+    discord:   { enabled: false },
+    signal:    { enabled: false },
+    slack:     { enabled: false },
+  },
+
+  // ----------------------------------------------------------------
+  // P2P / MARKETPLACE — désactivé
+  // Coupe libp2p, Gossipsub, peer discovery, bounty coordination
+  // ----------------------------------------------------------------
+  discovery: {
+    enabled: false,
+  },
+
+  // ----------------------------------------------------------------
+  // WALLET USDC — désactivé
+  // Aucune clé Stripe dans l'env → pas d'onramp possible de toute façon
+  // La variable BITTERBOT_ONRAMP_URL pointe vers un endpoint inexistant
+  // ----------------------------------------------------------------
+  wallet: {
+    enabled: false,
+  },
+
+  // ----------------------------------------------------------------
+  // DREAM ENGINE — actif (pipeline mémoire nocturne)
+  // Modes : Replay, Mutation, Extrapolation, Compression,
+  //         Simulation, Exploration, Research
+  // Cycle : toutes les 2h (déclenchement émotionnel si dopamine > 0.7)
+  // DB SQLite : /home/node/.bitterbot/memory/memory.db (persisté dans le volume)
+  // ----------------------------------------------------------------
+  // Pas de section à désactiver — le Dream Engine tourne par défaut.
+  // Pour forcer une consolidation manuelle :
+  //   docker exec bitterbot-gateway node bitterbot.mjs memory consolidate
+
+  // ----------------------------------------------------------------
+  // GATEWAY
+  // ----------------------------------------------------------------
+  gateway: {
+    auth: {
+      // Doit correspondre exactement à BITTERBOT_GATEWAY_TOKEN dans docker-compose.yml
+      token: "CHANGE_THIS_BITTERBOT_TOKEN",
+    },
+  },
+}

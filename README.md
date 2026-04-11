@@ -17,23 +17,32 @@ flowchart TB
         RP_Ollama["ollama.monolithoid.com\n:443"]
     end
 
-    subgraph Docker["Réseau interne Docker — ai-network"]
-        WebUI["Open WebUI\n:8080"]
-        Ollama["Ollama\n:11434"]
-        N8N["N8N\n:5678"]
-        Chroma["ChromaDB\n:8000"]
+    subgraph Docker["Réseaux Docker — VPS monolithoid.com"]
+        subgraph aiNet["ai-network (bridge · accès internet)"]
+            WebUI["Open WebUI\n:8080"]
+            Ollama["Ollama\n:11434"]
+            N8N["N8N\n:5678"]
+            Chroma["ChromaDB\n:8000"]
+        end
+
+        subgraph bbNet["bitterbot-net (bridge · internal — aucun accès internet)"]
+            Bitterbot["Bitterbot Gateway\n:19001"]
+        end
 
         subgraph Volumes["/opt/ia/ — Volumes"]
             V_Ollama["/opt/ia/ollama\nmodèles IA"]
             V_WebUI["/opt/ia/webui\nagents / historique"]
             V_N8N["/opt/ia/n8n\nworkflows"]
             V_Chroma["/opt/ia/chroma\nindex vectoriel"]
+            V_BB["/opt/ia/bitterbot\nconfig + mémoire SQLite"]
+            V_Sync["/opt/ia/sync\nOneDrive / GDrive :ro"]
         end
     end
 
     User -->|HTTPS| RP_Chat
     User -->|HTTPS + API Key| RP_Ollama
     DevSSH -->|"ssh -L 5678"| N8N
+    DevSSH -->|"ssh -L 19001"| Bitterbot
 
     RP_Chat --> WebUI
     RP_Ollama --> Ollama
@@ -44,11 +53,14 @@ flowchart TB
     WebUI -->|"inférence LLM\nOLLAMA_API_KEY"| Ollama
     WebUI -->|"recherche sémantique RAG"| Chroma
     N8N -->|"inférence LLM"| Ollama
+    Bitterbot -->|"inférence LLM · bitterbot-net\nOLLAMA_API_KEY=ollama-local"| Ollama
 
     Ollama --- V_Ollama
     WebUI --- V_WebUI
     N8N --- V_N8N
     Chroma --- V_Chroma
+    Bitterbot --- V_BB
+    Bitterbot --- V_Sync
 ```
 
 ## Services
@@ -141,9 +153,59 @@ Base de données vectorielle utilisée par Open WebUI pour la mémoire long-term
 
 ---
 
-## Réseau interne
+### Bitterbot — agent IA local avec mémoire persistante
 
-Tous les services communiquent via le réseau Docker `ai-network` (bridge). Les containers se joignent par leur nom de service :
+**Image :** buildée depuis les sources ([Bitterbot-AI/bitterbot-desktop](https://github.com/Bitterbot-AI/bitterbot-desktop)) avec `docker compose build bitterbot-gateway`.
+
+Agent autonome avec mémoire long-terme, Dream Engine de consolidation, et inférence 100 % locale via Ollama. **Non exposé publiquement** — accessible uniquement via tunnel SSH.
+
+**Accès depuis ton poste :**
+```bash
+ssh -L 19001:localhost:19001 user@monolithoid.com
+# puis : http://localhost:19001 (API OpenAI-compatible)
+#         ws://localhost:19001  (WebSocket)
+```
+
+**Isolation réseau complète** — Bitterbot est sur `bitterbot-net` (`internal: true`) : Docker bloque toute sortie vers internet au niveau kernel, indépendamment de la configuration applicative. Seul Ollama est joignable (connecté aux deux réseaux).
+
+**Composants désactivés :**
+
+| Composant | Mécanisme de désactivation |
+|---|---|
+| WhatsApp / Telegram / Discord / Signal / Slack | `BITTERBOT_SKIP_CHANNELS=1` + `channels.*.enabled: false` |
+| Wallet USDC / x402 micropayments | `wallet.enabled: false` + `BITTERBOT_ONRAMP_URL` vers loopback + réseau interne |
+| Marketplace P2P / libp2p Gossipsub | `discovery.enabled: false` + réseau interne |
+| LLM cloud (Anthropic, OpenAI, Gemini…) | Aucune clé API configurée, `OLLAMA_API_KEY=ollama-local` |
+
+**Dream Engine** — pipeline de consolidation mémoire actif par défaut, cycle de 2h. Utilise 7 modes (Replay, Mutation, Extrapolation, Compression, Simulation, Exploration, Research) activés selon l'état du graphe mémoriel. DB SQLite persistée dans `/opt/ia/bitterbot/config/memory/memory.db`.
+
+| Variable | Description |
+|---|---|
+| `BITTERBOT_GATEWAY_TOKEN` | Secret d'auth WebSocket (générer : `openssl rand -hex 32`) |
+| `OLLAMA_API_KEY` | Clé fictive pour Ollama local (`ollama-local`) |
+| `BITTERBOT_SKIP_CHANNELS` | Désactive l'init des canaux messaging au démarrage |
+| `BITTERBOT_ONRAMP_URL` | Redirige l'onramp Stripe vers un endpoint inexistant |
+
+**Volumes :**
+
+| Volume hôte | Chemin container | Mode |
+|---|---|---|
+| `/opt/ia/bitterbot/config` | `/home/node/.bitterbot` | rw — config, mémoire, état agent |
+| `/opt/ia/bitterbot/workspace` | `/home/node/.bitterbot/workspace` | rw — espace de travail |
+| `/opt/ia/sync/onedrive` | `/home/node/.bitterbot/workspace/onedrive` | **ro** — OneDrive synchronisé |
+| `/opt/ia/sync/gdrive` | `/home/node/.bitterbot/workspace/gdrive` | **ro** — Google Drive synchronisé |
+
+> **Modèles disponibles :** `qwen2.5:7b` (défaut) ou `dolphin-llama3:8b`. Changer `model:` dans `bitterbot/bitterbot.json`.
+
+---
+
+## Réseaux internes
+
+La stack utilise deux réseaux Docker distincts :
+
+### `ai-network` — réseau principal (bridge, accès internet)
+
+Regroupe Ollama, Open WebUI, N8N et ChromaDB. Les containers peuvent joindre internet (nécessaire pour les webhooks N8N, les mises à jour, etc.).
 
 ```
 http://ollama:11434
@@ -151,13 +213,34 @@ http://chromadb:8000
 http://n8n:5678
 ```
 
+### `bitterbot-net` — réseau isolé (bridge, `internal: true`)
+
+Regroupe Bitterbot Gateway et Ollama (multi-homed). L'option `internal: true` supprime la route par défaut du namespace réseau Docker : **aucun paquet ne peut sortir vers internet**, même si l'application tente un appel externe.
+
+```
+http://ollama:11434     → Ollama (seul service joignable depuis Bitterbot)
+ws://bitterbot-gateway:19001
+```
+
+> Ollama est le seul service connecté aux deux réseaux, ce qui lui permet de répondre aux requêtes de Bitterbot sans exposer internet à ce dernier.
+
 ## Déploiement
 
 ### 1. Prérequis — créer les dossiers sur le VPS
 
 ```bash
+# Stack principale
 mkdir -p /opt/ia/ollama /opt/ia/webui /opt/ia/n8n /opt/ia/chroma
+
+# Bitterbot — config + workspace + sync drives
+mkdir -p /opt/ia/bitterbot/config /opt/ia/bitterbot/workspace
+mkdir -p /opt/ia/sync/onedrive /opt/ia/sync/gdrive
+
+# Permissions — uid 1000 = user "node" dans le container Bitterbot
+chown -R 1000:1000 /opt/ia/bitterbot
 ```
+
+> **Chemins OneDrive / GDrive** — adapter `/opt/ia/sync/onedrive` et `/opt/ia/sync/gdrive` aux chemins réels de ta synchronisation (rclone mount, syncthing, etc.). Ces dossiers sont montés en lecture seule dans le workspace de l'agent.
 
 ### 2. Configurer les secrets
 
@@ -168,6 +251,7 @@ Remplacer toutes les valeurs `CHANGE_THIS_*` dans `docker-compose.yml` :
 | `CHANGE_THIS_OLLAMA_KEY` | `openssl rand -hex 32` |
 | `CHANGE_THIS_WEBUI_SECRET` | `openssl rand -hex 32` |
 | `CHANGE_THIS_N8N_PASSWORD` | Mot de passe de ton choix |
+| `CHANGE_THIS_BITTERBOT_TOKEN` | `openssl rand -hex 32` |
 | `CHANGE_THIS_GOOGLE_CLIENT_ID` | Depuis [console.cloud.google.com](https://console.cloud.google.com) → APIs & Services → Credentials → OAuth 2.0 Client ID |
 | `CHANGE_THIS_GOOGLE_CLIENT_SECRET` | Idem, même credential |
 | `CHANGE_THIS_EMAIL` | Email du compte administrateur Open WebUI |
@@ -177,7 +261,20 @@ Remplacer toutes les valeurs `CHANGE_THIS_*` dans `docker-compose.yml` :
 https://chat.monolithoid.com/oauth/oidc/callback
 ```
 
-### 3. Configurer le firewall
+### 3. Configurer Bitterbot
+
+```bash
+# Copier le template de configuration sur le VPS
+cp bitterbot/bitterbot.json /opt/ia/bitterbot/config/bitterbot.json
+
+# Ouvrir le fichier et remplacer CHANGE_THIS_BITTERBOT_TOKEN
+# par la même valeur que dans docker-compose.yml
+nano /opt/ia/bitterbot/config/bitterbot.json
+```
+
+> Le fichier `bitterbot/bitterbot.json` dans ce dépôt est le template versionné. Le fichier réel sur le VPS (avec les secrets) ne doit **pas** être commité dans git.
+
+### 4. Configurer le firewall
 
 ```bash
 ufw allow 22
@@ -186,20 +283,107 @@ ufw allow 443
 ufw deny 11434
 ufw deny 3000
 ufw deny 5678
+# Port 19001 (Bitterbot) : lié à 127.0.0.1 dans docker-compose, pas d'ufw nécessaire
 ufw enable
 ```
 
-> Les ports 3000, 11434 et 5678 ne doivent pas être accessibles directement — le trafic passe par le reverse proxy (Coolify).
+> Les ports 3000, 11434 et 5678 ne doivent pas être accessibles directement — le trafic passe par le reverse proxy (Coolify). Le port 19001 est déjà lié à `127.0.0.1` dans le compose.
 
-### 4. Lancer la stack
+### 5. Configurer le pipeline CI/CD Bitterbot (une seule fois)
+
+L'image Bitterbot est buildée automatiquement par GitHub Actions et publiée sur Docker Hub (`monolithoid/bitterbot:latest`). Le VPS n'a plus qu'à faire un `docker pull`.
+
+**a) Créer un Access Token Docker Hub**
+
+Docker Hub → ton compte → **Account Settings** → **Security** → **New Access Token**
+- Description : `github-actions-ia-agent`
+- Permissions : `Read & Write`
+- Copier le token généré (affiché une seule fois)
+
+**b) Ajouter les secrets dans GitHub**
+
+GitHub → repo `ia-agent` → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
+
+| Nom du secret | Valeur |
+|---|---|
+| `DOCKERHUB_USERNAME` | `monolithoid` |
+| `DOCKERHUB_TOKEN` | Le token Docker Hub copié ci-dessus |
+
+**c) Déclencher le premier build**
+
+GitHub → onglet **Actions** → workflow **"Build & Push — Bitterbot image"** → **Run workflow** → **Run workflow**
+
+Le build prend ~5-10 min. Une fois terminé, l'image est disponible sur `monolithoid/bitterbot:latest`.
+
+> **Ensuite c'est automatique** — le workflow se relance chaque lundi à 3h00 UTC pour récupérer les éventuels patches upstream. Pour forcer un rebuild : **Actions** → **Run workflow**.
+
+### 6. Lancer la stack
 
 ```bash
 docker compose up -d
 ```
 
-## Gestion via Coolify
+Docker pull automatiquement `monolithoid/bitterbot:latest` depuis Docker Hub au premier démarrage.
 
-La stack est gérée comme un projet "IA" séparé dans Coolify. Start/Stop depuis l'onglet **Services** du projet. Les données dans `/opt/ia/` sont préservées entre les redémarrages.
+**Mettre à jour Bitterbot après un rebuild :**
+```bash
+docker compose pull bitterbot-gateway && docker compose up -d bitterbot-gateway
+```
+
+### 7. Vérifier l'isolation réseau de Bitterbot
+
+```bash
+# Bitterbot ne doit pas pouvoir joindre internet
+docker exec bitterbot-gateway curl -s --max-time 3 https://example.com
+# Attendu : "curl: (6) Could not resolve host" ou timeout
+
+# Bitterbot doit pouvoir joindre Ollama
+docker exec bitterbot-gateway curl -s http://ollama:11434/api/tags | head -c 100
+# Attendu : JSON avec la liste des modèles
+```
+
+## Configuration Coolify
+
+Coolify gère le cycle de vie de la stack via son interface web. Voici les points spécifiques à configurer pour Bitterbot.
+
+### Déclarer la stack dans Coolify
+
+1. Dans Coolify → **Projects** → créer ou ouvrir le projet "IA"
+2. **New Resource** → **Docker Compose** → coller le contenu de `docker-compose.yml`
+3. Dans les **Environment Variables** de la resource, déclarer tous les `CHANGE_THIS_*`
+   _(Coolify injecte ces variables dans l'environnement du compose sans les persister dans le fichier)_
+
+### Variables d'environnement à déclarer dans Coolify
+
+| Variable | Valeur |
+|---|---|
+| `CHANGE_THIS_OLLAMA_KEY` | `openssl rand -hex 32` |
+| `CHANGE_THIS_WEBUI_SECRET` | `openssl rand -hex 32` |
+| `CHANGE_THIS_N8N_PASSWORD` | Mot de passe fort |
+| `CHANGE_THIS_BITTERBOT_TOKEN` | `openssl rand -hex 32` (même valeur que dans `bitterbot.json`) |
+| `CHANGE_THIS_GOOGLE_CLIENT_ID` | Client ID Google OAuth |
+| `CHANGE_THIS_GOOGLE_CLIENT_SECRET` | Secret Google OAuth |
+| `CHANGE_THIS_EMAIL` | Email admin Open WebUI |
+
+### Image Bitterbot — pipeline CI/CD
+
+L'image `monolithoid/bitterbot:latest` est buildée par GitHub Actions (workflow `.github/workflows/build-bitterbot.yml`) et publiée sur Docker Hub **chaque lundi à 3h00 UTC**. Coolify récupère l'image directement depuis Docker Hub — aucun build sur le VPS.
+
+**Mettre à jour Bitterbot après un rebuild GitHub Actions :**
+
+Coolify → resource `ia-agent` → **Restart** (redéploie avec `docker compose pull` automatique)
+
+ou depuis le VPS via SSH :
+```bash
+docker compose pull bitterbot-gateway && docker compose up -d bitterbot-gateway
+```
+
+**Forcer un rebuild immédiat :**
+GitHub → `ia-agent` → **Actions** → **Build & Push — Bitterbot image** → **Run workflow**
+
+### Démarrer / arrêter la stack
+
+Depuis l'onglet **Services** du projet Coolify → bouton **Start** / **Stop**. Les données dans `/opt/ia/` sont préservées entre les redémarrages.
 
 ## Stockage
 
@@ -209,3 +393,7 @@ La stack est gérée comme un projet "IA" séparé dans Coolify. Start/Stop depu
 | `/opt/ia/webui` | Agents, utilisateurs, historique | Variable |
 | `/opt/ia/n8n` | Workflows N8N | Faible |
 | `/opt/ia/chroma` | Index vectoriel ChromaDB | Variable |
+| `/opt/ia/bitterbot/config` | Config, mémoire SQLite (Dream Engine), état agent | Variable |
+| `/opt/ia/bitterbot/workspace` | Espace de travail de l'agent (fichiers générés) | Variable |
+| `/opt/ia/sync/onedrive` | OneDrive synchronisé — lecture seule pour Bitterbot | Dépend de la sync |
+| `/opt/ia/sync/gdrive` | Google Drive synchronisé — lecture seule pour Bitterbot | Dépend de la sync |
