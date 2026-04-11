@@ -206,17 +206,18 @@ services:
   #   # Remplacer CHANGE_THIS_BITTERBOT_TOKEN dans le fichier copié
   #   chown -R 1000:1000 /opt/ia/bitterbot   # uid node dans le container
   #
-  # Build de l'image (à faire une seule fois, ~5 min) :
-  #   docker compose build bitterbot-gateway
+  # Image Docker Hub : monolithoid/bitterbot:latest
+  #   Publiée automatiquement chaque lundi par GitHub Actions.
+  #   Mise à jour sur le VPS : docker compose pull bitterbot-gateway && docker compose up -d bitterbot-gateway
   #
   # Commande interactive CLI (à la demande) :
   #   docker compose run --rm bitterbot-cli
   # ----------------------------------------------------------
   bitterbot-gateway:
-    build:
-      # Construit depuis le dépôt source officiel
-      context: https://github.com/Bitterbot-AI/bitterbot-desktop.git
-    image: bitterbot:local
+    # Image buildée par GitHub Actions et publiée sur Docker Hub.
+    # Rebuild automatique chaque lundi → docker compose pull pour mettre à jour.
+    # Workflow : .github/workflows/build-bitterbot.yml
+    image: monolithoid/bitterbot:latest
     container_name: bitterbot-gateway
     restart: unless-stopped
     ports:

@@ -289,20 +289,45 @@ ufw enable
 
 > Les ports 3000, 11434 et 5678 ne doivent pas être accessibles directement — le trafic passe par le reverse proxy (Coolify). Le port 19001 est déjà lié à `127.0.0.1` dans le compose.
 
-### 5. Builder l'image Bitterbot
+### 5. Configurer le pipeline CI/CD Bitterbot (une seule fois)
 
-L'image Bitterbot est construite depuis les sources (~5 min, requiert Git et internet sur le VPS) :
+L'image Bitterbot est buildée automatiquement par GitHub Actions et publiée sur Docker Hub (`monolithoid/bitterbot:latest`). Le VPS n'a plus qu'à faire un `docker pull`.
 
-```bash
-docker compose build bitterbot-gateway
-```
+**a) Créer un Access Token Docker Hub**
 
-> Cette étape est à faire **une seule fois** (ou après une mise à jour du dépôt source). Le build clone automatiquement le dépôt officiel et compile le projet Node.js.
+Docker Hub → ton compte → **Account Settings** → **Security** → **New Access Token**
+- Description : `github-actions-ia-agent`
+- Permissions : `Read & Write`
+- Copier le token généré (affiché une seule fois)
+
+**b) Ajouter les secrets dans GitHub**
+
+GitHub → repo `ia-agent` → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
+
+| Nom du secret | Valeur |
+|---|---|
+| `DOCKERHUB_USERNAME` | `monolithoid` |
+| `DOCKERHUB_TOKEN` | Le token Docker Hub copié ci-dessus |
+
+**c) Déclencher le premier build**
+
+GitHub → onglet **Actions** → workflow **"Build & Push — Bitterbot image"** → **Run workflow** → **Run workflow**
+
+Le build prend ~5-10 min. Une fois terminé, l'image est disponible sur `monolithoid/bitterbot:latest`.
+
+> **Ensuite c'est automatique** — le workflow se relance chaque lundi à 3h00 UTC pour récupérer les éventuels patches upstream. Pour forcer un rebuild : **Actions** → **Run workflow**.
 
 ### 6. Lancer la stack
 
 ```bash
 docker compose up -d
+```
+
+Docker pull automatiquement `monolithoid/bitterbot:latest` depuis Docker Hub au premier démarrage.
+
+**Mettre à jour Bitterbot après un rebuild :**
+```bash
+docker compose pull bitterbot-gateway && docker compose up -d bitterbot-gateway
 ```
 
 ### 7. Vérifier l'isolation réseau de Bitterbot
@@ -340,20 +365,21 @@ Coolify gère le cycle de vie de la stack via son interface web. Voici les point
 | `CHANGE_THIS_GOOGLE_CLIENT_SECRET` | Secret Google OAuth |
 | `CHANGE_THIS_EMAIL` | Email admin Open WebUI |
 
-### Build de l'image Bitterbot via Coolify
+### Image Bitterbot — pipeline CI/CD
 
-Coolify ne gère pas nativement le `build:` d'un service avec une URL GitHub comme contexte. **Avant** de démarrer la stack depuis Coolify :
+L'image `monolithoid/bitterbot:latest` est buildée par GitHub Actions (workflow `.github/workflows/build-bitterbot.yml`) et publiée sur Docker Hub **chaque lundi à 3h00 UTC**. Coolify récupère l'image directement depuis Docker Hub — aucun build sur le VPS.
 
+**Mettre à jour Bitterbot après un rebuild GitHub Actions :**
+
+Coolify → resource `ia-agent` → **Restart** (redéploie avec `docker compose pull` automatique)
+
+ou depuis le VPS via SSH :
 ```bash
-# Se connecter au VPS via SSH et builder l'image manuellement
-ssh user@monolithoid.com
-cd /chemin/vers/ia-agent
-docker compose build bitterbot-gateway
+docker compose pull bitterbot-gateway && docker compose up -d bitterbot-gateway
 ```
 
-Ensuite, Coolify peut démarrer la stack normalement (il trouvera l'image `bitterbot:local` déjà présente localement).
-
-> Pour une mise à jour de Bitterbot, relancer `docker compose build bitterbot-gateway` puis **Restart** depuis Coolify.
+**Forcer un rebuild immédiat :**
+GitHub → `ia-agent` → **Actions** → **Build & Push — Bitterbot image** → **Run workflow**
 
 ### Démarrer / arrêter la stack
 
