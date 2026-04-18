@@ -8,16 +8,19 @@ name: Build & Push — Bitterbot image
 #   DOCKERHUB_TOKEN    : Docker Hub → Account Settings → Security → New Access Token
 #
 # Pourquoi on épingle un SHA et pas `main` :
-#   Le commit e0d7d12 ("ablation testing", 9 avr. 2026) a supprimé curiosity-math.ts
-#   et remanié des types — la compilation TypeScript échoue sur la tête de main.
-#   On pointe sur be7b696 (8 avr. 2026), dernier état stable vérifié.
+#   main évolue vite ; on épingle le dernier commit vérifié stable pour éviter
+#   qu'un rebuild hebdomadaire automatique embarque une régression TypeScript.
 #   Pour avancer vers un nouveau commit : changer BITTERBOT_DEFAULT_REF ci-dessous
 #   ou utiliser l'input "bitterbot_ref" du déclenchement manuel.
+#
+#   Historique des pins :
+#     be7b696 (8 avr. 2026) → e0d7d12 cassait la compilation TypeScript (Dream Engine types)
+#     95907c2 (18 avr. 2026) → CI upstream verte, erreurs TS corrigées depuis 050008d
 
 env:
   # Dernier commit vérifié comme compilable.
-  # Accepte : SHA court (be7b696), SHA long, nom de branche, tag.
-  BITTERBOT_DEFAULT_REF: be7b696
+  # Accepte : SHA court (95907c2), SHA long, nom de branche, tag.
+  BITTERBOT_DEFAULT_REF: 95907c2
 
 on:
   # Rebuild hebdomadaire automatique (lundi 03h00 UTC)
