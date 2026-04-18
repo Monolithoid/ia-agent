@@ -290,7 +290,9 @@ services:
   # Toutes les commandes ROS transitent par ce serveur.
   # ----------------------------------------------------------
   ros2-bridge:
-    build: ./robotics/ros2
+    # Image buildée par GitHub Actions et publiée sur Docker Hub.
+    # Workflow : .github/workflows/build-robotics.yml
+    image: monolithoid/ros2-bridge:latest
     container_name: ros2-bridge
     restart: unless-stopped
     ports:
@@ -316,7 +318,10 @@ services:
   #   GET  http://nao-gateway:8001/nao/status
   # ----------------------------------------------------------
   nao-gateway:
-    build: ./robotics/nao/gateway
+    # Image buildée par GitHub Actions et publiée sur Docker Hub.
+    # Rebuild automatique sur push dans robotics/ → docker compose pull pour mettre à jour.
+    # Workflow : .github/workflows/build-robotics.yml
+    image: monolithoid/nao-gateway:latest
     container_name: nao-gateway
     restart: unless-stopped
     ports:
