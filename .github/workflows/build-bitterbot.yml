@@ -129,7 +129,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./bitterbot-src
-          file: ./bitterbot/Dockerfile
+          file: ./core/bitterbot/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

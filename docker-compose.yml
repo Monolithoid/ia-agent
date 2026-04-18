@@ -202,7 +202,7 @@ services:
   # Premier déploiement — exécuter sur le VPS AVANT docker compose up :
   #   mkdir -p /opt/ia/bitterbot/config /opt/ia/bitterbot/workspace
   #   mkdir -p /opt/ia/sync/onedrive /opt/ia/sync/gdrive
-  #   cp bitterbot/bitterbot.json /opt/ia/bitterbot/config/bitterbot.json
+  #   cp core/bitterbot/bitterbot.json /opt/ia/bitterbot/config/bitterbot.json
   #   # Remplacer CHANGE_THIS_BITTERBOT_TOKEN dans le fichier copié
   #   chown -R 1000:1000 /opt/ia/bitterbot   # uid node dans le container
   #
@@ -282,6 +282,65 @@ services:
   #   networks:
   #     - bitterbot-net
 
+  # ----------------------------------------------------------
+  # ROS 2 JAZZY + ROSBRIDGE — hub WebSocket pour la robotique
+  # Port interne : 9090  (WebSocket JSON rosbridge_suite)
+  # Accès : tunnel SSH uniquement → ssh -L 9090:localhost:9090 user@monolithoid.com
+  #
+  # Le NAO se connecte EN SORTIE à ce port depuis le réseau du robot.
+  # Toutes les commandes ROS transitent par ce serveur.
+  #
+  # Profil Docker Compose : "robotics"
+  #   Démarrer : docker compose --profile robotics up -d
+  #   Arrêter  : docker compose --profile robotics down
+  # ----------------------------------------------------------
+  ros2-bridge:
+    build: ./robotics/ros2
+    container_name: ros2-bridge
+    restart: unless-stopped
+    ports:
+      # Exposé publiquement pour que NAO puisse se connecter depuis l'extérieur.
+      # Protéger avec un firewall applicatif ou un token si besoin.
+      - "9090:9090"
+    profiles:
+      - robotics
+    networks:
+      - ai-network
+      - robotics-net
+
+  # ----------------------------------------------------------
+  # NAO GATEWAY — bridge HTTP (n8n) → rosbridge WebSocket
+  # Port interne : 8001
+  # Accès : tunnel SSH uniquement → ssh -L 8001:localhost:8001 user@monolithoid.com
+  #
+  # Variables à remplacer :
+  #   GATEWAY_API_KEY : openssl rand -hex 32
+  #     → À transmettre dans le header X-API-Key de chaque requête n8n
+  #
+  # Exemples de requêtes depuis n8n (HTTP Request node) :
+  #   POST http://nao-gateway:8001/nao/say   {"text": "Bonjour"}
+  #   POST http://nao-gateway:8001/nao/move  {"linear_x": 0.3}
+  #   POST http://nao-gateway:8001/nao/stop
+  #   GET  http://nao-gateway:8001/nao/status
+  # ----------------------------------------------------------
+  nao-gateway:
+    build: ./robotics/nao/gateway
+    container_name: nao-gateway
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8001:8001"
+    environment:
+      - ROSBRIDGE_URL=ws://ros2-bridge:9090
+      - GATEWAY_API_KEY=CHANGE_THIS_GATEWAY_KEY
+    depends_on:
+      ros2-bridge:
+        condition: service_started
+    profiles:
+      - robotics
+    networks:
+      - ai-network
+      - robotics-net
+
 # ============================================================
 # RÉSEAUX
 #
@@ -308,3 +367,8 @@ networks:
   bitterbot-net:
     driver: bridge
     internal: true
+
+  # Réseau robotique — ros2-bridge + nao-gateway
+  # Pas de internal: true car ros2-bridge doit être joignable par NAO depuis internet
+  robotics-net:
+    driver: bridge
