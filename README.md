@@ -1,6 +1,6 @@
-# ia-agent
+# ia-agent — Stack IA unifiée
 
-Stack IA auto-hébergée sur VPS, déployée via Docker Compose. Elle regroupe un moteur LLM, une interface de chat, un moteur de workflows et une base vectorielle.
+Stack IA auto-hébergée sur VPS Ubuntu, déployée via Docker Compose et gérée par Coolify. Elle regroupe un moteur LLM, une interface de chat, un orchestrateur de workflows, une mémoire vectorielle, un agent autonome et une infrastructure robotique (NAO via ROS 2).
 
 ## Architecture
 
@@ -8,133 +8,368 @@ Stack IA auto-hébergée sur VPS, déployée via Docker Compose. Elle regroupe u
 flowchart TB
     subgraph Internet
         User(["Utilisateur\n(navigateur)"])
-        DevSSH(["Développeur\n(SSH tunnel)"])
-        Google["Google OAuth\noidc.google.com"]
+        Dev(["Développeur\n(SSH tunnel)"])
+        Google["Google OAuth"]
+        NAO["Robot NAO\n(réseau local)"]
     end
 
-    subgraph Coolify["Reverse Proxy — Coolify"]
-        RP_Chat["chat.monolithoid.com\n:443"]
-        RP_Ollama["ollama.monolithoid.com\n:443"]
+    subgraph Coolify["Reverse Proxy — Coolify / Traefik"]
+        RP_Chat["chat.monolithoid.com :443"]
+        RP_Ollama["ollama.monolithoid.com :443"]
     end
 
-    subgraph Docker["Réseaux Docker — VPS monolithoid.com"]
-        subgraph aiNet["ai-network (bridge · accès internet)"]
-            WebUI["Open WebUI\n:8080"]
-            Ollama["Ollama\n:11434"]
-            N8N["N8N\n:5678"]
-            Chroma["ChromaDB\n:8000"]
+    subgraph Docker["VPS monolithoid.com — Docker"]
+        subgraph aiNet["ai-network"]
+            WebUI["Open WebUI :8080"]
+            Ollama["Ollama :11434"]
+            N8N["n8n :5678"]
+            Chroma["ChromaDB :8000"]
+            Gateway["nao-gateway :8001"]
         end
 
-        subgraph bbNet["bitterbot-net (bridge · internal — aucun accès internet)"]
-            Bitterbot["Bitterbot Gateway\n:19001"]
+        subgraph bbNet["bitterbot-net (internal)"]
+            Bitterbot["Bitterbot :19001"]
         end
 
-        subgraph Volumes["/opt/ia/ — Volumes"]
-            V_Ollama["/opt/ia/ollama\nmodèles IA"]
-            V_WebUI["/opt/ia/webui\nagents / historique"]
-            V_N8N["/opt/ia/n8n\nworkflows"]
-            V_Chroma["/opt/ia/chroma\nindex vectoriel"]
-            V_BB["/opt/ia/bitterbot\nconfig + mémoire SQLite"]
-            V_Sync["/opt/ia/sync\nOneDrive / GDrive :ro"]
+        subgraph robotNet["robotics-net"]
+            ROS["ros2-bridge :9090"]
         end
     end
 
-    User -->|HTTPS| RP_Chat
-    User -->|HTTPS + API Key| RP_Ollama
-    DevSSH -->|"ssh -L 5678"| N8N
-    DevSSH -->|"ssh -L 19001"| Bitterbot
+    User -->|HTTPS| RP_Chat --> WebUI
+    User -->|HTTPS + API Key| RP_Ollama --> Ollama
+    Dev -->|"ssh -L 5678"| N8N
+    Dev -->|"ssh -L 19001"| Bitterbot
+    Dev -->|"ssh -L 8001"| Gateway
 
-    RP_Chat --> WebUI
-    RP_Ollama --> Ollama
+    WebUI -->|OIDC| Google
+    WebUI --> Ollama & Chroma
+    N8N --> Ollama
+    N8N -->|"HTTP + X-API-Key"| Gateway
+    Bitterbot -->|bitterbot-net| Ollama
 
-    WebUI -->|"authentification OIDC"| Google
-    Google -->|"callback OAuth"| WebUI
-
-    WebUI -->|"inférence LLM\nOLLAMA_API_KEY"| Ollama
-    WebUI -->|"recherche sémantique RAG"| Chroma
-    N8N -->|"inférence LLM"| Ollama
-    Bitterbot -->|"inférence LLM · bitterbot-net\nOLLAMA_API_KEY=ollama-local"| Ollama
-
-    Ollama --- V_Ollama
-    WebUI --- V_WebUI
-    N8N --- V_N8N
-    Chroma --- V_Chroma
-    Bitterbot --- V_BB
-    Bitterbot --- V_Sync
+    Gateway -->|rosbridge WS| ROS
+    NAO -->|"WS sortant :9090"| ROS
 ```
 
-## Services
+## Structure du dépôt
+
+```
+ia-agent/
+├── core/bitterbot/          → Dockerfile + config template de l'agent Bitterbot
+├── robotics/
+│   ├── ros2/                → Dockerfile ROS 2 Jazzy + rosbridge_suite
+│   └── nao/
+│       ├── nao_ws_bridge.py → Script Python 2.7 embarqué sur le robot
+│       └── gateway/         → FastAPI : n8n → rosbridge → NAO
+├── docs/
+│   ├── architecture.md
+│   └── decisions/           → ADR (Architecture Decision Records)
+├── .github/workflows/
+│   ├── build-bitterbot.yml  → Build + push monolithoid/bitterbot
+│   └── build-robotics.yml   → Build + push nao-gateway + ros2-bridge
+└── docker-compose.yml
+```
+
+---
+
+## Déploiement sur Coolify — guide complet
+
+### 1. Prérequis sur le VPS
+
+Se connecter en SSH et créer l'arborescence de données :
+
+```bash
+# Stack principale
+mkdir -p /opt/ia/ollama /opt/ia/webui /opt/ia/n8n /opt/ia/chroma
+
+# Bitterbot
+mkdir -p /opt/ia/bitterbot/config /opt/ia/bitterbot/workspace
+mkdir -p /opt/ia/sync/onedrive /opt/ia/sync/gdrive
+chown -R 1000:1000 /opt/ia/bitterbot   # uid node dans le container
+
+# Copier le template de config Bitterbot
+cp core/bitterbot/bitterbot.json /opt/ia/bitterbot/config/bitterbot.json
+# Éditer ce fichier pour y renseigner BITTERBOT_GATEWAY_TOKEN (même valeur que dans Coolify)
+```
+
+### 2. Firewall
+
+```bash
+ufw allow 22
+ufw allow 80
+ufw allow 443
+ufw allow 9090    # rosbridge WebSocket — NAO se connecte depuis l'extérieur
+ufw deny 11434
+ufw deny 3000
+ufw deny 5678
+ufw enable
+```
+
+> Les ports 8001 (nao-gateway) et 19001 (Bitterbot) sont liés à `127.0.0.1` dans le compose — pas de règle ufw nécessaire.
+
+### 3. Configurer le projet dans Coolify
+
+1. Coolify → **Projects** → créer le projet **"IA"**
+2. **New Resource** → **Docker Compose** → pointer sur ce dépôt Git
+3. Laisser le chemin du compose sur `docker-compose.yml` (à la racine)
+4. Aller dans **Environment Variables** de la resource et ajouter toutes les variables listées ci-dessous
+
+### 4. Variables d'environnement — à configurer dans Coolify
+
+Toutes les variables sensibles sont injectées par Coolify. Aucun secret n'est commité dans le dépôt.
+
+| Variable | Comment la générer / obtenir |
+|---|---|
+| `OLLAMA_API_KEYS` | `openssl rand -hex 32` |
+| `WEBUI_SECRET_KEY` | `openssl rand -hex 32` |
+| `WEBUI_ADMIN_EMAIL` | Ton adresse email |
+| `OAUTH_CLIENT_ID` | [console.cloud.google.com](https://console.cloud.google.com) → APIs & Services → Credentials → OAuth 2.0 Client ID |
+| `OAUTH_CLIENT_SECRET` | Idem, même credential |
+| `N8N_BASIC_AUTH_PASSWORD` | Mot de passe fort de ton choix |
+| `BITTERBOT_GATEWAY_TOKEN` | `openssl rand -hex 32` — doit correspondre à `gateway.auth.token` dans `bitterbot.json` |
+| `GATEWAY_API_KEY` | `openssl rand -hex 32` — clé `X-API-Key` pour les appels n8n → nao-gateway |
+
+**URI de callback à déclarer dans Google Cloud Console :**
+```
+https://chat.monolithoid.com/oauth/oidc/callback
+```
+
+### 5. Configurer le pipeline CI/CD des images Docker (une seule fois)
+
+Trois images sont buildées automatiquement par GitHub Actions et publiées sur Docker Hub. Le VPS fait uniquement `docker pull` — aucun build sur le serveur.
+
+**a) Créer un Access Token Docker Hub**
+
+Docker Hub → Account Settings → **Security** → **New Access Token**
+- Description : `github-actions-ia-agent`
+- Permissions : `Read & Write`
+- Copier le token (affiché une seule fois)
+
+**b) Ajouter les secrets dans GitHub**
+
+GitHub → repo → **Settings** → **Secrets and variables** → **Actions** :
+
+| Nom | Valeur |
+|---|---|
+| `DOCKERHUB_USERNAME` | `monolithoid` |
+| `DOCKERHUB_TOKEN` | Le token Docker Hub |
+
+**c) Déclencher les premiers builds**
+
+GitHub → **Actions** :
+- Workflow **"Build & Push — Bitterbot image"** → **Run workflow**
+- Workflow **"Build & Push — Images robotiques"** → **Run workflow**
+
+Chaque build prend 5–15 min. Les images sont ensuite disponibles :
+- `monolithoid/bitterbot:latest`
+- `monolithoid/nao-gateway:latest`
+- `monolithoid/ros2-bridge:latest`
+
+**Rebuilds automatiques :**
+- Bitterbot : tous les lundis à 3h00 UTC
+- Images robotiques : à chaque push sur `main` qui modifie `robotics/**`
+
+### 6. Démarrer la stack
+
+Dans Coolify → resource **"IA"** → bouton **Deploy** (ou **Start**).
+
+Coolify exécute `docker compose pull && docker compose up -d`. Les données dans `/opt/ia/` sont préservées entre les redémarrages.
+
+---
+
+## Accès aux services
+
+| Service | URL / commande |
+|---|---|
+| Open WebUI | [chat.monolithoid.com](https://chat.monolithoid.com) — authentification Google |
+| API Ollama | `https://ollama.monolithoid.com` + header `Authorization: Bearer $OLLAMA_API_KEYS` |
+| n8n | `ssh -L 5678:localhost:5678 user@monolithoid.com` puis [localhost:5678](http://localhost:5678) |
+| Bitterbot | `ssh -L 19001:localhost:19001 user@monolithoid.com` puis `ws://localhost:19001` |
+| nao-gateway | `ssh -L 8001:localhost:8001 user@monolithoid.com` puis [localhost:8001/docs](http://localhost:8001/docs) |
+| rosbridge | Port 9090 — exposé publiquement (NAO se connecte en sortant) |
+
+---
+
+## Mise à jour des services
+
+```bash
+# Mettre à jour toutes les images publiées sur Docker Hub
+docker compose pull
+docker compose up -d
+
+# Mettre à jour un service spécifique
+docker compose pull bitterbot-gateway && docker compose up -d bitterbot-gateway
+docker compose pull nao-gateway ros2-bridge && docker compose up -d nao-gateway ros2-bridge
+```
+
+Ou depuis Coolify : **Redeploy** sur la resource.
+
+---
+
+## Robotique — Stack NAO
+
+### Architecture de la chaîne de commande
+
+```
+n8n (workflow)
+  └─► POST http://nao-gateway:8001/nao/say
+      Header: X-API-Key: $GATEWAY_API_KEY
+        └─► nao-gateway (FastAPI, VPS)
+              └─► rosbridge WebSocket ws://ros2-bridge:9090
+                    └─► ros2-bridge (ROS 2 Jazzy, VPS)
+                          └─► /nao/speech (std_msgs/String)
+                                └─► nao_ws_bridge.py (NAO, Python 2.7)
+                                      └─► ALTextToSpeech.say("Bonjour")
+```
+
+### Topics ROS 2 disponibles
+
+| Topic | Type | Action sur le robot |
+|---|---|---|
+| `/nao/cmd_vel` | `geometry_msgs/Twist` | `ALMotion.moveToward()` |
+| `/nao/speech` | `std_msgs/String` | `ALTextToSpeech.say()` |
+| `/nao/gesture` | `std_msgs/String` | `ALRobotPosture.goToPosture()` |
+| `/nao/leds` | `std_msgs/String` (JSON) | `ALLeds.fadeRGB()` |
+| `/nao/stop` | `std_msgs/Empty` | `ALMotion.stopMove()` |
+| `/nao/status` | `std_msgs/String` (JSON) | Batterie + température → VPS |
+
+### Déployer le bridge sur le robot NAO
+
+```bash
+# Depuis la racine du dépôt
+scp robotics/nao/nao_ws_bridge.py nao@NAO_IP:/home/nao/
+
+# SSH sur le robot
+ssh nao@NAO_IP
+
+# Installer websocket-client (Python 2.7)
+pip install websocket-client==0.59.0
+
+# Lancer le bridge (remplacer VPS_IP par l'IP publique du VPS)
+python /home/nao/nao_ws_bridge.py --vps ws://VPS_IP:9090
+```
+
+> Si `pip` n'est pas disponible sur le NAO :
+> ```bash
+> curl https://bootstrap.pypa.io/pip/2.7/get-pip.py | python
+> ```
+
+**Lancement automatique au démarrage du NAO** — créer `/home/nao/autostart.sh` :
+```bash
+#!/bin/bash
+sleep 10   # attendre que le réseau soit établi
+python /home/nao/nao_ws_bridge.py --vps ws://VPS_IP:9090 &
+```
+Et l'ajouter dans Choregraphe → Edit → Preferences → Autorun.
+
+### Appels depuis n8n
+
+Utiliser le nœud **HTTP Request** avec :
+- **Method** : POST
+- **URL** : `http://nao-gateway:8001/nao/<action>`
+- **Header** : `X-API-Key: {{ $env.GATEWAY_API_KEY }}`
+- **Body** : JSON selon l'action
+
+Exemples :
+
+```json
+// POST /nao/say
+{ "text": "Bonjour, je suis prêt." }
+
+// POST /nao/move   (valeurs entre -1.0 et 1.0)
+{ "linear_x": 0.3, "angular_z": 0.1 }
+
+// POST /nao/gesture
+{ "posture": "Stand" }
+
+// POST /nao/leds
+{ "name": "FaceLeds", "r": 0.0, "g": 1.0, "b": 0.0 }
+
+// POST /nao/stop
+{}
+```
+
+**Documentation interactive de l'API** (via tunnel SSH) :
+```bash
+ssh -L 8001:localhost:8001 user@monolithoid.com
+# ouvrir http://localhost:8001/docs
+```
+
+### Vérification
+
+```bash
+# 1. Le gateway répond
+curl http://localhost:8001/health
+
+# 2. Tester say (NAO doit être connecté au rosbridge)
+curl -X POST http://localhost:8001/nao/say \
+  -H "X-API-Key: $GATEWAY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Test de connexion"}'
+
+# 3. Voir les logs du bridge (si NAO est connecté)
+docker logs ros2-bridge
+docker logs nao-gateway
+```
+
+---
+
+## Services — référence complète
 
 ### Ollama — moteur LLM
 
 **Image :** `ollama/ollama:latest`
 
-Moteur d'inférence local qui fait tourner les modèles de langage (LLM). Exposé publiquement via le sous-domaine `ollama.monolithoid.com` et protégé par une clé d'API.
-
 | Variable | Description |
 |---|---|
-| `OLLAMA_KEEP_ALIVE` | Durée de maintien du modèle en mémoire (24h) |
-| `OLLAMA_NUM_PARALLEL` | Nombre de requêtes traitées simultanément |
-| `OLLAMA_NUM_THREAD` | Nombre de threads CPU alloués |
-| `OLLAMA_API_KEYS` | Clé secrète pour protéger l'API |
+| `OLLAMA_API_KEYS` | Clé d'API (injectée par Coolify) |
+| `OLLAMA_KEEP_ALIVE` | Maintien du modèle en mémoire (`24h`) |
+| `OLLAMA_NUM_PARALLEL` | Requêtes simultanées (`2`) |
+| `OLLAMA_NUM_THREAD` | Threads CPU alloués (`8`) |
 
-**Volume :** `/opt/ia/ollama` → stockage des modèles IA (10–20 Go).
+**Volume :** `/opt/ia/ollama` → modèles IA (10–20 Go)
+
+**Télécharger un modèle :**
+```bash
+docker exec -it ollama ollama pull qwen3:8b
+```
 
 ---
 
-### Open WebUI — interface de chat et d'agents
+### Open WebUI — interface de chat
 
 **Image :** `ghcr.io/open-webui/open-webui:main`
 
-Interface web qui permet d'interagir avec Ollama via une UI type ChatGPT. Exposée via `chat.monolithoid.com`. L'accès est restreint aux comptes Google autorisés (SSO via OAuth 2.0 / OIDC) — les inscriptions libres sont désactivées.
+Accès restreint aux comptes Google autorisés via SSO (OIDC). Les inscriptions libres sont désactivées.
 
 | Variable | Description |
 |---|---|
-| `OLLAMA_BASE_URL` | Adresse interne d'Ollama |
-| `OLLAMA_API_KEY` | Clé d'API partagée avec Ollama |
-| `WEBUI_SECRET_KEY` | Secret JWT pour les sessions utilisateurs |
-| `CHROMA_HTTP_HOST/PORT` | Connexion interne à ChromaDB |
-| `DEFAULT_MODELS` | Modèle chargé par défaut (`qwen2.5:7b`) |
-| `ENABLE_SIGNUP` | `false` — inscriptions libres désactivées |
-| `ENABLE_OAUTH_SIGNUP` | `true` — inscription via Google SSO autorisée |
+| `WEBUI_SECRET_KEY` | Secret JWT pour les sessions |
 | `WEBUI_ADMIN_EMAIL` | Email du compte administrateur |
-| `OAUTH_PROVIDER_NAME` | Nom du fournisseur OAuth affiché (Google) |
-| `OPENID_PROVIDER_URL` | URL de découverte OIDC de Google |
-| `OAUTH_CLIENT_ID` | Client ID Google OAuth |
-| `OAUTH_CLIENT_SECRET` | Secret Google OAuth |
-| `OAUTH_REDIRECT_URI` | URI de callback après authentification |
+| `OAUTH_CLIENT_ID` | Client ID Google |
+| `OAUTH_CLIENT_SECRET` | Secret Google |
+| `OLLAMA_API_KEY` | Même valeur que `OLLAMA_API_KEYS` |
 
-> Pour restreindre l'accès à un domaine Google spécifique, décommenter et renseigner :
-> `GOOGLE_ALLOWED_DOMAINS=mondomaine.com`
-
-**Volume :** `/opt/ia/webui` → agents, utilisateurs, historique de chat.
+**Volume :** `/opt/ia/webui` → agents, utilisateurs, historique
 
 ---
 
-### N8N — workflows et automatisations
+### n8n — workflows et automatisations
 
 **Image :** `n8nio/n8n:latest`
 
-Moteur de workflows no-code/low-code. **Non exposé publiquement** — accessible uniquement via tunnel SSH pour des raisons de sécurité.
+Non exposé publiquement. Accès via tunnel SSH uniquement.
 
-**Accès depuis ton poste :**
 ```bash
 ssh -L 5678:localhost:5678 user@monolithoid.com
-# puis ouvrir http://localhost:5678
 ```
 
 | Variable | Description |
 |---|---|
-| `N8N_HOST` | Hôte d'écoute de N8N |
-| `N8N_PORT` | Port interne (5678) |
-| `N8N_BASIC_AUTH_ACTIVE` | Active l'authentification basique |
-| `N8N_BASIC_AUTH_USER` | Identifiant admin |
-| `N8N_BASIC_AUTH_PASSWORD` | Mot de passe admin |
-| `OLLAMA_HOST` | Adresse interne d'Ollama pour les workflows IA |
+| `N8N_BASIC_AUTH_PASSWORD` | Mot de passe de l'interface |
 
-> Pour exposer N8N publiquement (webhooks entrants) : décommenter les `ports:`, ajouter un sous-domaine dans Coolify, et retirer `ufw deny 5678`.
-
-**Volume :** `/opt/ia/n8n` → workflows sauvegardés.
+**Volume :** `/opt/ia/n8n` → workflows
 
 ---
 
@@ -142,340 +377,94 @@ ssh -L 5678:localhost:5678 user@monolithoid.com
 
 **Image :** `chromadb/chroma:latest`
 
-Base de données vectorielle utilisée par Open WebUI pour la mémoire long-terme et la recherche sémantique (RAG). **Jamais exposé publiquement.**
+Interne uniquement — jamais exposé. Utilisé par Open WebUI pour le RAG.
 
-| Variable | Description |
-|---|---|
-| `IS_PERSISTENT` | Activer la persistence des données |
-| `ANONYMIZED_TELEMETRY` | Désactiver la télémétrie (`FALSE`) |
-
-**Volume :** `/opt/ia/chroma` → index vectoriel.
+**Volume :** `/opt/ia/chroma` → index vectoriel
 
 ---
 
-### Bitterbot — agent IA local avec mémoire persistante
+### Bitterbot — agent IA autonome
 
-**Image :** buildée depuis les sources ([Bitterbot-AI/bitterbot-desktop](https://github.com/Bitterbot-AI/bitterbot-desktop)) avec `docker compose build bitterbot-gateway`.
+**Image :** `monolithoid/bitterbot:latest` (buildée par GitHub Actions, publiée sur Docker Hub)
 
-Agent autonome avec mémoire long-terme, Dream Engine de consolidation, et inférence 100 % locale via Ollama. **Non exposé publiquement** — accessible uniquement via tunnel SSH.
+Agent avec mémoire long-terme (SQLite), Dream Engine de consolidation, inférence 100 % locale via Ollama. Non exposé publiquement.
 
-**Accès depuis ton poste :**
-```bash
-ssh -L 19001:localhost:19001 user@monolithoid.com
-# puis : http://localhost:19001 (API OpenAI-compatible)
-#         ws://localhost:19001  (WebSocket)
-```
-
-**Isolation réseau complète** — Bitterbot est sur `bitterbot-net` (`internal: true`) : Docker bloque toute sortie vers internet au niveau kernel, indépendamment de la configuration applicative. Seul Ollama est joignable (connecté aux deux réseaux).
-
-**Composants désactivés :**
-
-| Composant | Mécanisme de désactivation |
-|---|---|
-| WhatsApp / Telegram / Discord / Signal / Slack | `BITTERBOT_SKIP_CHANNELS=1` + `channels.*.enabled: false` |
-| Wallet USDC / x402 micropayments | `wallet.enabled: false` + `BITTERBOT_ONRAMP_URL` vers loopback + réseau interne |
-| Marketplace P2P / libp2p Gossipsub | `discovery.enabled: false` + réseau interne |
-| LLM cloud (Anthropic, OpenAI, Gemini…) | Aucune clé API configurée, `OLLAMA_API_KEY=ollama-local` |
-
-**Dream Engine** — pipeline de consolidation mémoire actif par défaut, cycle de 2h. Utilise 7 modes (Replay, Mutation, Extrapolation, Compression, Simulation, Exploration, Research) activés selon l'état du graphe mémoriel. DB SQLite persistée dans `/opt/ia/bitterbot/config/memory/memory.db`.
+**Isolation réseau :** `bitterbot-net` avec `internal: true` — aucun accès internet possible au niveau Docker. Seul Ollama est joignable.
 
 | Variable | Description |
 |---|---|
-| `BITTERBOT_GATEWAY_TOKEN` | Secret d'auth WebSocket (générer : `openssl rand -hex 32`) |
-| `OLLAMA_API_KEY` | Clé fictive pour Ollama local (`ollama-local`) |
-| `BITTERBOT_SKIP_CHANNELS` | Désactive l'init des canaux messaging au démarrage |
-| `BITTERBOT_ONRAMP_URL` | Redirige l'onramp Stripe vers un endpoint inexistant |
+| `BITTERBOT_GATEWAY_TOKEN` | Secret d'auth WebSocket — doit correspondre à `gateway.auth.token` dans `bitterbot.json` |
 
 **Volumes :**
 
-| Volume hôte | Chemin container | Mode |
+| Chemin hôte | Chemin container | Mode |
 |---|---|---|
-| `/opt/ia/bitterbot/config` | `/home/node/.bitterbot` | rw — config, mémoire, état agent |
-| `/opt/ia/bitterbot/workspace` | `/home/node/.bitterbot/workspace` | rw — espace de travail |
-| `/opt/ia/sync/onedrive` | `/home/node/.bitterbot/workspace/onedrive` | **ro** — OneDrive synchronisé |
-| `/opt/ia/sync/gdrive` | `/home/node/.bitterbot/workspace/gdrive` | **ro** — Google Drive synchronisé |
+| `/opt/ia/bitterbot/config` | `/home/node/.bitterbot` | rw |
+| `/opt/ia/bitterbot/workspace` | `/home/node/.bitterbot/workspace` | rw |
+| `/opt/ia/sync/onedrive` | `/home/node/.bitterbot/workspace/onedrive` | ro |
+| `/opt/ia/sync/gdrive` | `/home/node/.bitterbot/workspace/gdrive` | ro |
 
-> **Modèles disponibles :** `qwen2.5:7b` (défaut) ou `dolphin-llama3:8b`. Changer `model:` dans `bitterbot/bitterbot.json`.
+**Mettre à jour le modèle :** éditer `model:` dans `/opt/ia/bitterbot/config/bitterbot.json`.
 
 ---
 
-## Réseaux internes
+### ros2-bridge — hub ROS 2
 
-La stack utilise deux réseaux Docker distincts :
+**Image :** `monolithoid/ros2-bridge:latest` (buildée par GitHub Actions)
 
-### `ai-network` — réseau principal (bridge, accès internet)
+ROS 2 Jazzy Jalisco + `rosbridge_suite`. Expose le WebSocket JSON rosbridge sur le port 9090. Le NAO se connecte EN SORTIE à ce port — aucune connexion entrante vers le robot n'est nécessaire.
 
-Regroupe Ollama, Open WebUI, N8N et ChromaDB. Les containers peuvent joindre internet (nécessaire pour les webhooks N8N, les mises à jour, etc.).
+---
 
-```
-http://ollama:11434
-http://chromadb:8000
-http://n8n:5678
-```
+### nao-gateway — API REST pour le NAO
 
-### `bitterbot-net` — réseau isolé (bridge, `internal: true`)
+**Image :** `monolithoid/nao-gateway:latest` (buildée par GitHub Actions)
 
-Regroupe Bitterbot Gateway et Ollama (multi-homed). L'option `internal: true` supprime la route par défaut du namespace réseau Docker : **aucun paquet ne peut sortir vers internet**, même si l'application tente un appel externe.
+FastAPI qui expose des endpoints HTTP simples pour n8n et traduit les commandes en messages ROS 2 via rosbridge.
 
-```
-http://ollama:11434     → Ollama (seul service joignable depuis Bitterbot)
-ws://bitterbot-gateway:19001
-```
-
-> Ollama est le seul service connecté aux deux réseaux, ce qui lui permet de répondre aux requêtes de Bitterbot sans exposer internet à ce dernier.
-
-## Déploiement
-
-### 1. Prérequis — créer les dossiers sur le VPS
-
-```bash
-# Stack principale
-mkdir -p /opt/ia/ollama /opt/ia/webui /opt/ia/n8n /opt/ia/chroma
-
-# Bitterbot — config + workspace + sync drives
-mkdir -p /opt/ia/bitterbot/config /opt/ia/bitterbot/workspace
-mkdir -p /opt/ia/sync/onedrive /opt/ia/sync/gdrive
-
-# Permissions — uid 1000 = user "node" dans le container Bitterbot
-chown -R 1000:1000 /opt/ia/bitterbot
-```
-
-> **Chemins OneDrive / GDrive** — adapter `/opt/ia/sync/onedrive` et `/opt/ia/sync/gdrive` aux chemins réels de ta synchronisation (rclone mount, syncthing, etc.). Ces dossiers sont montés en lecture seule dans le workspace de l'agent.
-
-### 2. Configurer les secrets
-
-Remplacer toutes les valeurs `CHANGE_THIS_*` dans `docker-compose.yml` :
-
-| Valeur | Comment la générer |
+| Variable | Description |
 |---|---|
-| `CHANGE_THIS_OLLAMA_KEY` | `openssl rand -hex 32` |
-| `CHANGE_THIS_WEBUI_SECRET` | `openssl rand -hex 32` |
-| `CHANGE_THIS_N8N_PASSWORD` | Mot de passe de ton choix |
-| `CHANGE_THIS_BITTERBOT_TOKEN` | `openssl rand -hex 32` |
-| `CHANGE_THIS_GOOGLE_CLIENT_ID` | Depuis [console.cloud.google.com](https://console.cloud.google.com) → APIs & Services → Credentials → OAuth 2.0 Client ID |
-| `CHANGE_THIS_GOOGLE_CLIENT_SECRET` | Idem, même credential |
-| `CHANGE_THIS_EMAIL` | Email du compte administrateur Open WebUI |
+| `ROSBRIDGE_URL` | Adresse interne de ros2-bridge (`ws://ros2-bridge:9090`) |
+| `GATEWAY_API_KEY` | Clé d'authentification pour le header `X-API-Key` |
 
-**URI de callback OAuth à déclarer dans la console Google :**
-```
-https://chat.monolithoid.com/oauth/oidc/callback
-```
-
-### 3. Configurer Bitterbot
-
-```bash
-# Copier le template de configuration sur le VPS
-cp bitterbot/bitterbot.json /opt/ia/bitterbot/config/bitterbot.json
-
-# Ouvrir le fichier et remplacer CHANGE_THIS_BITTERBOT_TOKEN
-# par la même valeur que dans docker-compose.yml
-nano /opt/ia/bitterbot/config/bitterbot.json
-```
-
-> Le fichier `bitterbot/bitterbot.json` dans ce dépôt est le template versionné. Le fichier réel sur le VPS (avec les secrets) ne doit **pas** être commité dans git.
-
-### 4. Configurer le firewall
-
-```bash
-ufw allow 22
-ufw allow 80
-ufw allow 443
-ufw deny 11434
-ufw deny 3000
-ufw deny 5678
-# Port 19001 (Bitterbot) : lié à 127.0.0.1 dans docker-compose, pas d'ufw nécessaire
-ufw enable
-```
-
-> Les ports 3000, 11434 et 5678 ne doivent pas être accessibles directement — le trafic passe par le reverse proxy (Coolify). Le port 19001 est déjà lié à `127.0.0.1` dans le compose.
-
-### 5. Configurer le pipeline CI/CD Bitterbot (une seule fois)
-
-L'image Bitterbot est buildée automatiquement par GitHub Actions et publiée sur Docker Hub (`monolithoid/bitterbot:latest`). Le VPS n'a plus qu'à faire un `docker pull`.
-
-**a) Créer un Access Token Docker Hub**
-
-Docker Hub → ton compte → **Account Settings** → **Security** → **New Access Token**
-- Description : `github-actions-ia-agent`
-- Permissions : `Read & Write`
-- Copier le token généré (affiché une seule fois)
-
-**b) Ajouter les secrets dans GitHub**
-
-GitHub → repo `ia-agent` → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
-
-| Nom du secret | Valeur |
-|---|---|
-| `DOCKERHUB_USERNAME` | `monolithoid` |
-| `DOCKERHUB_TOKEN` | Le token Docker Hub copié ci-dessus |
-
-**c) Déclencher le premier build**
-
-GitHub → onglet **Actions** → workflow **"Build & Push — Bitterbot image"** → **Run workflow** → **Run workflow**
-
-Le build prend ~5-10 min. Une fois terminé, l'image est disponible sur `monolithoid/bitterbot:latest`.
-
-> **Ensuite c'est automatique** — le workflow se relance chaque lundi à 3h00 UTC pour récupérer les éventuels patches upstream. Pour forcer un rebuild : **Actions** → **Run workflow**.
-
-### 6. Lancer la stack
-
-```bash
-docker compose up -d
-```
-
-Docker pull automatiquement `monolithoid/bitterbot:latest` depuis Docker Hub au premier démarrage.
-
-**Mettre à jour Bitterbot après un rebuild :**
-```bash
-docker compose pull bitterbot-gateway && docker compose up -d bitterbot-gateway
-```
-
-### 7. Vérifier l'isolation réseau de Bitterbot
-
-```bash
-# Bitterbot ne doit pas pouvoir joindre internet
-docker exec bitterbot-gateway curl -s --max-time 3 https://example.com
-# Attendu : "curl: (6) Could not resolve host" ou timeout
-
-# Bitterbot doit pouvoir joindre Ollama
-docker exec bitterbot-gateway curl -s http://ollama:11434/api/tags | head -c 100
-# Attendu : JSON avec la liste des modèles
-```
-
-## Configuration Coolify
-
-Coolify gère le cycle de vie de la stack via son interface web. Voici les points spécifiques à configurer pour Bitterbot.
-
-### Déclarer la stack dans Coolify
-
-1. Dans Coolify → **Projects** → créer ou ouvrir le projet "IA"
-2. **New Resource** → **Docker Compose** → coller le contenu de `docker-compose.yml`
-3. Dans les **Environment Variables** de la resource, déclarer tous les `CHANGE_THIS_*`
-   _(Coolify injecte ces variables dans l'environnement du compose sans les persister dans le fichier)_
-
-### Variables d'environnement à déclarer dans Coolify
-
-| Variable | Valeur |
-|---|---|
-| `CHANGE_THIS_OLLAMA_KEY` | `openssl rand -hex 32` |
-| `CHANGE_THIS_WEBUI_SECRET` | `openssl rand -hex 32` |
-| `CHANGE_THIS_N8N_PASSWORD` | Mot de passe fort |
-| `CHANGE_THIS_BITTERBOT_TOKEN` | `openssl rand -hex 32` (même valeur que dans `bitterbot.json`) |
-| `CHANGE_THIS_GOOGLE_CLIENT_ID` | Client ID Google OAuth |
-| `CHANGE_THIS_GOOGLE_CLIENT_SECRET` | Secret Google OAuth |
-| `CHANGE_THIS_EMAIL` | Email admin Open WebUI |
-
-### Image Bitterbot — pipeline CI/CD
-
-L'image `monolithoid/bitterbot:latest` est buildée par GitHub Actions (workflow `.github/workflows/build-bitterbot.yml`) et publiée sur Docker Hub **chaque lundi à 3h00 UTC**. Coolify récupère l'image directement depuis Docker Hub — aucun build sur le VPS.
-
-**Mettre à jour Bitterbot après un rebuild GitHub Actions :**
-
-Coolify → resource `ia-agent` → **Restart** (redéploie avec `docker compose pull` automatique)
-
-ou depuis le VPS via SSH :
-```bash
-docker compose pull bitterbot-gateway && docker compose up -d bitterbot-gateway
-```
-
-**Forcer un rebuild immédiat :**
-GitHub → `ia-agent` → **Actions** → **Build & Push — Bitterbot image** → **Run workflow**
-
-### Démarrer / arrêter la stack
-
-Depuis l'onglet **Services** du projet Coolify → bouton **Start** / **Stop**. Les données dans `/opt/ia/` sont préservées entre les redémarrages.
+---
 
 ## Synchronisation cloud — rclone
 
-Les dossiers `/opt/ia/sync/onedrive` et `/opt/ia/sync/gdrive` sont montés en lecture seule dans le workspace de Bitterbot. Ils sont alimentés par `rclone`, configuré sur le VPS en tant que service systemd.
+Les dossiers `/opt/ia/sync/onedrive` et `/opt/ia/sync/gdrive` sont alimentés par `rclone` sur le VPS et montés en lecture seule dans le workspace de Bitterbot.
 
-### Installation de rclone
+### Installation
 
 ```bash
 curl https://rclone.org/install.sh | sudo bash
-rclone version   # vérifier l'installation
 ```
 
-### Configuration Google Drive
+### Configuration (depuis ton poste local)
 
-L'authentification OAuth2 nécessite un navigateur. Lancer la config depuis **ton poste local** (pas le VPS), puis copier le fichier de config sur le VPS.
+L'authentification OAuth nécessite un navigateur — faire la config en local puis copier sur le VPS.
 
-**Sur ton poste local :**
-
+**Google Drive :**
 ```bash
 rclone config
+# → n, name: gdrive, Storage: drive, laisser client_id vide, scope: 1
+# → authentification navigateur, pas de Shared Drive
 ```
 
-Répondre aux questions interactives :
-
-```
-n) New remote
-name> gdrive
-Storage> drive                     # Google Drive
-client_id>                         # laisser vide (utilise le client rclone par défaut)
-client_secret>                     # laisser vide
-scope> 1                           # drive — accès complet en lecture/écriture
-root_folder_id>                    # laisser vide (racine du Drive)
-service_account_file>              # laisser vide
-Edit advanced config? n
-Use web browser to authenticate? y → le navigateur s'ouvre, se connecter avec le compte Google
-Configure this as a Shared Drive? n
+**OneDrive :**
+```bash
+rclone config
+# → n, name: onedrive, Storage: onedrive, laisser client_id vide
+# → authentification navigateur, type: onedrive, drive_id: 0
 ```
 
 **Copier la config sur le VPS :**
-
-```bash
-# Le fichier de config contient le refresh token OAuth — le copier en SSH
-scp ~/.config/rclone/rclone.conf user@monolithoid.com:/root/.config/rclone/rclone.conf
-```
-
-**Tester depuis le VPS :**
-
-```bash
-rclone lsd gdrive:                  # lister les dossiers à la racine
-rclone ls gdrive:MonDossier --max-depth 1
-```
-
-### Configuration OneDrive
-
-```bash
-rclone config
-```
-
-```
-n) New remote
-name> onedrive
-Storage> onedrive                  # Microsoft OneDrive
-client_id>                         # laisser vide
-client_secret>                     # laisser vide
-Edit advanced config? n
-Use web browser to authenticate? y → navigateur → connexion Microsoft
-config_type> onedrive              # OneDrive personnel ou business
-drive_id> 0                        # 0 = Drive principal
-Drive OK? y
-```
-
-**Copier la config sur le VPS :** (si pas encore fait lors de la config GDrive)
-
 ```bash
 scp ~/.config/rclone/rclone.conf user@monolithoid.com:/root/.config/rclone/rclone.conf
 ```
 
-**Tester depuis le VPS :**
-
-```bash
-rclone lsd onedrive:
-rclone ls onedrive:Documents --max-depth 1
-```
-
-### Services systemd — synchronisation périodique
-
-La stratégie retenue est une **synchronisation périodique** (toutes les 15 min) plutôt qu'un montage FUSE. Cela évite les problèmes de dépendances au démarrage et ne bloque pas si le cloud est momentanément inaccessible.
-
-#### Service OneDrive
+### Services systemd (synchronisation toutes les 15 min)
 
 Créer `/etc/systemd/system/rclone-onedrive.service` :
-
 ```ini
 [Unit]
 Description=rclone sync — OneDrive → /opt/ia/sync/onedrive
@@ -485,18 +474,11 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/rclone sync onedrive: /opt/ia/sync/onedrive \
-    --log-file=/var/log/rclone-onedrive.log \
-    --log-level=INFO \
-    --transfers=4 \
-    --checkers=8 \
-    --contimeout=60s \
-    --timeout=300s \
-    --retries=3 \
-    --low-level-retries=10
+    --log-file=/var/log/rclone-onedrive.log --log-level=INFO \
+    --transfers=4 --checkers=8 --retries=3
 ```
 
 Créer `/etc/systemd/system/rclone-onedrive.timer` :
-
 ```ini
 [Unit]
 Description=Sync OneDrive toutes les 15 minutes
@@ -510,110 +492,31 @@ Unit=rclone-onedrive.service
 WantedBy=timers.target
 ```
 
-#### Service Google Drive
-
-Créer `/etc/systemd/system/rclone-gdrive.service` :
-
-```ini
-[Unit]
-Description=rclone sync — Google Drive → /opt/ia/sync/gdrive
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/rclone sync gdrive: /opt/ia/sync/gdrive \
-    --log-file=/var/log/rclone-gdrive.log \
-    --log-level=INFO \
-    --transfers=4 \
-    --checkers=8 \
-    --contimeout=60s \
-    --timeout=300s \
-    --retries=3 \
-    --low-level-retries=10
-```
-
-Créer `/etc/systemd/system/rclone-gdrive.timer` :
-
-```ini
-[Unit]
-Description=Sync Google Drive toutes les 15 minutes
-
-[Timer]
-OnBootSec=3min
-OnUnitActiveSec=15min
-Unit=rclone-gdrive.service
-
-[Install]
-WantedBy=timers.target
-```
-
-#### Activer les timers
+Répéter pour `rclone-gdrive` (remplacer `onedrive:` par `gdrive:` et les chemins).
 
 ```bash
 systemctl daemon-reload
-
-systemctl enable --now rclone-onedrive.timer
-systemctl enable --now rclone-gdrive.timer
-
-# Vérifier l'état
-systemctl status rclone-onedrive.timer
-systemctl status rclone-gdrive.timer
+systemctl enable --now rclone-onedrive.timer rclone-gdrive.timer
 systemctl list-timers --all | grep rclone
 ```
 
-#### Forcer une sync immédiate
-
-```bash
-systemctl start rclone-onedrive.service
-systemctl start rclone-gdrive.service
-
-# Suivre les logs en direct
-journalctl -u rclone-onedrive.service -f
-journalctl -u rclone-gdrive.service -f
-```
-
-#### Consulter les logs
-
-```bash
-tail -f /var/log/rclone-onedrive.log
-tail -f /var/log/rclone-gdrive.log
-```
-
-### Synchronisation d'un sous-dossier spécifique
-
-Pour ne synchroniser qu'un dossier précis de ton Drive (recommandé si le Drive est volumineux) :
-
-```bash
-# Exemple — ne synchroniser que "IA/documents" depuis Google Drive
-rclone sync gdrive:IA/documents /opt/ia/sync/gdrive \
-    --log-level=INFO
-
-# Adapter le service systemd :
-ExecStart=/usr/bin/rclone sync gdrive:IA/documents /opt/ia/sync/gdrive ...
-```
-
-### Vérifier que Bitterbot voit les fichiers
-
-```bash
-# Lister les fichiers visibles depuis le container
-docker exec bitterbot-gateway ls /home/node/.bitterbot/workspace/onedrive/
-docker exec bitterbot-gateway ls /home/node/.bitterbot/workspace/gdrive/
-```
-
-> Les dossiers sont montés en **lecture seule** (`:ro`) dans le container. Bitterbot peut lire et indexer les fichiers, mais ne peut pas les modifier.
-
 ---
 
-## Stockage
+## Diagnostic
 
-| Dossier | Contenu | Taille estimée |
-|---|---|---|
-| `/opt/ia/ollama` | Modèles IA téléchargés | 10–20 Go |
-| `/opt/ia/webui` | Agents, utilisateurs, historique | Variable |
-| `/opt/ia/n8n` | Workflows N8N | Faible |
-| `/opt/ia/chroma` | Index vectoriel ChromaDB | Variable |
-| `/opt/ia/bitterbot/config` | Config, mémoire SQLite (Dream Engine), état agent | Variable |
-| `/opt/ia/bitterbot/workspace` | Espace de travail de l'agent (fichiers générés) | Variable |
-| `/opt/ia/sync/onedrive` | OneDrive synchronisé — lecture seule pour Bitterbot | Dépend de la sync |
-| `/opt/ia/sync/gdrive` | Google Drive synchronisé — lecture seule pour Bitterbot | Dépend de la sync |
+```bash
+# État de tous les containers
+docker compose ps
+
+# Logs d'un service
+docker logs ollama -f
+docker logs nao-gateway -f
+docker logs ros2-bridge -f
+
+# Vérifier l'isolation réseau de Bitterbot
+docker exec bitterbot-gateway curl -s --max-time 3 https://example.com
+# Attendu : timeout ou "Could not resolve host"
+
+# Vérifier que Bitterbot atteint Ollama
+docker exec bitterbot-gateway curl -s http://ollama:11434/api/tags | head -c 100
+```
