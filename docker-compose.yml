@@ -8,8 +8,9 @@ version: "3.8"
 #   - ollama.monolithoid.com   → API Ollama  (port 11434)
 #
 # Services internes uniquement :
-#   - n8n      → port 5678  (voir section N8N ci-dessous)
-#   - chromadb → port 8000  (jamais exposer)
+#   - n8n          → port 5678  (voir section N8N ci-dessous)
+#   - chromadb     → port 8000  (jamais exposer)
+#   - nao-gateway  → port 8001  (SSH tunnel uniquement)
 #
 # Données stockées dans /opt/ia/ sur le VPS :
 #   /opt/ia/ollama/     → modèles IA (10-20 Go)
@@ -21,28 +22,27 @@ version: "3.8"
 #   1. Créer les dossiers sur le VPS :
 #      mkdir -p /opt/ia/ollama /opt/ia/webui /opt/ia/n8n /opt/ia/chroma
 #
-#   2. Remplacer les valeurs CHANGE_THIS_* :
-#      - OLLAMA_KEY   : openssl rand -hex 32
-#      - WEBUI_SECRET : openssl rand -hex 32
-#      - N8N_PASSWORD : mot de passe de ton choix
-#      - OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET :
-#        → console.cloud.google.com
-#        → APIs & Services → Credentials → OAuth 2.0 Client ID
-#        → Authorized redirect URI :
-#          https://chat.monolithoid.com/oauth/oidc/callback
-#      - OAUTH_REDIRECT_URI=https://chat.monolithoid.com/oauth/oidc/callback
+#   2. Configurer les variables dans Coolify → Environment Variables :
+#      OLLAMA_API_KEYS          : openssl rand -hex 32
+#      WEBUI_SECRET_KEY         : openssl rand -hex 32
+#      N8N_BASIC_AUTH_PASSWORD  : mot de passe de ton choix
+#      OAUTH_CLIENT_ID          : console.cloud.google.com → APIs → OAuth 2.0
+#      OAUTH_CLIENT_SECRET      : idem
+#      GATEWAY_API_KEY          : openssl rand -hex 32  (clé X-API-Key pour n8n → NAO)
 #
-#   3. Firewall — bloquer les ports directs sur le VPS :
+#   3. Firewall :
 #      ufw allow 22
 #      ufw allow 80
 #      ufw allow 443
+#      ufw allow 9090   # rosbridge — NAO se connecte depuis l'extérieur
 #      ufw deny 11434
 #      ufw deny 3000
 #      ufw deny 5678
 #      ufw enable
 #
-# ALLUMER / ÉTEINDRE :
-#   Créer un projet "IA" séparé dans Coolify.
+# COOLIFY — déploiement :
+#   Créer un projet "IA" dans Coolify → Docker Compose → pointer sur ce dépôt.
+#   Toutes les variables ${VAR} sont injectées depuis Coolify → Environment Variables.
 #   Stop/Start depuis l'onglet Services du projet.
 #   Les données dans /opt/ia/ sont préservées.
 # ============================================================
@@ -67,7 +67,7 @@ services:
       - OLLAMA_KEEP_ALIVE=24h
       - OLLAMA_NUM_PARALLEL=2
       - OLLAMA_NUM_THREAD=8
-      - OLLAMA_API_KEYS=CHANGE_THIS_OLLAMA_KEY
+      - OLLAMA_API_KEYS=${OLLAMA_API_KEYS}
     networks:
       - ai-network
       - bitterbot-net   # Bitterbot appelle Ollama via ce réseau isolé
@@ -95,20 +95,20 @@ services:
       - /opt/ia/webui:/app/backend/data
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
-      - OLLAMA_API_KEY=CHANGE_THIS_OLLAMA_KEY
-      - WEBUI_SECRET_KEY=CHANGE_THIS_WEBUI_SECRET
+      - OLLAMA_API_KEY=${OLLAMA_API_KEYS}
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
       - CHROMA_HTTP_HOST=chromadb
       - CHROMA_HTTP_PORT=8000
       - DEFAULT_MODELS=qwen2.5:7b
       # Inscriptions libres désactivées — accès par Google SSO uniquement
       - ENABLE_SIGNUP=false
       - ENABLE_OAUTH_SIGNUP=true
-      - WEBUI_ADMIN_EMAIL=CHANGE_THIS_EMAIL
+      - WEBUI_ADMIN_EMAIL=${WEBUI_ADMIN_EMAIL}
       # Google OAuth (OIDC générique — utiliser OAUTH_CLIENT_ID et non GOOGLE_CLIENT_ID)
       - OAUTH_PROVIDER_NAME=Google
       - OPENID_PROVIDER_URL=https://accounts.google.com/.well-known/openid-configuration
-      - OAUTH_CLIENT_ID=CHANGE_THIS_GOOGLE_CLIENT_ID
-      - OAUTH_CLIENT_SECRET=CHANGE_THIS_GOOGLE_CLIENT_SECRET
+      - OAUTH_CLIENT_ID=${OAUTH_CLIENT_ID}
+      - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
       - OAUTH_REDIRECT_URI=https://chat.monolithoid.com/oauth/oidc/callback
       # Lie le compte Google à un compte existant avec le même email (évite "email déjà utilisé")
       - OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true
@@ -150,7 +150,7 @@ services:
       - N8N_PROTOCOL=http
       - N8N_BASIC_AUTH_ACTIVE=true
       - N8N_BASIC_AUTH_USER=admin
-      - N8N_BASIC_AUTH_PASSWORD=CHANGE_THIS_N8N_PASSWORD
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD}
       - OLLAMA_HOST=http://ollama:11434
     depends_on:
       ollama:
@@ -236,7 +236,7 @@ services:
       TERM: xterm-256color
       # Auth gateway — doit correspondre à gateway.auth.token dans bitterbot.json
       # Générer : openssl rand -hex 32
-      BITTERBOT_GATEWAY_TOKEN: CHANGE_THIS_BITTERBOT_TOKEN
+      BITTERBOT_GATEWAY_TOKEN: ${BITTERBOT_GATEWAY_TOKEN}
       # Inférence Ollama locale uniquement — aucune clé cloud (Anthropic/OpenAI/etc.)
       OLLAMA_API_KEY: "ollama-local"
       # Désactive l'initialisation des canaux messaging au démarrage
@@ -273,7 +273,7 @@ services:
   #   environment:
   #     HOME: /home/node
   #     TERM: xterm-256color
-  #     BITTERBOT_GATEWAY_TOKEN: CHANGE_THIS_BITTERBOT_TOKEN
+  #     BITTERBOT_GATEWAY_TOKEN: ${BITTERBOT_GATEWAY_TOKEN}
   #     BROWSER: echo
   #   stdin_open: true
   #   tty: true
@@ -285,14 +285,9 @@ services:
   # ----------------------------------------------------------
   # ROS 2 JAZZY + ROSBRIDGE — hub WebSocket pour la robotique
   # Port interne : 9090  (WebSocket JSON rosbridge_suite)
-  # Accès : tunnel SSH uniquement → ssh -L 9090:localhost:9090 user@monolithoid.com
   #
   # Le NAO se connecte EN SORTIE à ce port depuis le réseau du robot.
   # Toutes les commandes ROS transitent par ce serveur.
-  #
-  # Profil Docker Compose : "robotics"
-  #   Démarrer : docker compose --profile robotics up -d
-  #   Arrêter  : docker compose --profile robotics down
   # ----------------------------------------------------------
   ros2-bridge:
     build: ./robotics/ros2
@@ -300,10 +295,7 @@ services:
     restart: unless-stopped
     ports:
       # Exposé publiquement pour que NAO puisse se connecter depuis l'extérieur.
-      # Protéger avec un firewall applicatif ou un token si besoin.
       - "9090:9090"
-    profiles:
-      - robotics
     networks:
       - ai-network
       - robotics-net
@@ -331,12 +323,10 @@ services:
       - "127.0.0.1:8001:8001"
     environment:
       - ROSBRIDGE_URL=ws://ros2-bridge:9090
-      - GATEWAY_API_KEY=CHANGE_THIS_GATEWAY_KEY
+      - GATEWAY_API_KEY=${GATEWAY_API_KEY}
     depends_on:
       ros2-bridge:
         condition: service_started
-    profiles:
-      - robotics
     networks:
       - ai-network
       - robotics-net
