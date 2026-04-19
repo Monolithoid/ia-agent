@@ -8,8 +8,9 @@ version: "3.8"
 #   - ollama.monolithoid.com   → API Ollama  (port 11434)
 #
 # Services internes uniquement :
-#   - n8n      → port 5678  (voir section N8N ci-dessous)
-#   - chromadb → port 8000  (jamais exposer)
+#   - n8n          → port 5678  (voir section N8N ci-dessous)
+#   - chromadb     → port 8000  (jamais exposer)
+#   - nao-gateway  → port 8001  (SSH tunnel uniquement)
 #
 # Données stockées dans /opt/ia/ sur le VPS :
 #   /opt/ia/ollama/     → modèles IA (10-20 Go)
@@ -21,28 +22,27 @@ version: "3.8"
 #   1. Créer les dossiers sur le VPS :
 #      mkdir -p /opt/ia/ollama /opt/ia/webui /opt/ia/n8n /opt/ia/chroma
 #
-#   2. Remplacer les valeurs CHANGE_THIS_* :
-#      - OLLAMA_KEY   : openssl rand -hex 32
-#      - WEBUI_SECRET : openssl rand -hex 32
-#      - N8N_PASSWORD : mot de passe de ton choix
-#      - OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET :
-#        → console.cloud.google.com
-#        → APIs & Services → Credentials → OAuth 2.0 Client ID
-#        → Authorized redirect URI :
-#          https://chat.monolithoid.com/oauth/oidc/callback
-#      - OAUTH_REDIRECT_URI=https://chat.monolithoid.com/oauth/oidc/callback
+#   2. Configurer les variables dans Coolify → Environment Variables :
+#      OLLAMA_API_KEYS          : openssl rand -hex 32
+#      WEBUI_SECRET_KEY         : openssl rand -hex 32
+#      N8N_BASIC_AUTH_PASSWORD  : mot de passe de ton choix
+#      OAUTH_CLIENT_ID          : console.cloud.google.com → APIs → OAuth 2.0
+#      OAUTH_CLIENT_SECRET      : idem
+#      GATEWAY_API_KEY          : openssl rand -hex 32  (clé X-API-Key pour n8n → NAO)
 #
-#   3. Firewall — bloquer les ports directs sur le VPS :
+#   3. Firewall :
 #      ufw allow 22
 #      ufw allow 80
 #      ufw allow 443
+#      ufw allow 9090   # rosbridge — NAO se connecte depuis l'extérieur
 #      ufw deny 11434
 #      ufw deny 3000
 #      ufw deny 5678
 #      ufw enable
 #
-# ALLUMER / ÉTEINDRE :
-#   Créer un projet "IA" séparé dans Coolify.
+# COOLIFY — déploiement :
+#   Créer un projet "IA" dans Coolify → Docker Compose → pointer sur ce dépôt.
+#   Toutes les variables ${VAR} sont injectées depuis Coolify → Environment Variables.
 #   Stop/Start depuis l'onglet Services du projet.
 #   Les données dans /opt/ia/ sont préservées.
 # ============================================================
@@ -67,7 +67,7 @@ services:
       - OLLAMA_KEEP_ALIVE=24h
       - OLLAMA_NUM_PARALLEL=2
       - OLLAMA_NUM_THREAD=8
-      - OLLAMA_API_KEYS=CHANGE_THIS_OLLAMA_KEY
+      - OLLAMA_API_KEYS=${OLLAMA_API_KEYS}
     networks:
       - ai-network
       - bitterbot-net   # Bitterbot appelle Ollama via ce réseau isolé
@@ -95,20 +95,20 @@ services:
       - /opt/ia/webui:/app/backend/data
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
-      - OLLAMA_API_KEY=CHANGE_THIS_OLLAMA_KEY
-      - WEBUI_SECRET_KEY=CHANGE_THIS_WEBUI_SECRET
+      - OLLAMA_API_KEY=${OLLAMA_API_KEYS}
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
       - CHROMA_HTTP_HOST=chromadb
       - CHROMA_HTTP_PORT=8000
       - DEFAULT_MODELS=qwen2.5:7b
       # Inscriptions libres désactivées — accès par Google SSO uniquement
       - ENABLE_SIGNUP=false
       - ENABLE_OAUTH_SIGNUP=true
-      - WEBUI_ADMIN_EMAIL=CHANGE_THIS_EMAIL
+      - WEBUI_ADMIN_EMAIL=${WEBUI_ADMIN_EMAIL}
       # Google OAuth (OIDC générique — utiliser OAUTH_CLIENT_ID et non GOOGLE_CLIENT_ID)
       - OAUTH_PROVIDER_NAME=Google
       - OPENID_PROVIDER_URL=https://accounts.google.com/.well-known/openid-configuration
-      - OAUTH_CLIENT_ID=CHANGE_THIS_GOOGLE_CLIENT_ID
-      - OAUTH_CLIENT_SECRET=CHANGE_THIS_GOOGLE_CLIENT_SECRET
+      - OAUTH_CLIENT_ID=${OAUTH_CLIENT_ID}
+      - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
       - OAUTH_REDIRECT_URI=https://chat.monolithoid.com/oauth/oidc/callback
       # Lie le compte Google à un compte existant avec le même email (évite "email déjà utilisé")
       - OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true
@@ -150,7 +150,7 @@ services:
       - N8N_PROTOCOL=http
       - N8N_BASIC_AUTH_ACTIVE=true
       - N8N_BASIC_AUTH_USER=admin
-      - N8N_BASIC_AUTH_PASSWORD=CHANGE_THIS_N8N_PASSWORD
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD}
       - OLLAMA_HOST=http://ollama:11434
     depends_on:
       ollama:
@@ -202,7 +202,7 @@ services:
   # Premier déploiement — exécuter sur le VPS AVANT docker compose up :
   #   mkdir -p /opt/ia/bitterbot/config /opt/ia/bitterbot/workspace
   #   mkdir -p /opt/ia/sync/onedrive /opt/ia/sync/gdrive
-  #   cp bitterbot/bitterbot.json /opt/ia/bitterbot/config/bitterbot.json
+  #   cp core/bitterbot/bitterbot.json /opt/ia/bitterbot/config/bitterbot.json
   #   # Remplacer CHANGE_THIS_BITTERBOT_TOKEN dans le fichier copié
   #   chown -R 1000:1000 /opt/ia/bitterbot   # uid node dans le container
   #
@@ -236,7 +236,7 @@ services:
       TERM: xterm-256color
       # Auth gateway — doit correspondre à gateway.auth.token dans bitterbot.json
       # Générer : openssl rand -hex 32
-      BITTERBOT_GATEWAY_TOKEN: CHANGE_THIS_BITTERBOT_TOKEN
+      BITTERBOT_GATEWAY_TOKEN: ${BITTERBOT_GATEWAY_TOKEN}
       # Inférence Ollama locale uniquement — aucune clé cloud (Anthropic/OpenAI/etc.)
       OLLAMA_API_KEY: "ollama-local"
       # Désactive l'initialisation des canaux messaging au démarrage
@@ -273,7 +273,7 @@ services:
   #   environment:
   #     HOME: /home/node
   #     TERM: xterm-256color
-  #     BITTERBOT_GATEWAY_TOKEN: CHANGE_THIS_BITTERBOT_TOKEN
+  #     BITTERBOT_GATEWAY_TOKEN: ${BITTERBOT_GATEWAY_TOKEN}
   #     BROWSER: echo
   #   stdin_open: true
   #   tty: true
@@ -281,6 +281,60 @@ services:
   #   entrypoint: ["node", "bitterbot.mjs"]
   #   networks:
   #     - bitterbot-net
+
+  # ----------------------------------------------------------
+  # ROS 2 JAZZY + ROSBRIDGE — hub WebSocket pour la robotique
+  # Port interne : 9090  (WebSocket JSON rosbridge_suite)
+  #
+  # Le NAO se connecte EN SORTIE à ce port depuis le réseau du robot.
+  # Toutes les commandes ROS transitent par ce serveur.
+  # ----------------------------------------------------------
+  ros2-bridge:
+    # Image buildée par GitHub Actions et publiée sur Docker Hub.
+    # Workflow : .github/workflows/build-robotics.yml
+    image: monolithoid/ros2-bridge:latest
+    container_name: ros2-bridge
+    restart: unless-stopped
+    ports:
+      # Exposé publiquement pour que NAO puisse se connecter depuis l'extérieur.
+      - "9090:9090"
+    networks:
+      - ai-network
+      - robotics-net
+
+  # ----------------------------------------------------------
+  # NAO GATEWAY — bridge HTTP (n8n) → rosbridge WebSocket
+  # Port interne : 8001
+  # Accès : tunnel SSH uniquement → ssh -L 8001:localhost:8001 user@monolithoid.com
+  #
+  # Variables à remplacer :
+  #   GATEWAY_API_KEY : openssl rand -hex 32
+  #     → À transmettre dans le header X-API-Key de chaque requête n8n
+  #
+  # Exemples de requêtes depuis n8n (HTTP Request node) :
+  #   POST http://nao-gateway:8001/nao/say   {"text": "Bonjour"}
+  #   POST http://nao-gateway:8001/nao/move  {"linear_x": 0.3}
+  #   POST http://nao-gateway:8001/nao/stop
+  #   GET  http://nao-gateway:8001/nao/status
+  # ----------------------------------------------------------
+  nao-gateway:
+    # Image buildée par GitHub Actions et publiée sur Docker Hub.
+    # Rebuild automatique sur push dans robotics/ → docker compose pull pour mettre à jour.
+    # Workflow : .github/workflows/build-robotics.yml
+    image: monolithoid/nao-gateway:latest
+    container_name: nao-gateway
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8001:8001"
+    environment:
+      - ROSBRIDGE_URL=ws://ros2-bridge:9090
+      - GATEWAY_API_KEY=${GATEWAY_API_KEY}
+    depends_on:
+      ros2-bridge:
+        condition: service_started
+    networks:
+      - ai-network
+      - robotics-net
 
 # ============================================================
 # RÉSEAUX
@@ -308,3 +362,8 @@ networks:
   bitterbot-net:
     driver: bridge
     internal: true
+
+  # Réseau robotique — ros2-bridge + nao-gateway
+  # Pas de internal: true car ros2-bridge doit être joignable par NAO depuis internet
+  robotics-net:
+    driver: bridge
