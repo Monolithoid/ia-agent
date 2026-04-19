@@ -1,8 +1,13 @@
 name: Build & Push — Images robotiques
 
-# Publie deux images sur Docker Hub :
-#   monolithoid/nao-gateway  → FastAPI bridge n8n → rosbridge → NAO
-#   monolithoid/ros2-bridge  → ROS 2 Jazzy + rosbridge_suite WebSocket
+# Publie six images sur Docker Hub :
+#   monolithoid/nao-gateway        → FastAPI bridge n8n → rosbridge → NAO
+#   monolithoid/ros2-bridge        → ROS 2 Jazzy + rosbridge_suite WebSocket
+#   monolithoid/naoqi-bridge       → Python 2.7 + qi SDK HTTP/SSE bridge
+#   monolithoid/naoqi-driver       → ROS2 Humble node /naoqi/* topics
+#   monolithoid/cognitive-renderer → ROS2 Humble node états cognitifs → LEDs
+#   monolithoid/nao-brain          → ROS2 Humble agent principal Qwen3
+#   monolithoid/dream-engine       → ROS2 Humble consolidation nocturne
 #
 # Secrets requis (mêmes que build-bitterbot) :
 #   DOCKERHUB_USERNAME : monolithoid
@@ -15,6 +20,7 @@ on:
     paths:
       - 'robotics/nao/gateway/**'
       - 'robotics/ros2/**'
+      - 'robotics/nao_brain/**'
       - '.github/workflows/build-robotics.yml'
 
   workflow_dispatch:
@@ -23,7 +29,7 @@ jobs:
   build-and-push:
     name: Build & Push ${{ matrix.name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     strategy:
       fail-fast: false
@@ -38,6 +44,31 @@ jobs:
             image: monolithoid/ros2-bridge
             context: ./robotics/ros2
             dockerfile: ./robotics/ros2/Dockerfile
+
+          - name: naoqi-bridge
+            image: monolithoid/naoqi-bridge
+            context: ./robotics/nao_brain/naoqi_bridge
+            dockerfile: ./robotics/nao_brain/naoqi_bridge/Dockerfile
+
+          - name: naoqi-driver
+            image: monolithoid/naoqi-driver
+            context: ./robotics/nao_brain/naoqi_driver
+            dockerfile: ./robotics/nao_brain/naoqi_driver/Dockerfile
+
+          - name: cognitive-renderer
+            image: monolithoid/cognitive-renderer
+            context: ./robotics/nao_brain/cognitive_renderer
+            dockerfile: ./robotics/nao_brain/cognitive_renderer/Dockerfile
+
+          - name: nao-brain
+            image: monolithoid/nao-brain
+            context: ./robotics/nao_brain/nao_brain_agent
+            dockerfile: ./robotics/nao_brain/nao_brain_agent/Dockerfile
+
+          - name: dream-engine
+            image: monolithoid/dream-engine
+            context: ./robotics/nao_brain/dream_engine
+            dockerfile: ./robotics/nao_brain/dream_engine/Dockerfile
 
     steps:
       - name: Checkout

@@ -167,6 +167,9 @@ services:
     image: chromadb/chroma:latest
     container_name: chromadb
     restart: unless-stopped
+    ports:
+      # Bound to loopback only — required by ROS2 nodes running in host-network mode
+      - "127.0.0.1:8000:8000"
     volumes:
       - /opt/ia/chroma:/chroma/chroma
     environment:
@@ -335,6 +338,119 @@ services:
     networks:
       - ai-network
       - robotics-net
+
+  # ----------------------------------------------------------
+  # NAO BRAIN — couche cognitive NAO V4 (ROS2 Humble + Qwen3)
+  # Cinq services forment le cerveau incarné du robot :
+  #
+  #   naoqi-bridge       → pont HTTP/SSE vers NAO via qi SDK (Python 2.7)
+  #   naoqi-driver       → nœud ROS2 traduisant les topics /naoqi/*
+  #   cognitive-renderer → nœud ROS2 états cognitifs → LEDs + tête
+  #   nao-brain          → agent principal Qwen3 + ChromaDB
+  #   dream-engine       → consolidation nocturne ChromaDB
+  #
+  # Réseau : network_mode host pour naoqi-driver, cognitive-renderer,
+  #   nao-brain et dream-engine (DDS ROS2 Humble fonctionne sans config
+  #   multicast supplémentaire sur le réseau hôte).
+  #   ROS_DOMAIN_ID=42 isolé du ros2-bridge Jazzy existant.
+  #
+  # naoqi-bridge tourne sur bridge réseau car il n'a pas besoin de DDS.
+  #   Port 8090 exposé sur loopback pour les nœuds en mode host.
+  #
+  # Premier déploiement :
+  #   mkdir -p /opt/ia/nao/naoqi-sdk  /opt/ia/nao/data
+  #   # Copier le NAOqi Python 2.7 SDK dans /opt/ia/nao/naoqi-sdk/
+  #   # (télécharger pynaoqi-python2.7-2.1.4.*-linux64.tar.gz depuis le
+  #   #  portail développeur SoftBank et extraire dans ce dossier)
+  #
+  # Variables nécessaires dans .env / Coolify :
+  #   NAO_IP              : adresse IP du robot NAO sur le réseau local
+  #   NAO_PORT            : port NAOqi (défaut 9559)
+  # ----------------------------------------------------------
+
+  # ── naoqi-bridge : Python 2.7 + qi SDK → HTTP/SSE ─────────────────────────
+  naoqi-bridge:
+    build: ./robotics/nao_brain/naoqi_bridge
+    image: monolithoid/naoqi-bridge:latest
+    container_name: naoqi-bridge
+    restart: unless-stopped
+    ports:
+      # Loopback only — consommé par naoqi-driver en mode host
+      - "127.0.0.1:8090:8090"
+    volumes:
+      # Monter le SDK NAOqi Python 2.7 fourni par l'utilisateur
+      - /opt/ia/nao/naoqi-sdk:/opt/naoqi-sdk:ro
+    environment:
+      - NAO_IP=${NAO_IP}
+      - NAO_PORT=${NAO_PORT:-9559}
+      - BRIDGE_PORT=8090
+    networks:
+      - ai-network
+
+  # ── naoqi-driver : ROS2 Humble, topics /naoqi/* ────────────────────────────
+  naoqi-driver:
+    build: ./robotics/nao_brain/naoqi_driver
+    image: monolithoid/naoqi-driver:latest
+    container_name: naoqi-driver
+    restart: unless-stopped
+    # Host network for ROS2 DDS (domain 42) — shares loopback with naoqi-bridge
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=42
+      - NAOQI_BRIDGE_URL=http://localhost:8090
+    depends_on:
+      naoqi-bridge:
+        condition: service_started
+
+  # ── cognitive-renderer : états cognitifs → LEDs + mouvements tête ──────────
+  cognitive-renderer:
+    build: ./robotics/nao_brain/cognitive_renderer
+    image: monolithoid/cognitive-renderer:latest
+    container_name: cognitive-renderer
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=42
+    depends_on:
+      naoqi-driver:
+        condition: service_started
+
+  # ── nao-brain : agent principal Qwen3 + mémoire ChromaDB ───────────────────
+  nao-brain:
+    build: ./robotics/nao_brain/nao_brain_agent
+    image: monolithoid/nao-brain:latest
+    container_name: nao-brain
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=42
+      - OLLAMA_URL=http://localhost:11434
+      - CHROMA_HOST=localhost
+      - CHROMA_PORT=8000
+      - DREAMING_HOUR_START=${DREAMING_HOUR_START:-2}
+      - DREAMING_HOUR_END=${DREAMING_HOUR_END:-6}
+      - DREAMING_BATTERY_THRESHOLD=${DREAMING_BATTERY_THRESHOLD:-80.0}
+    depends_on:
+      naoqi-driver:
+        condition: service_started
+      cognitive-renderer:
+        condition: service_started
+
+  # ── dream-engine : consolidation nocturne ChromaDB ─────────────────────────
+  dream-engine:
+    build: ./robotics/nao_brain/dream_engine
+    image: monolithoid/dream-engine:latest
+    container_name: dream-engine
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=42
+      - OLLAMA_URL=http://localhost:11434
+      - CHROMA_HOST=localhost
+      - CHROMA_PORT=8000
+    depends_on:
+      nao-brain:
+        condition: service_started
 
 # ============================================================
 # RÉSEAUX
