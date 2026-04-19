@@ -1,14 +1,12 @@
 name: Build & Push — Images robotiques
 
-# Publie cinq images sur Docker Hub :
-#   monolithoid/nao-gateway        → FastAPI bridge n8n → rosbridge → NAO (legacy)
-#   monolithoid/ros2-bridge        → ROS 2 Jazzy + rosbridge_suite WebSocket (legacy)
-#   monolithoid/naoqi-bridge       → Python 2.7 + qi SDK HTTP/SSE bridge
-#   monolithoid/naoqi-driver       → ROS2 Humble node /bodies/{id}/sensors|actuators
-#   monolithoid/cognitive-renderer → ROS2 Humble node /cognitive_state → LEDs + tête
-#   monolithoid/body-gateway       → ROS2 Humble pont Bitterbot ↔ corps ROS2
+# Publie quatre images sur Docker Hub :
+#   monolithoid/naoqi-bridge       → Python 2.7 + qi SDK, HTTP/SSE bridge vers NAO
+#   monolithoid/naoqi-driver       → ROS2 Humble, /bodies/{id}/sensors|actuators/*
+#   monolithoid/cognitive-renderer → ROS2 Humble, /cognitive_state → LEDs + tête
+#   monolithoid/body-gateway       → ROS2 Humble, pont Bitterbot ↔ bus ROS2
 #
-# Secrets requis (mêmes que build-bitterbot) :
+# Secrets requis :
 #   DOCKERHUB_USERNAME : monolithoid
 #   DOCKERHUB_TOKEN    : Docker Hub → Account Settings → Security → New Access Token
 
@@ -17,8 +15,6 @@ on:
     branches:
       - main
     paths:
-      - 'robotics/nao/gateway/**'
-      - 'robotics/ros2/**'
       - 'robotics/nao_brain/**'
       - '.github/workflows/build-robotics.yml'
 
@@ -34,16 +30,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: nao-gateway
-            image: monolithoid/nao-gateway
-            context: ./robotics/nao/gateway
-            dockerfile: ./robotics/nao/gateway/Dockerfile
-
-          - name: ros2-bridge
-            image: monolithoid/ros2-bridge
-            context: ./robotics/ros2
-            dockerfile: ./robotics/ros2/Dockerfile
-
           - name: naoqi-bridge
             image: monolithoid/naoqi-bridge
             context: ./robotics/nao_brain/naoqi_bridge
