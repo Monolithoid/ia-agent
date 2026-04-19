@@ -1,10 +1,12 @@
 name: Build & Push — Images robotiques
 
-# Publie deux images sur Docker Hub :
-#   monolithoid/nao-gateway  → FastAPI bridge n8n → rosbridge → NAO
-#   monolithoid/ros2-bridge  → ROS 2 Jazzy + rosbridge_suite WebSocket
+# Publie quatre images sur Docker Hub :
+#   monolithoid/naoqi-bridge       → Python 2.7 + qi SDK, HTTP/SSE bridge vers NAO
+#   monolithoid/naoqi-driver       → ROS2 Humble, /bodies/{id}/sensors|actuators/*
+#   monolithoid/cognitive-renderer → ROS2 Humble, /cognitive_state → LEDs + tête
+#   monolithoid/body-gateway       → ROS2 Humble, pont Bitterbot ↔ bus ROS2
 #
-# Secrets requis (mêmes que build-bitterbot) :
+# Secrets requis :
 #   DOCKERHUB_USERNAME : monolithoid
 #   DOCKERHUB_TOKEN    : Docker Hub → Account Settings → Security → New Access Token
 
@@ -13,8 +15,7 @@ on:
     branches:
       - main
     paths:
-      - 'robotics/nao/gateway/**'
-      - 'robotics/ros2/**'
+      - 'robotics/nao_brain/**'
       - '.github/workflows/build-robotics.yml'
 
   workflow_dispatch:
@@ -23,21 +24,31 @@ jobs:
   build-and-push:
     name: Build & Push ${{ matrix.name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: nao-gateway
-            image: monolithoid/nao-gateway
-            context: ./robotics/nao/gateway
-            dockerfile: ./robotics/nao/gateway/Dockerfile
+          - name: naoqi-bridge
+            image: monolithoid/naoqi-bridge
+            context: ./robotics/nao_brain/naoqi_bridge
+            dockerfile: ./robotics/nao_brain/naoqi_bridge/Dockerfile
 
-          - name: ros2-bridge
-            image: monolithoid/ros2-bridge
-            context: ./robotics/ros2
-            dockerfile: ./robotics/ros2/Dockerfile
+          - name: naoqi-driver
+            image: monolithoid/naoqi-driver
+            context: ./robotics/nao_brain/naoqi_driver
+            dockerfile: ./robotics/nao_brain/naoqi_driver/Dockerfile
+
+          - name: cognitive-renderer
+            image: monolithoid/cognitive-renderer
+            context: ./robotics/nao_brain/cognitive_renderer
+            dockerfile: ./robotics/nao_brain/cognitive_renderer/Dockerfile
+
+          - name: body-gateway
+            image: monolithoid/body-gateway
+            context: ./robotics/nao_brain/body_gateway
+            dockerfile: ./robotics/nao_brain/body_gateway/Dockerfile
 
     steps:
       - name: Checkout

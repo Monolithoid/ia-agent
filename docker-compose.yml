@@ -3,57 +3,56 @@ version: "3.8"
 # ============================================================
 # STACK IA — monolithoid.com
 # ============================================================
-# Services exposés publiquement :
-#   - chat.monolithoid.com     → Open WebUI  (port 3000)
-#   - ollama.monolithoid.com   → API Ollama  (port 11434)
+# Exposé publiquement :
+#   chat.monolithoid.com   → Open WebUI  (port 3000)
+#   ollama.monolithoid.com → API Ollama  (port 11434)
 #
-# Services internes uniquement :
-#   - n8n          → port 5678  (voir section N8N ci-dessous)
-#   - chromadb     → port 8000  (jamais exposer)
-#   - nao-gateway  → port 8001  (SSH tunnel uniquement)
+# Services internes (tunnel SSH uniquement) :
+#   n8n          → port 5678
+#   bitterbot    → port 19001
 #
-# Données stockées dans /opt/ia/ sur le VPS :
-#   /opt/ia/ollama/     → modèles IA (10-20 Go)
-#   /opt/ia/webui/      → agents, utilisateurs, historique
-#   /opt/ia/n8n/        → workflows
-#   /opt/ia/chroma/     → base vectorielle
+# Données persistantes sous /opt/ia/ :
+#   /opt/ia/ollama/              → modèles IA
+#   /opt/ia/webui/               → agents, utilisateurs, historique
+#   /opt/ia/n8n/                 → workflows
+#   /opt/ia/chroma/              → base vectorielle
+#   /opt/ia/bitterbot/           → mémoire SQLite, config agent
+#   /opt/ia/nao/naoqi-sdk/       → SDK NAOqi Python 2.7 (fourni manuellement)
 #
-# AVANT DE DÉPLOYER :
-#   1. Créer les dossiers sur le VPS :
-#      mkdir -p /opt/ia/ollama /opt/ia/webui /opt/ia/n8n /opt/ia/chroma
+# Avant de déployer :
+#   mkdir -p /opt/ia/{ollama,webui,n8n,chroma}
+#   mkdir -p /opt/ia/bitterbot/{config,workspace}
+#   mkdir -p /opt/ia/nao/naoqi-sdk
+#   cp core/bitterbot/bitterbot.json /opt/ia/bitterbot/config/bitterbot.json
+#   # Extraire le SDK NAOqi Python 2.7 dans /opt/ia/nao/naoqi-sdk/
+#   # (pynaoqi-python2.7-2.1.4.*-linux64.tar.gz depuis le portail SoftBank)
 #
-#   2. Configurer les variables dans Coolify → Environment Variables :
-#      OLLAMA_API_KEYS          : openssl rand -hex 32
-#      WEBUI_SECRET_KEY         : openssl rand -hex 32
-#      N8N_BASIC_AUTH_PASSWORD  : mot de passe de ton choix
-#      OAUTH_CLIENT_ID          : console.cloud.google.com → APIs → OAuth 2.0
-#      OAUTH_CLIENT_SECRET      : idem
-#      GATEWAY_API_KEY          : openssl rand -hex 32  (clé X-API-Key pour n8n → NAO)
+# Variables à configurer dans Coolify → Environment Variables :
+#   OLLAMA_API_KEYS          : openssl rand -hex 32
+#   WEBUI_SECRET_KEY         : openssl rand -hex 32
+#   N8N_BASIC_AUTH_PASSWORD  : mot de passe de ton choix
+#   OAUTH_CLIENT_ID          : Google Cloud Console → OAuth 2.0
+#   OAUTH_CLIENT_SECRET      : idem
+#   BITTERBOT_GATEWAY_TOKEN  : openssl rand -hex 32
+#   GATEWAY_API_KEY          : openssl rand -hex 32
+#   NAO_IP                   : adresse IP du robot NAO
+#   NAO_PORT                 : 9559 (défaut NAOqi)
+#   NAO_ROBOT_ID             : nao_01 (identifiant ROS2 du corps)
 #
-#   3. Firewall :
-#      ufw allow 22
-#      ufw allow 80
-#      ufw allow 443
-#      ufw allow 9090   # rosbridge — NAO se connecte depuis l'extérieur
-#      ufw deny 11434
-#      ufw deny 3000
-#      ufw deny 5678
-#      ufw enable
-#
-# COOLIFY — déploiement :
-#   Créer un projet "IA" dans Coolify → Docker Compose → pointer sur ce dépôt.
-#   Toutes les variables ${VAR} sont injectées depuis Coolify → Environment Variables.
-#   Stop/Start depuis l'onglet Services du projet.
-#   Les données dans /opt/ia/ sont préservées.
+# Firewall (ports exposés publiquement) :
+#   ufw allow 22
+#   ufw allow 80
+#   ufw allow 443
+#   ufw deny 11434
+#   ufw deny 3000
+#   ufw deny 5678
+#   ufw enable
 # ============================================================
 
 services:
 
   # ----------------------------------------------------------
   # OLLAMA — moteur LLM
-  # Port interne : 11434
-  # Exposé via : ollama.monolithoid.com
-  # Protégé par : OLLAMA_API_KEYS
   # ----------------------------------------------------------
   ollama:
     image: ollama/ollama:latest
@@ -70,20 +69,11 @@ services:
       - OLLAMA_API_KEYS=${OLLAMA_API_KEYS}
     networks:
       - ai-network
-      - bitterbot-net   # Bitterbot appelle Ollama via ce réseau isolé
+      - bitterbot-net
 
   # ----------------------------------------------------------
   # OPEN WEBUI — interface agents
-  # Port interne : 8080
-  # Exposé via : chat.monolithoid.com
-  # Protégé par : Google SSO
-  #
-  # Accès restreint aux comptes Google autorisés.
-  # Les inscriptions libres sont désactivées (ENABLE_SIGNUP=false).
-  # Pour autoriser plusieurs domaines Google :
-  #   GOOGLE_ALLOWED_DOMAINS=domaine1.com,domaine2.com
-  # Pour un accès personnel sans restriction de domaine :
-  #   supprimer la ligne GOOGLE_ALLOWED_DOMAINS
+  # Accès via Google SSO uniquement (ENABLE_SIGNUP=false)
   # ----------------------------------------------------------
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
@@ -99,21 +89,16 @@ services:
       - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
       - CHROMA_HTTP_HOST=chromadb
       - CHROMA_HTTP_PORT=8000
-      - DEFAULT_MODELS=qwen2.5:7b
-      # Inscriptions libres désactivées — accès par Google SSO uniquement
+      - DEFAULT_MODELS=qwen3:8b
       - ENABLE_SIGNUP=false
       - ENABLE_OAUTH_SIGNUP=true
       - WEBUI_ADMIN_EMAIL=${WEBUI_ADMIN_EMAIL}
-      # Google OAuth (OIDC générique — utiliser OAUTH_CLIENT_ID et non GOOGLE_CLIENT_ID)
       - OAUTH_PROVIDER_NAME=Google
       - OPENID_PROVIDER_URL=https://accounts.google.com/.well-known/openid-configuration
       - OAUTH_CLIENT_ID=${OAUTH_CLIENT_ID}
       - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
       - OAUTH_REDIRECT_URI=https://chat.monolithoid.com/oauth/oidc/callback
-      # Lie le compte Google à un compte existant avec le même email (évite "email déjà utilisé")
       - OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true
-      # Restreindre à un domaine Google spécifique (optionnel)
-      # - GOOGLE_ALLOWED_DOMAINS=mondomaine.com
     depends_on:
       ollama:
         condition: service_started
@@ -123,25 +108,13 @@ services:
       - ai-network
 
   # ----------------------------------------------------------
-  # N8N — workflows et outils
-  # Port interne : 5678
-  # ⚠️  NON EXPOSÉ PUBLIQUEMENT — accès via tunnel SSH uniquement
-  #
-  # Pour accéder à l'interface depuis ton PC :
-  #   ssh -L 5678:localhost:5678 user@monolithoid.com
-  #   puis ouvrir : http://localhost:5678
-  #
-  # Si tu veux l'exposer publiquement plus tard (webhooks entrants) :
-  #   1. Décommenter les lignes ports: ci-dessous
-  #   2. Ajouter un sous-domaine n8n.monolithoid.com dans Coolify
-  #   3. Retirer la règle : ufw deny 5678
+  # N8N — workflows
+  # Accès via tunnel SSH : ssh -L 5678:localhost:5678 user@monolithoid.com
   # ----------------------------------------------------------
   n8n:
     image: n8nio/n8n:latest
     container_name: n8n
     restart: unless-stopped
-    # ports:
-    #   - "5678:5678"
     volumes:
       - /opt/ia/n8n:/home/node/.n8n
     environment:
@@ -160,7 +133,6 @@ services:
 
   # ----------------------------------------------------------
   # CHROMADB — mémoire vectorielle
-  # Port interne : 8000
   # Interne uniquement — ne jamais exposer publiquement
   # ----------------------------------------------------------
   chromadb:
@@ -176,194 +148,148 @@ services:
       - ai-network
 
   # ----------------------------------------------------------
-  # BITTERBOT — agent IA local avec mémoire persistante
-  # Port interne : 19001 (WebSocket + API OpenAI-compatible)
-  # Accès : tunnel SSH uniquement → ssh -L 19001:localhost:19001 user@monolithoid.com
+  # BITTERBOT — cerveau de NAO
+  # Agent IA local : Qwen3 via Ollama, Dream Engine intégré (2h),
+  # mémoire SQLite persistante.
   #
   # Isolation réseau : bitterbot-net (internal: true)
-  #   → Bitterbot n'a aucun accès internet (réseau Docker fermé)
-  #   → Ollama est le seul service joignable (connecté aux deux réseaux)
+  #   → seul Ollama est joignable, aucun accès internet
   #
-  # Composants désactivés :
-  #   - Canaux messaging cloud (WhatsApp, Telegram, Discord, Signal, Slack)
-  #   - Wallet USDC / x402 (wallet.enabled: false + réseau bloqué + pas de clé Stripe)
-  #   - Marketplace P2P (discovery.enabled: false + port 9100 non exposé)
-  #   - Onramp Stripe (BITTERBOT_ONRAMP_URL pointe vers loopback inexistant)
+  # Accès via tunnel SSH : ssh -L 19001:localhost:19001 user@monolithoid.com
   #
-  # Volumes :
-  #   /opt/ia/bitterbot/config     → config, mémoire SQLite, état agent
-  #   /opt/ia/bitterbot/workspace  → espace de travail de l'agent
-  #   /opt/ia/sync/onedrive        → OneDrive synchronisé (lecture seule)
-  #   /opt/ia/sync/gdrive          → Google Drive synchronisé (lecture seule)
-  #
-  # Dream Engine : actif par défaut (consolidation toutes les 2h)
-  #   DB SQLite : /opt/ia/bitterbot/config/memory/memory.db
-  #
-  # Premier déploiement — exécuter sur le VPS AVANT docker compose up :
-  #   mkdir -p /opt/ia/bitterbot/config /opt/ia/bitterbot/workspace
-  #   mkdir -p /opt/ia/sync/onedrive /opt/ia/sync/gdrive
+  # Premier déploiement :
   #   cp core/bitterbot/bitterbot.json /opt/ia/bitterbot/config/bitterbot.json
-  #   # Remplacer CHANGE_THIS_BITTERBOT_TOKEN dans le fichier copié
-  #   chown -R 1000:1000 /opt/ia/bitterbot   # uid node dans le container
-  #
-  # Image Docker Hub : monolithoid/bitterbot:latest
-  #   Publiée automatiquement chaque lundi par GitHub Actions.
-  #   Mise à jour sur le VPS : docker compose pull bitterbot-gateway && docker compose up -d bitterbot-gateway
-  #
-  # Commande interactive CLI (à la demande) :
-  #   docker compose run --rm bitterbot-cli
+  #   sed -i 's/CHANGE_THIS_BITTERBOT_TOKEN/${BITTERBOT_GATEWAY_TOKEN}/' \
+  #       /opt/ia/bitterbot/config/bitterbot.json
+  #   chown -R 1000:1000 /opt/ia/bitterbot
   # ----------------------------------------------------------
   bitterbot-gateway:
-    # Image buildée par GitHub Actions et publiée sur Docker Hub.
-    # Rebuild automatique chaque lundi → docker compose pull pour mettre à jour.
-    # Workflow : .github/workflows/build-bitterbot.yml
     image: monolithoid/bitterbot:latest
     container_name: bitterbot-gateway
     restart: unless-stopped
     ports:
-      # Lié uniquement au loopback — accès via tunnel SSH
       - "127.0.0.1:19001:19001"
     volumes:
-      # Config + mémoire SQLite + état agent
       - /opt/ia/bitterbot/config:/home/node/.bitterbot
-      # Workspace de l'agent
       - /opt/ia/bitterbot/workspace:/home/node/.bitterbot/workspace
-      # Données cloud synchronisées — lecture seule
-      - /opt/ia/sync/onedrive:/home/node/.bitterbot/workspace/onedrive:ro
-      - /opt/ia/sync/gdrive:/home/node/.bitterbot/workspace/gdrive:ro
     environment:
       HOME: /home/node
       TERM: xterm-256color
-      # Auth gateway — doit correspondre à gateway.auth.token dans bitterbot.json
-      # Générer : openssl rand -hex 32
       BITTERBOT_GATEWAY_TOKEN: ${BITTERBOT_GATEWAY_TOKEN}
-      # Inférence Ollama locale uniquement — aucune clé cloud (Anthropic/OpenAI/etc.)
       OLLAMA_API_KEY: "ollama-local"
-      # Désactive l'initialisation des canaux messaging au démarrage
       BITTERBOT_SKIP_CHANNELS: "1"
-      # Redirige l'onramp Stripe vers un endpoint inexistant (double sécurité wallet)
       BITTERBOT_ONRAMP_URL: "http://127.0.0.1:1/disabled"
-    command:
-      - "node"
-      - "bitterbot.mjs"
-      - "gateway"
-      - "--bind"
-      - "lan"
-      - "--port"
-      - "19001"
+    command: ["node", "bitterbot.mjs", "gateway", "--bind", "lan", "--port", "19001"]
     depends_on:
       ollama:
         condition: service_started
     networks:
-      # Réseau isolé sans accès internet (internal: true)
       - bitterbot-net
 
   # ----------------------------------------------------------
-  # BITTERBOT CLI — accès interactif à la demande
-  # Décommenter et lancer avec : docker compose run --rm bitterbot-cli
-  # ----------------------------------------------------------
-  # bitterbot-cli:
-  #   image: bitterbot:local   # réutilise l'image buildée par bitterbot-gateway
-  #   container_name: bitterbot-cli
-  #   volumes:
-  #     - /opt/ia/bitterbot/config:/home/node/.bitterbot
-  #     - /opt/ia/bitterbot/workspace:/home/node/.bitterbot/workspace
-  #     - /opt/ia/sync/onedrive:/home/node/.bitterbot/workspace/onedrive:ro
-  #     - /opt/ia/sync/gdrive:/home/node/.bitterbot/workspace/gdrive:ro
-  #   environment:
-  #     HOME: /home/node
-  #     TERM: xterm-256color
-  #     BITTERBOT_GATEWAY_TOKEN: ${BITTERBOT_GATEWAY_TOKEN}
-  #     BROWSER: echo
-  #   stdin_open: true
-  #   tty: true
-  #   init: true
-  #   entrypoint: ["node", "bitterbot.mjs"]
-  #   networks:
-  #     - bitterbot-net
-
-  # ----------------------------------------------------------
-  # ROS 2 JAZZY + ROSBRIDGE — hub WebSocket pour la robotique
-  # Port interne : 9090  (WebSocket JSON rosbridge_suite)
+  # CORPS NAO — couche physique ROS2 Humble
   #
-  # Le NAO se connecte EN SORTIE à ce port depuis le réseau du robot.
-  # Toutes les commandes ROS transitent par ce serveur.
+  # Quatre services forment le pont cerveau → corps :
+  #
+  #   naoqi-bridge       → Python 2.7 + qi SDK, parle à NAO via TCP:9559
+  #                         Expose HTTP/SSE sur 127.0.0.1:8090
+  #   naoqi-driver       → Nœud ROS2, traduit /bodies/{id}/sensors|actuators/*
+  #                         Un nœud par corps physique (ROBOT_ID)
+  #   cognitive-renderer → Nœud ROS2, /cognitive_state → LEDs + tête en continu
+  #   body-gateway       → Nœud ROS2, pont Bitterbot ↔ bus ROS2
+  #                         Injecte un system prompt JSON lors de chaque appel
+  #                         Gère les ticks oniriques (DREAMING 2h-6h)
+  #
+  # Réseau : network_mode host pour les nœuds ROS2 (DDS domain 42)
+  #   → Bitterbot joignable sur localhost:19001
+  #   → naoqi-bridge joignable sur localhost:8090
+  #
+  # Multi-corps futur : ajouter un naoqi-bridge + naoqi-driver par robot/drone
+  # avec un ROBOT_ID distinct, et ajouter l'ID dans BODY_REGISTRY.
   # ----------------------------------------------------------
-  ros2-bridge:
-    # Image buildée par GitHub Actions et publiée sur Docker Hub.
-    # Workflow : .github/workflows/build-robotics.yml
-    image: monolithoid/ros2-bridge:latest
-    container_name: ros2-bridge
+
+  naoqi-bridge:
+    build: ./robotics/nao_brain/naoqi_bridge
+    image: monolithoid/naoqi-bridge:latest
+    container_name: naoqi-bridge
     restart: unless-stopped
     ports:
-      # Exposé publiquement pour que NAO puisse se connecter depuis l'extérieur.
-      - "9090:9090"
-    networks:
-      - ai-network
-      - robotics-net
-
-  # ----------------------------------------------------------
-  # NAO GATEWAY — bridge HTTP (n8n) → rosbridge WebSocket
-  # Port interne : 8001
-  # Accès : tunnel SSH uniquement → ssh -L 8001:localhost:8001 user@monolithoid.com
-  #
-  # Variables à remplacer :
-  #   GATEWAY_API_KEY : openssl rand -hex 32
-  #     → À transmettre dans le header X-API-Key de chaque requête n8n
-  #
-  # Exemples de requêtes depuis n8n (HTTP Request node) :
-  #   POST http://nao-gateway:8001/nao/say   {"text": "Bonjour"}
-  #   POST http://nao-gateway:8001/nao/move  {"linear_x": 0.3}
-  #   POST http://nao-gateway:8001/nao/stop
-  #   GET  http://nao-gateway:8001/nao/status
-  # ----------------------------------------------------------
-  nao-gateway:
-    # Image buildée par GitHub Actions et publiée sur Docker Hub.
-    # Rebuild automatique sur push dans robotics/ → docker compose pull pour mettre à jour.
-    # Workflow : .github/workflows/build-robotics.yml
-    image: monolithoid/nao-gateway:latest
-    container_name: nao-gateway
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8001:8001"
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - /opt/ia/nao/naoqi-sdk:/opt/naoqi-sdk:ro
     environment:
-      - ROSBRIDGE_URL=ws://ros2-bridge:9090
-      - GATEWAY_API_KEY=${GATEWAY_API_KEY}
-    depends_on:
-      ros2-bridge:
-        condition: service_started
+      - NAO_IP=${NAO_IP}
+      - NAO_PORT=${NAO_PORT:-9559}
+      - BRIDGE_PORT=8090
     networks:
       - ai-network
-      - robotics-net
+
+  naoqi-driver:
+    build: ./robotics/nao_brain/naoqi_driver
+    image: monolithoid/naoqi-driver:latest
+    container_name: naoqi-driver
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=42
+      - ROBOT_ID=${NAO_ROBOT_ID:-nao_01}
+      - NAOQI_BRIDGE_URL=http://localhost:8090
+    depends_on:
+      naoqi-bridge:
+        condition: service_started
+
+  cognitive-renderer:
+    build: ./robotics/nao_brain/cognitive_renderer
+    image: monolithoid/cognitive-renderer:latest
+    container_name: cognitive-renderer
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=42
+    depends_on:
+      naoqi-driver:
+        condition: service_started
+
+  body-gateway:
+    build: ./robotics/nao_brain/body_gateway
+    image: monolithoid/body-gateway:latest
+    container_name: body-gateway
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=42
+      - BITTERBOT_URL=http://localhost:19001
+      - BITTERBOT_GATEWAY_TOKEN=${BITTERBOT_GATEWAY_TOKEN}
+      - BODY_REGISTRY=${NAO_ROBOT_ID:-nao_01}
+      - DREAMING_HOUR_START=${DREAMING_HOUR_START:-2}
+      - DREAMING_HOUR_END=${DREAMING_HOUR_END:-6}
+      - DREAMING_BATTERY_THRESHOLD=${DREAMING_BATTERY_THRESHOLD:-80.0}
+      - DREAM_TICK_INTERVAL=${DREAM_TICK_INTERVAL:-300}
+    depends_on:
+      bitterbot-gateway:
+        condition: service_started
+      naoqi-driver:
+        condition: service_started
+      cognitive-renderer:
+        condition: service_started
 
 # ============================================================
 # RÉSEAUX
 #
 # ai-network (bridge, accès internet) :
-#   ollama, open-webui, n8n, chromadb
-#   Les containers peuvent joindre internet pour mises à jour, webhooks n8n, etc.
+#   ollama, open-webui, n8n, chromadb, naoqi-bridge
 #
 # bitterbot-net (bridge, internal: true — aucun accès internet) :
 #   bitterbot-gateway, ollama
-#   Bitterbot est physiquement isolé : seul ollama est joignable.
-#   Même si une lib tente un appel externe, Docker le bloque.
+#   Bitterbot ne peut joindre qu'Ollama — tout accès externe est bloqué.
 #
-# Résolution DNS interne :
-#   http://ollama:11434     (sur ai-network ET bitterbot-net)
-#   http://chromadb:8000    (sur ai-network uniquement)
-#   http://n8n:5678         (sur ai-network uniquement)
-#   ws://bitterbot-gateway:19001  (sur bitterbot-net uniquement)
+# Nœuds ROS2 (naoqi-driver, cognitive-renderer, body-gateway) :
+#   network_mode: host — DDS ROS2 Humble (domain 42) sur le réseau hôte.
 # ============================================================
 networks:
   ai-network:
     driver: bridge
 
-  # Réseau isolé pour Bitterbot — internal: true = aucune route vers internet
   bitterbot-net:
     driver: bridge
     internal: true
-
-  # Réseau robotique — ros2-bridge + nao-gateway
-  # Pas de internal: true car ros2-bridge doit être joignable par NAO depuis internet
-  robotics-net:
-    driver: bridge
