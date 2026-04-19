@@ -1,26 +1,31 @@
 #!/usr/bin/env python3
 """
-naoqi_driver2 — ROS2 Humble node bridging /naoqi/* topics ↔ naoqi_bridge HTTP/SSE.
+naoqi_driver2 — Nœud ROS2 Humble pour un corps NAO.
 
-The naoqi_bridge service (Python 2.7 + qi SDK) handles the actual NAO connection.
-This node translates ROS2 messages to/from the bridge's HTTP REST + SSE API.
+Traduit les topics /bodies/{ROBOT_ID}/* en appels HTTP vers naoqi_bridge,
+et publie les événements NAO (parole, sonar, batterie, bumper) vers le même
+namespace — consommés par body_gateway.
 
-Published topics (NAO → ROS2):
-  /naoqi/speech_recognized  std_msgs/String
-  /naoqi/sonar              sensor_msgs/Range
-  /naoqi/battery            std_msgs/Float32
-  /naoqi/bumper             std_msgs/Bool
+Chaque instance de ce nœud gère UN corps physique identifié par ROBOT_ID.
+Pour plusieurs NAO, lancer plusieurs instances avec des ROBOT_ID distincts
+(et des NAOQI_BRIDGE_URL distincts si plusieurs bridges).
 
-Subscribed topics (ROS2 → NAO):
-  /naoqi/say        std_msgs/String        → POST /say
-  /naoqi/motion     std_msgs/String (JSON) → POST /motion
-  /naoqi/leds       std_msgs/String (JSON) → POST /leds
-  /naoqi/posture    std_msgs/String        → POST /posture
-  /naoqi/move       std_msgs/String (JSON) → POST /move
+Topics publiés (NAO → body_gateway) :
+  /bodies/{ROBOT_ID}/sensors/speech    std_msgs/String
+  /bodies/{ROBOT_ID}/sensors/sonar     sensor_msgs/Range
+  /bodies/{ROBOT_ID}/sensors/battery   std_msgs/Float32
+  /bodies/{ROBOT_ID}/sensors/bumper    std_msgs/Bool
 
-Environment variables:
-  NAOQI_BRIDGE_URL   URL of the naoqi_bridge service, default http://localhost:8090
-  ROS_DOMAIN_ID      ROS2 domain (set consistently across all nao-brain nodes)
+Topics souscrits (body_gateway → NAO) :
+  /bodies/{ROBOT_ID}/actuators/say     std_msgs/String
+  /bodies/{ROBOT_ID}/actuators/motion  std_msgs/String  (JSON)
+  /bodies/{ROBOT_ID}/actuators/leds    std_msgs/String  (JSON)
+  /bodies/{ROBOT_ID}/actuators/posture std_msgs/String
+  /bodies/{ROBOT_ID}/actuators/move    std_msgs/String  (JSON)
+
+Variables d'environnement :
+  ROBOT_ID          identifiant de ce corps, défaut "nao_01"
+  NAOQI_BRIDGE_URL  URL du bridge Python 2.7, défaut http://localhost:8090
 """
 
 import json
@@ -34,8 +39,9 @@ from rclpy.node import Node
 from sensor_msgs.msg import Range
 from std_msgs.msg import Bool, Float32, String
 
+ROBOT_ID = os.environ.get("ROBOT_ID", "nao_01")
 BRIDGE_URL = os.environ.get("NAOQI_BRIDGE_URL", "http://localhost:8090")
-SSE_RECONNECT_DELAY = 5  # seconds before retrying SSE connection
+SSE_RECONNECT_DELAY = 5
 
 
 class NAOqiDriverNode(Node):
@@ -43,37 +49,39 @@ class NAOqiDriverNode(Node):
     def __init__(self):
         super().__init__("naoqi_driver2")
 
-        # ── Publishers: events from NAO ────────────────────────────────────────
-        self.pub_speech = self.create_publisher(String, "/naoqi/speech_recognized", 10)
-        self.pub_battery = self.create_publisher(Float32, "/naoqi/battery", 10)
-        self.pub_bumper = self.create_publisher(Bool, "/naoqi/bumper", 10)
-        self.pub_sonar = self.create_publisher(Range, "/naoqi/sonar", 10)
+        ns = f"/bodies/{ROBOT_ID}"
 
-        # ── Subscribers: commands to NAO ───────────────────────────────────────
-        self.create_subscription(String, "/naoqi/say", self._on_say, 10)
-        self.create_subscription(String, "/naoqi/motion", self._on_motion, 10)
-        self.create_subscription(String, "/naoqi/leds", self._on_leds, 10)
-        self.create_subscription(String, "/naoqi/posture", self._on_posture, 10)
-        self.create_subscription(String, "/naoqi/move", self._on_move, 10)
+        # ── Publishers : capteurs NAO → ROS2 ──────────────────────────────────
+        self.pub_speech  = self.create_publisher(String,  f"{ns}/sensors/speech",  10)
+        self.pub_battery = self.create_publisher(Float32, f"{ns}/sensors/battery", 10)
+        self.pub_bumper  = self.create_publisher(Bool,    f"{ns}/sensors/bumper",  10)
+        self.pub_sonar   = self.create_publisher(Range,   f"{ns}/sensors/sonar",   10)
 
-        # ── SSE listener (runs in background thread) ───────────────────────────
+        # ── Subscribers : commandes ROS2 → NAO ───────────────────────────────
+        self.create_subscription(String, f"{ns}/actuators/say",     self._on_say,     10)
+        self.create_subscription(String, f"{ns}/actuators/motion",  self._on_motion,  10)
+        self.create_subscription(String, f"{ns}/actuators/leds",    self._on_leds,    10)
+        self.create_subscription(String, f"{ns}/actuators/posture", self._on_posture, 10)
+        self.create_subscription(String, f"{ns}/actuators/move",    self._on_move,    10)
+
+        # ── Stream SSE depuis naoqi_bridge ────────────────────────────────────
         self._sse_running = True
-        self._sse_thread = threading.Thread(target=self._sse_loop, daemon=True)
-        self._sse_thread.start()
+        threading.Thread(target=self._sse_loop, daemon=True).start()
 
-        self.get_logger().info(f"naoqi_driver2 started — bridge: {BRIDGE_URL}")
+        self.get_logger().info(
+            f"naoqi_driver2 [{ROBOT_ID}] démarré — bridge : {BRIDGE_URL}"
+        )
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # SSE event stream from naoqi_bridge
-    # ──────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # SSE : événements NAO → topics ROS2
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _sse_loop(self):
-        """Continuously connect to the SSE endpoint and dispatch events."""
         while self._sse_running:
             try:
                 with requests.get(f"{BRIDGE_URL}/events", stream=True, timeout=None) as resp:
                     resp.raise_for_status()
-                    self.get_logger().info("SSE stream connected")
+                    self.get_logger().info("SSE connecté")
                     for raw_line in resp.iter_lines():
                         if not self._sse_running:
                             break
@@ -83,7 +91,9 @@ class NAOqiDriverNode(Node):
                                 self._dispatch_event(json.loads(payload))
             except Exception as e:
                 if self._sse_running:
-                    self.get_logger().warn(f"SSE disconnected: {e} — retrying in {SSE_RECONNECT_DELAY}s")
+                    self.get_logger().warn(
+                        f"SSE déconnecté : {e} — reconnexion dans {SSE_RECONNECT_DELAY}s"
+                    )
                     time.sleep(SSE_RECONNECT_DELAY)
 
     def _dispatch_event(self, event: dict):
@@ -107,23 +117,25 @@ class NAOqiDriverNode(Node):
         elif topic == "sonar":
             msg = Range()
             msg.header.stamp = self.get_clock().now().to_msg()
-            msg.header.frame_id = "sonar_" + event.get("sensor", "front")
+            msg.header.frame_id = f"sonar_{event.get('sensor', 'front')}"
             msg.radiation_type = Range.ULTRASOUND
-            msg.field_of_view = 0.523  # ~30 degrees in radians
+            msg.field_of_view = 0.523
             msg.min_range = 0.20
             msg.max_range = 2.55
             msg.range = float(event.get("data", 2.55))
             self.pub_sonar.publish(msg)
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # ROS2 → NAO command handlers
-    # ──────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # Commandes ROS2 → naoqi_bridge HTTP
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _post(self, endpoint: str, payload: dict):
         try:
             resp = requests.post(f"{BRIDGE_URL}{endpoint}", json=payload, timeout=10)
             if not resp.ok:
-                self.get_logger().error(f"Bridge {endpoint} error {resp.status_code}: {resp.text}")
+                self.get_logger().error(
+                    f"Bridge {endpoint} error {resp.status_code}: {resp.text}"
+                )
         except requests.RequestException as e:
             self.get_logger().error(f"Bridge {endpoint} request failed: {e}")
 
@@ -134,13 +146,13 @@ class NAOqiDriverNode(Node):
         try:
             self._post("/motion", json.loads(msg.data))
         except json.JSONDecodeError as e:
-            self.get_logger().error(f"/naoqi/motion bad JSON: {e}")
+            self.get_logger().error(f"motion JSON invalide: {e}")
 
     def _on_leds(self, msg: String):
         try:
             self._post("/leds", json.loads(msg.data))
         except json.JSONDecodeError as e:
-            self.get_logger().error(f"/naoqi/leds bad JSON: {e}")
+            self.get_logger().error(f"leds JSON invalide: {e}")
 
     def _on_posture(self, msg: String):
         self._post("/posture", {"posture": msg.data})
@@ -149,7 +161,7 @@ class NAOqiDriverNode(Node):
         try:
             self._post("/move", json.loads(msg.data))
         except json.JSONDecodeError as e:
-            self.get_logger().error(f"/naoqi/move bad JSON: {e}")
+            self.get_logger().error(f"move JSON invalide: {e}")
 
     def destroy_node(self):
         self._sse_running = False

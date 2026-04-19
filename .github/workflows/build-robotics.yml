@@ -1,13 +1,12 @@
 name: Build & Push — Images robotiques
 
-# Publie six images sur Docker Hub :
-#   monolithoid/nao-gateway        → FastAPI bridge n8n → rosbridge → NAO
-#   monolithoid/ros2-bridge        → ROS 2 Jazzy + rosbridge_suite WebSocket
+# Publie cinq images sur Docker Hub :
+#   monolithoid/nao-gateway        → FastAPI bridge n8n → rosbridge → NAO (legacy)
+#   monolithoid/ros2-bridge        → ROS 2 Jazzy + rosbridge_suite WebSocket (legacy)
 #   monolithoid/naoqi-bridge       → Python 2.7 + qi SDK HTTP/SSE bridge
-#   monolithoid/naoqi-driver       → ROS2 Humble node /naoqi/* topics
-#   monolithoid/cognitive-renderer → ROS2 Humble node états cognitifs → LEDs
-#   monolithoid/nao-brain          → ROS2 Humble agent principal Qwen3
-#   monolithoid/dream-engine       → ROS2 Humble consolidation nocturne
+#   monolithoid/naoqi-driver       → ROS2 Humble node /bodies/{id}/sensors|actuators
+#   monolithoid/cognitive-renderer → ROS2 Humble node /cognitive_state → LEDs + tête
+#   monolithoid/body-gateway       → ROS2 Humble pont Bitterbot ↔ corps ROS2
 #
 # Secrets requis (mêmes que build-bitterbot) :
 #   DOCKERHUB_USERNAME : monolithoid
@@ -60,15 +59,10 @@ jobs:
             context: ./robotics/nao_brain/cognitive_renderer
             dockerfile: ./robotics/nao_brain/cognitive_renderer/Dockerfile
 
-          - name: nao-brain
-            image: monolithoid/nao-brain
-            context: ./robotics/nao_brain/nao_brain_agent
-            dockerfile: ./robotics/nao_brain/nao_brain_agent/Dockerfile
-
-          - name: dream-engine
-            image: monolithoid/dream-engine
-            context: ./robotics/nao_brain/dream_engine
-            dockerfile: ./robotics/nao_brain/dream_engine/Dockerfile
+          - name: body-gateway
+            image: monolithoid/body-gateway
+            context: ./robotics/nao_brain/body_gateway
+            dockerfile: ./robotics/nao_brain/body_gateway/Dockerfile
 
     steps:
       - name: Checkout

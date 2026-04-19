@@ -2,6 +2,7 @@ FROM ros:humble-ros-base
 
 ENV DEBIAN_FRONTEND=noninteractive \
     ROS_DOMAIN_ID=42 \
+    ROBOT_ID=nao_01 \
     NAOQI_BRIDGE_URL=http://localhost:8090
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

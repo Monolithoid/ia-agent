@@ -341,13 +341,16 @@ services:
 
   # ----------------------------------------------------------
   # NAO BRAIN — couche cognitive NAO V4 (ROS2 Humble + Qwen3)
-  # Cinq services forment le cerveau incarné du robot :
+  # Quatre services forment la couche corps du robot :
   #
   #   naoqi-bridge       → pont HTTP/SSE vers NAO via qi SDK (Python 2.7)
-  #   naoqi-driver       → nœud ROS2 traduisant les topics /naoqi/*
-  #   cognitive-renderer → nœud ROS2 états cognitifs → LEDs + tête
-  #   nao-brain          → agent principal Qwen3 + ChromaDB
-  #   dream-engine       → consolidation nocturne ChromaDB
+  #   naoqi-driver       → nœud ROS2, topics /bodies/{id}/sensors|actuators/*
+  #   cognitive-renderer → nœud ROS2, /cognitive_state → LEDs + tête
+  #   body-gateway       → pont Bitterbot ↔ ROS2 (cerveau → corps)
+  #
+  # Bitterbot (bitterbot-gateway) EST le cerveau : Qwen3, ChromaDB,
+  # Dream Engine intégré. body-gateway injecte un system prompt JSON
+  # uniquement lors des appels capteurs/oniriques.
   #
   # Réseau : network_mode host pour naoqi-driver, cognitive-renderer,
   #   nao-brain et dream-engine (DDS ROS2 Humble fonctionne sans config
@@ -387,22 +390,24 @@ services:
     networks:
       - ai-network
 
-  # ── naoqi-driver : ROS2 Humble, topics /naoqi/* ────────────────────────────
+  # ── naoqi-driver : nœud ROS2 Humble pour le corps nao_01 ─────────────────
+  # Pour un second NAO : dupliquer ce bloc avec ROBOT_ID=nao_02,
+  # container_name=naoqi-driver-02, et son propre naoqi-bridge sur port distinct.
   naoqi-driver:
     build: ./robotics/nao_brain/naoqi_driver
     image: monolithoid/naoqi-driver:latest
     container_name: naoqi-driver
     restart: unless-stopped
-    # Host network for ROS2 DDS (domain 42) — shares loopback with naoqi-bridge
     network_mode: host
     environment:
       - ROS_DOMAIN_ID=42
+      - ROBOT_ID=${NAO_ROBOT_ID:-nao_01}
       - NAOQI_BRIDGE_URL=http://localhost:8090
     depends_on:
       naoqi-bridge:
         condition: service_started
 
-  # ── cognitive-renderer : états cognitifs → LEDs + mouvements tête ──────────
+  # ── cognitive-renderer : états cognitifs → LEDs + tête ────────────────────
   cognitive-renderer:
     build: ./robotics/nao_brain/cognitive_renderer
     image: monolithoid/cognitive-renderer:latest
@@ -415,41 +420,37 @@ services:
       naoqi-driver:
         condition: service_started
 
-  # ── nao-brain : agent principal Qwen3 + mémoire ChromaDB ───────────────────
-  nao-brain:
-    build: ./robotics/nao_brain/nao_brain_agent
-    image: monolithoid/nao-brain:latest
-    container_name: nao-brain
+  # ── body-gateway : pont Bitterbot (cerveau) ↔ corps ROS2 ──────────────────
+  # C'est le seul composant qui parle à Bitterbot.
+  # Il injecte un system prompt JSON à chaque événement capteur,
+  # parse la réponse et route les actions vers le(s) bon(s) corps.
+  # Le Dream Engine de Bitterbot consolide la mémoire de façon autonome ;
+  # body-gateway envoie seulement des "ticks oniriques" pendant DREAMING
+  # pour que NAO s'exprime physiquement pendant le rêve.
+  body-gateway:
+    build: ./robotics/nao_brain/body_gateway
+    image: monolithoid/body-gateway:latest
+    container_name: body-gateway
     restart: unless-stopped
     network_mode: host
     environment:
       - ROS_DOMAIN_ID=42
-      - OLLAMA_URL=http://localhost:11434
-      - CHROMA_HOST=localhost
-      - CHROMA_PORT=8000
+      # Bitterbot est exposé sur 127.0.0.1:19001 (voir service bitterbot-gateway)
+      - BITTERBOT_URL=http://localhost:19001
+      - BITTERBOT_GATEWAY_TOKEN=${BITTERBOT_GATEWAY_TOKEN}
+      # Liste des corps actifs séparés par virgules
+      # Ajouter drone_01, nao_02, etc. pour étendre le réseau de corps
+      - BODY_REGISTRY=${NAO_ROBOT_ID:-nao_01}
       - DREAMING_HOUR_START=${DREAMING_HOUR_START:-2}
       - DREAMING_HOUR_END=${DREAMING_HOUR_END:-6}
       - DREAMING_BATTERY_THRESHOLD=${DREAMING_BATTERY_THRESHOLD:-80.0}
+      - DREAM_TICK_INTERVAL=${DREAM_TICK_INTERVAL:-300}
     depends_on:
+      bitterbot-gateway:
+        condition: service_started
       naoqi-driver:
         condition: service_started
       cognitive-renderer:
-        condition: service_started
-
-  # ── dream-engine : consolidation nocturne ChromaDB ─────────────────────────
-  dream-engine:
-    build: ./robotics/nao_brain/dream_engine
-    image: monolithoid/dream-engine:latest
-    container_name: dream-engine
-    restart: unless-stopped
-    network_mode: host
-    environment:
-      - ROS_DOMAIN_ID=42
-      - OLLAMA_URL=http://localhost:11434
-      - CHROMA_HOST=localhost
-      - CHROMA_PORT=8000
-    depends_on:
-      nao-brain:
         condition: service_started
 
 # ============================================================
