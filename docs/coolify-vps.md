@@ -6,7 +6,12 @@ Déploiement de la stack sur un VPS Ubuntu via Docker Compose géré par Coolify
 
 ## 1. Prérequis sur le VPS
 
-Se connecter en SSH et créer l'arborescence de données persistantes :
+Se connecter en SSH, cloner ce dépôt, puis créer l'arborescence de données persistantes :
+
+```bash
+git clone https://github.com/monolithoid/ia-agent.git /opt/ia-agent
+cd /opt/ia-agent
+```
 
 ```bash
 # Stack principale
@@ -22,7 +27,11 @@ cp core/bitterbot/bitterbot.json /opt/ia/bitterbot/config/bitterbot.json
 # Éditer ce fichier : renseigner BITTERBOT_GATEWAY_TOKEN (même valeur que dans Coolify)
 ```
 
-Un script `setup-vps.sh` à la racine du dépôt automatise ces étapes.
+Un script `setup-vps.sh` à la racine du dépôt automatise ces étapes (à lancer depuis le clone) :
+
+```bash
+sudo bash /opt/ia-agent/setup-vps.sh
+```
 
 ---
 
