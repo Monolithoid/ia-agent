@@ -1,11 +1,11 @@
 version: "3.8"
 
 # ============================================================
-# STACK IA — monolithoid.com
+# STACK IA — ${DOMAIN}
 # ============================================================
 # Exposé publiquement :
-#   chat.monolithoid.com   → Open WebUI  (port 3000)
-#   ollama.monolithoid.com → API Ollama  (port 11434)
+#   chat.${DOMAIN}   → Open WebUI  (port 3000)
+#   ollama.${DOMAIN} → API Ollama  (port 11434)
 #
 # Services internes (tunnel SSH uniquement) :
 #   n8n          → port 5678
@@ -28,6 +28,8 @@ version: "3.8"
 #   # (pynaoqi-python2.7-2.1.4.*-linux64.tar.gz depuis le portail SoftBank)
 #
 # Variables à configurer dans Coolify → Environment Variables :
+#   DOMAIN                   : ton domaine (ex: mon-domain.com)
+#   DOCKERHUB_USERNAME       : ton username Docker Hub
 #   OLLAMA_API_KEYS          : openssl rand -hex 32
 #   WEBUI_SECRET_KEY         : openssl rand -hex 32
 #   N8N_BASIC_AUTH_PASSWORD  : mot de passe de ton choix
@@ -97,7 +99,7 @@ services:
       - OPENID_PROVIDER_URL=https://accounts.google.com/.well-known/openid-configuration
       - OAUTH_CLIENT_ID=${OAUTH_CLIENT_ID}
       - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
-      - OAUTH_REDIRECT_URI=https://chat.monolithoid.com/oauth/oidc/callback
+      - OAUTH_REDIRECT_URI=https://chat.${DOMAIN}/oauth/oidc/callback
       - OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true
     depends_on:
       ollama:
@@ -109,7 +111,7 @@ services:
 
   # ----------------------------------------------------------
   # N8N — workflows
-  # Accès via tunnel SSH : ssh -L 5678:localhost:5678 user@monolithoid.com
+  # Accès via tunnel SSH : ssh -L 5678:localhost:5678 $VPS_USER@${DOMAIN}
   # ----------------------------------------------------------
   n8n:
     image: n8nio/n8n:latest
@@ -155,7 +157,7 @@ services:
   # Isolation réseau : bitterbot-net (internal: true)
   #   → seul Ollama est joignable, aucun accès internet
   #
-  # Accès via tunnel SSH : ssh -L 19001:localhost:19001 user@monolithoid.com
+  # Accès via tunnel SSH : ssh -L 19001:localhost:19001 $VPS_USER@${DOMAIN}
   #
   # Premier déploiement :
   #   cp core/bitterbot/bitterbot.json /opt/ia/bitterbot/config/bitterbot.json
@@ -164,7 +166,7 @@ services:
   #   chown -R 1000:1000 /opt/ia/bitterbot
   # ----------------------------------------------------------
   bitterbot-gateway:
-    image: monolithoid/bitterbot:latest
+    image: ${DOCKERHUB_USERNAME}/bitterbot:latest
     container_name: bitterbot-gateway
     restart: unless-stopped
     ports:
@@ -210,7 +212,7 @@ services:
 
   naoqi-bridge:
     build: ./robotics/nao_brain/naoqi_bridge
-    image: monolithoid/naoqi-bridge:latest
+    image: ${DOCKERHUB_USERNAME}/naoqi-bridge:latest
     container_name: naoqi-bridge
     restart: unless-stopped
     ports:
@@ -226,7 +228,7 @@ services:
 
   naoqi-driver:
     build: ./robotics/nao_brain/naoqi_driver
-    image: monolithoid/naoqi-driver:latest
+    image: ${DOCKERHUB_USERNAME}/naoqi-driver:latest
     container_name: naoqi-driver
     restart: unless-stopped
     network_mode: host
@@ -240,7 +242,7 @@ services:
 
   cognitive-renderer:
     build: ./robotics/nao_brain/cognitive_renderer
-    image: monolithoid/cognitive-renderer:latest
+    image: ${DOCKERHUB_USERNAME}/cognitive-renderer:latest
     container_name: cognitive-renderer
     restart: unless-stopped
     network_mode: host
@@ -252,7 +254,7 @@ services:
 
   body-gateway:
     build: ./robotics/nao_brain/body_gateway
-    image: monolithoid/body-gateway:latest
+    image: ${DOCKERHUB_USERNAME}/body-gateway:latest
     container_name: body-gateway
     restart: unless-stopped
     network_mode: host

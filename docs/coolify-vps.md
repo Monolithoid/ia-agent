@@ -58,6 +58,8 @@ Toutes les variables sensibles sont injectées par Coolify. Aucun secret n'est c
 
 | Variable | Comment la générer / obtenir |
 |---|---|
+| `DOMAIN` | Ton domaine racine (ex : `mon-domain.com`) |
+| `DOCKERHUB_USERNAME` | Ton username Docker Hub |
 | `OLLAMA_API_KEYS` | `openssl rand -hex 32` |
 | `WEBUI_SECRET_KEY` | `openssl rand -hex 32` |
 | `WEBUI_ADMIN_EMAIL` | Ton adresse email |
