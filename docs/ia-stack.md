@@ -8,7 +8,7 @@ Services constituant le cœur de l'intelligence artificielle : moteur LLM, inter
 
 ```
 Utilisateur (navigateur)
-  └─► chat.monolithoid.com (Coolify/Traefik)
+  └─► chat.$DOMAIN (Coolify/Traefik)
         └─► Open WebUI :8080
               ├─► Ollama :11434  (inférence LLM)
               └─► ChromaDB :8000 (RAG / mémoire vectorielle)
@@ -49,7 +49,7 @@ docker exec -it ollama ollama pull qwen3:8b
 
 **Image :** `ghcr.io/open-webui/open-webui:main`  
 **Port :** 3000 → 8080 (exposé via Traefik)  
-**URL :** [chat.monolithoid.com](https://chat.monolithoid.com)
+**URL :** `https://chat.$DOMAIN`
 
 Accès restreint aux comptes Google autorisés via SSO (OIDC). Les inscriptions libres sont désactivées.
 
@@ -65,7 +65,7 @@ Accès restreint aux comptes Google autorisés via SSO (OIDC). Les inscriptions 
 
 **URI de callback OAuth à déclarer dans Google Cloud Console :**
 ```
-https://chat.monolithoid.com/oauth/oidc/callback
+https://chat.$DOMAIN/oauth/oidc/callback
 ```
 
 ---
@@ -77,7 +77,7 @@ https://chat.monolithoid.com/oauth/oidc/callback
 **Accès :** tunnel SSH uniquement
 
 ```bash
-ssh -L 5678:localhost:5678 user@monolithoid.com
+ssh -L 5678:localhost:5678 $VPS_USER@$DOMAIN
 # puis ouvrir http://localhost:5678
 ```
 
@@ -107,12 +107,12 @@ Utilisé par Open WebUI pour le RAG (Retrieval-Augmented Generation). Stocke les
 
 ## Bitterbot — agent IA autonome
 
-**Image :** `monolithoid/bitterbot:latest` (buildée par GitHub Actions, publiée sur Docker Hub)  
+**Image :** `$DOCKERHUB_USERNAME/bitterbot:latest` (buildée par GitHub Actions, publiée sur Docker Hub)  
 **Port :** 19001 (lié à `127.0.0.1`)  
 **Accès :** tunnel SSH uniquement
 
 ```bash
-ssh -L 19001:localhost:19001 user@monolithoid.com
+ssh -L 19001:localhost:19001 $VPS_USER@$DOMAIN
 # WebSocket : ws://localhost:19001
 ```
 

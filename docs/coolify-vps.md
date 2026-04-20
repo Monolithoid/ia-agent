@@ -69,7 +69,7 @@ Toutes les variables sensibles sont injectées par Coolify. Aucun secret n'est c
 
 **URI de callback à déclarer dans Google Cloud Console :**
 ```
-https://chat.monolithoid.com/oauth/oidc/callback
+https://chat.$DOMAIN/oauth/oidc/callback
 ```
 
 ---
@@ -91,7 +91,7 @@ GitHub → repo → **Settings** → **Secrets and variables** → **Actions** :
 
 | Nom | Valeur |
 |---|---|
-| `DOCKERHUB_USERNAME` | `monolithoid` |
+| `DOCKERHUB_USERNAME` | Ton username Docker Hub |
 | `DOCKERHUB_TOKEN` | Le token Docker Hub |
 
 ### c) Déclencher les premiers builds
@@ -101,9 +101,9 @@ GitHub → **Actions** :
 - Workflow **"Build & Push — Images robotiques"** → **Run workflow**
 
 Chaque build prend 5–15 min. Les images produites :
-- `monolithoid/bitterbot:latest`
-- `monolithoid/nao-gateway:latest`
-- `monolithoid/ros2-bridge:latest`
+- `$DOCKERHUB_USERNAME/bitterbot:latest`
+- `$DOCKERHUB_USERNAME/nao-gateway:latest`
+- `$DOCKERHUB_USERNAME/ros2-bridge:latest`
 
 **Rebuilds automatiques :**
 - Bitterbot : tous les lundis à 3h00 UTC
@@ -170,7 +170,7 @@ rclone config
 
 **Copier la config sur le VPS :**
 ```bash
-scp ~/.config/rclone/rclone.conf user@monolithoid.com:/root/.config/rclone/rclone.conf
+scp ~/.config/rclone/rclone.conf $VPS_USER@$DOMAIN:/root/.config/rclone/rclone.conf
 ```
 
 ### Services systemd (synchronisation toutes les 15 min)

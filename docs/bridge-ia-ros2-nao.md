@@ -26,7 +26,7 @@ Le robot NAO établit une **connexion WebSocket sortante** vers le port 9090 du 
 
 ### ros2-bridge
 
-**Image :** `monolithoid/ros2-bridge:latest` (buildée par GitHub Actions)  
+**Image :** `$DOCKERHUB_USERNAME/ros2-bridge:latest` (buildée par GitHub Actions)  
 **Port :** 9090 (exposé publiquement — le NAO se connecte depuis l'extérieur)
 
 ROS 2 Jazzy Jalisco + `rosbridge_suite`. Expose un WebSocket JSON suivant le protocole rosbridge. Chaque message publié sur un topic ROS 2 est transmis à tous les clients WebSocket abonnés, et vice-versa.
@@ -37,12 +37,12 @@ ROS 2 Jazzy Jalisco + `rosbridge_suite`. Expose un WebSocket JSON suivant le pro
 
 ### nao-gateway
 
-**Image :** `monolithoid/nao-gateway:latest` (buildée par GitHub Actions)  
+**Image :** `$DOCKERHUB_USERNAME/nao-gateway:latest` (buildée par GitHub Actions)  
 **Port :** 8001 (lié à `127.0.0.1` — accès via SSH tunnel uniquement)  
 **Documentation interactive :**
 
 ```bash
-ssh -L 8001:localhost:8001 user@monolithoid.com
+ssh -L 8001:localhost:8001 $VPS_USER@$DOMAIN
 # ouvrir http://localhost:8001/docs
 ```
 

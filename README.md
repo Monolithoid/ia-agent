@@ -25,11 +25,11 @@ flowchart TB
     end
 
     subgraph Coolify["Reverse Proxy — Coolify / Traefik"]
-        RP_Chat["chat.monolithoid.com :443"]
-        RP_Ollama["ollama.monolithoid.com :443"]
+        RP_Chat["chat.mon-domain.com :443"]
+        RP_Ollama["ollama.mon-domain.com :443"]
     end
 
-    subgraph Docker["VPS monolithoid.com — Docker"]
+    subgraph Docker["VPS mon-domain.com — Docker"]
         subgraph aiNet["ai-network"]
             WebUI["Open WebUI :8080"]
             Ollama["Ollama :11434"]
@@ -84,7 +84,7 @@ ia-agent/
 │   ├── architecture.md
 │   └── decisions/           → ADR (Architecture Decision Records)
 ├── .github/workflows/
-│   ├── build-bitterbot.yml  → Build + push monolithoid/bitterbot
+│   ├── build-bitterbot.yml  → Build + push $DOCKERHUB_USERNAME/bitterbot
 │   └── build-robotics.yml   → Build + push images robotiques
 └── docker-compose.yml
 ```
@@ -95,9 +95,9 @@ ia-agent/
 
 | Service | URL / commande | Auth |
 |---|---|---|
-| Open WebUI | [chat.monolithoid.com](https://chat.monolithoid.com) | Google SSO |
-| API Ollama | `https://ollama.monolithoid.com` | `Authorization: Bearer $OLLAMA_API_KEYS` |
-| n8n | `ssh -L 5678:localhost:5678 user@monolithoid.com` | Basic auth |
-| Bitterbot | `ssh -L 19001:localhost:19001 user@monolithoid.com` | Token WS |
-| nao-gateway | `ssh -L 8001:localhost:8001 user@monolithoid.com` | `X-API-Key` |
+| Open WebUI | `https://chat.$DOMAIN` | Google SSO |
+| API Ollama | `https://ollama.$DOMAIN` | `Authorization: Bearer $OLLAMA_API_KEYS` |
+| n8n | `ssh -L 5678:localhost:5678 $VPS_USER@$DOMAIN` | Basic auth |
+| Bitterbot | `ssh -L 19001:localhost:19001 $VPS_USER@$DOMAIN` | Token WS |
+| nao-gateway | `ssh -L 8001:localhost:8001 $VPS_USER@$DOMAIN` | `X-API-Key` |
 | rosbridge | Port 9090 public | — (NAO se connecte en sortant) |
