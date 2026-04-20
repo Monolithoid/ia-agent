@@ -18,7 +18,7 @@ n8n (workflow)
                                       └─► ALTextToSpeech.say("Bonjour")
 ```
 
-Le robot NAO établit une **connexion WebSocket sortante** vers le port 9090 du VPS. Aucune connexion entrante vers le robot n'est nécessaire — le NAO traverse son propre pare-feu naturellement.
+Le robot NAO établit une **connexion WebSocket sécurisée sortante** vers `wss://$ROSBRIDGE_DOMAIN` (port 443). Traefik termine le TLS et transmet à `rosbridge-proxy` (Caddy), qui proxifie vers `ros2-bridge` sur le réseau hôte. Aucune connexion entrante vers le robot n'est nécessaire.
 
 ---
 
@@ -27,9 +27,24 @@ Le robot NAO établit une **connexion WebSocket sortante** vers le port 9090 du 
 ### ros2-bridge
 
 **Image :** `$DOCKERHUB_USERNAME/ros2-bridge:latest` (buildée par GitHub Actions)  
-**Port :** 9090 (exposé publiquement — le NAO se connecte depuis l'extérieur)
+**Port :** 9090 (interne uniquement — accès via `rosbridge-proxy`)
 
-ROS 2 Jazzy Jalisco + `rosbridge_suite`. Expose un WebSocket JSON suivant le protocole rosbridge. Chaque message publié sur un topic ROS 2 est transmis à tous les clients WebSocket abonnés, et vice-versa.
+ROS 2 Jazzy Jalisco + `rosbridge_suite`. Expose un WebSocket JSON suivant le protocole rosbridge. Tourne en `network_mode: host` pour partager le domaine DDS 42 avec les autres nœuds ROS 2.
+
+**Réseau :** `network_mode: host`
+
+---
+
+### rosbridge-proxy
+
+**Image :** `caddy:alpine`  
+**Rôle :** proxy WebSocket entre Traefik (réseau Docker) et `ros2-bridge` (réseau hôte)
+
+```
+wss://$ROSBRIDGE_DOMAIN  →  Traefik :443 (TLS)  →  rosbridge-proxy :80 (Caddy)  →  host:9090 (ros2-bridge)
+```
+
+Caddy proxifie les connexions WebSocket vers `host-gateway:9090` (l'alias Docker vers le réseau hôte). Traefik gère le certificat TLS.
 
 **Réseau Docker :** `robotics-net`
 

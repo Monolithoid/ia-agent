@@ -30,6 +30,7 @@ version: "3.8"
 # Variables à configurer dans Coolify → Environment Variables :
 #   DOMAIN                   : ton domaine (ex: mon-domain.com)
 #   DOCKERHUB_USERNAME       : ton username Docker Hub
+#   ROSBRIDGE_DOMAIN         : sous-domaine rosbridge (ex: rosbridge.mon-domain.com)
 #   OLLAMA_API_KEYS          : openssl rand -hex 32
 #   WEBUI_SECRET_KEY         : openssl rand -hex 32
 #   N8N_BASIC_AUTH_PASSWORD  : mot de passe de ton choix
@@ -48,6 +49,7 @@ version: "3.8"
 #   ufw deny 11434
 #   ufw deny 3000
 #   ufw deny 5678
+#   ufw deny 9090    # rosbridge passe par Traefik (wss://), port 9090 non exposé
 #   ufw enable
 # ============================================================
 
@@ -275,6 +277,43 @@ services:
       cognitive-renderer:
         condition: service_started
 
+  # ----------------------------------------------------------
+  # ROS 2 BRIDGE — WebSocket rosbridge pour le script NAO
+  #
+  # ros2-bridge tourne en network_mode: host pour partager le
+  # domaine DDS 42 avec les autres nœuds ROS2 (naoqi-driver, etc.)
+  #
+  # rosbridge-proxy (Caddy) est sur le réseau Docker pour que
+  # Traefik puisse le router :
+  #   wss://rosbridge.$DOMAIN → Traefik (TLS) → Caddy (port 80)
+  #                           → host-gateway:9090 (ros2-bridge)
+  # ----------------------------------------------------------
+  ros2-bridge:
+    image: ${DOCKERHUB_USERNAME}/ros2-bridge:latest
+    container_name: ros2-bridge
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=42
+
+  rosbridge-proxy:
+    image: caddy:alpine
+    container_name: rosbridge-proxy
+    restart: unless-stopped
+    command: caddy reverse-proxy --from :80 --to host-gateway:9090
+    extra_hosts:
+      - "host-gateway:host-gateway"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.rosbridge.rule=Host(`${ROSBRIDGE_DOMAIN}`)"
+      - "traefik.http.routers.rosbridge.entrypoints=https"
+      - "traefik.http.routers.rosbridge.tls.certresolver=letsencrypt"
+      - "traefik.http.services.rosbridge.loadbalancer.server.port=80"
+    networks:
+      - robotics-net
+    depends_on:
+      - ros2-bridge
+
 # ============================================================
 # RÉSEAUX
 #
@@ -285,7 +324,10 @@ services:
 #   bitterbot-gateway, ollama
 #   Bitterbot ne peut joindre qu'Ollama — tout accès externe est bloqué.
 #
-# Nœuds ROS2 (naoqi-driver, cognitive-renderer, body-gateway) :
+# robotics-net (bridge, accès internet) :
+#   rosbridge-proxy — proxy WebSocket Caddy vers ros2-bridge (host)
+#
+# Nœuds ROS2 (ros2-bridge, naoqi-driver, cognitive-renderer, body-gateway) :
 #   network_mode: host — DDS ROS2 Humble (domain 42) sur le réseau hôte.
 # ============================================================
 networks:
@@ -295,3 +337,6 @@ networks:
   bitterbot-net:
     driver: bridge
     internal: true
+
+  robotics-net:
+    driver: bridge

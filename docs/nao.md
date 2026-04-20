@@ -59,7 +59,7 @@ pip install websocket-client==0.59.0
 
 ```bash
 # Remplacer VPS_IP par l'IP publique ou le domaine du VPS
-python /home/nao/nao_ws_bridge.py --vps ws://VPS_IP:9090
+python /home/nao/nao_ws_bridge.py --vps wss://rosbridge.$DOMAIN
 ```
 
 Les logs indiquent la connexion réussie :
@@ -79,8 +79,10 @@ Créer `/home/nao/autostart.sh` :
 ```bash
 #!/bin/bash
 sleep 10   # attendre que le réseau soit établi
-python /home/nao/nao_ws_bridge.py --vps ws://VPS_IP:9090 &
+python /home/nao/nao_ws_bridge.py --vps wss://rosbridge.mon-domain.com &
 ```
+
+> Remplacer `rosbridge.mon-domain.com` par la valeur de `$ROSBRIDGE_DOMAIN`.
 
 Puis dans Choregraphe : **Edit** → **Preferences** → **Autorun** → ajouter ce script.
 

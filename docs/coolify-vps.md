@@ -32,14 +32,14 @@ Un script `setup-vps.sh` à la racine du dépôt automatise ces étapes.
 ufw allow 22
 ufw allow 80
 ufw allow 443
-ufw allow 9090    # rosbridge WebSocket — NAO se connecte depuis l'extérieur
+ufw deny 9090     # rosbridge passe par Traefik (wss://), port 9090 non exposé
 ufw deny 11434
 ufw deny 3000
 ufw deny 5678
 ufw enable
 ```
 
-> Les ports 8001 (nao-gateway) et 19001 (Bitterbot) sont liés à `127.0.0.1` dans le compose — aucune règle UFW nécessaire.
+> Les ports 8001 (nao-gateway), 19001 (Bitterbot) et 9090 (rosbridge) ne sont pas exposés directement. Le NAO se connecte via `wss://$ROSBRIDGE_DOMAIN` — Traefik gère le TLS sur le port 443.
 
 ---
 
@@ -60,6 +60,7 @@ Toutes les variables sensibles sont injectées par Coolify. Aucun secret n'est c
 |---|---|
 | `DOMAIN` | Ton domaine racine (ex : `mon-domain.com`) |
 | `DOCKERHUB_USERNAME` | Ton username Docker Hub |
+| `ROSBRIDGE_DOMAIN` | Sous-domaine rosbridge (ex : `rosbridge.mon-domain.com`) |
 | `OLLAMA_API_KEYS` | `openssl rand -hex 32` |
 | `WEBUI_SECRET_KEY` | `openssl rand -hex 32` |
 | `WEBUI_ADMIN_EMAIL` | Ton adresse email |
