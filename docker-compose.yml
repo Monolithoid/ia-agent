@@ -305,7 +305,7 @@ services:
       - "host-gateway:host-gateway"
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.rosbridge.rule=Host(`${ROSBRIDGE_DOMAIN}`)"
+      - "traefik.http.routers.rosbridge.rule=Host(`rosbridge.${DOMAIN}`)"
       - "traefik.http.routers.rosbridge.entrypoints=https"
       - "traefik.http.routers.rosbridge.tls.certresolver=letsencrypt"
       - "traefik.http.services.rosbridge.loadbalancer.server.port=80"
