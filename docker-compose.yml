@@ -1,11 +1,11 @@
 version: "3.8"
 
 # ============================================================
-# STACK IA — monolithoid.com
+# STACK IA — ${DOMAIN}
 # ============================================================
 # Exposé publiquement :
-#   chat.monolithoid.com   → Open WebUI  (port 3000)
-#   ollama.monolithoid.com → API Ollama  (port 11434)
+#   chat.${DOMAIN}   → Open WebUI  (port 3000)
+#   ollama.${DOMAIN} → API Ollama  (port 11434)
 #
 # Services internes (tunnel SSH uniquement) :
 #   n8n          → port 5678
@@ -28,6 +28,9 @@ version: "3.8"
 #   # (pynaoqi-python2.7-2.1.4.*-linux64.tar.gz depuis le portail SoftBank)
 #
 # Variables à configurer dans Coolify → Environment Variables :
+#   DOMAIN                   : ton domaine (ex: mon-domain.com)
+#   DOCKERHUB_USERNAME       : ton username Docker Hub
+#   ROSBRIDGE_DOMAIN         : sous-domaine rosbridge (ex: rosbridge.mon-domain.com)
 #   OLLAMA_API_KEYS          : openssl rand -hex 32
 #   WEBUI_SECRET_KEY         : openssl rand -hex 32
 #   N8N_BASIC_AUTH_PASSWORD  : mot de passe de ton choix
@@ -46,6 +49,7 @@ version: "3.8"
 #   ufw deny 11434
 #   ufw deny 3000
 #   ufw deny 5678
+#   ufw deny 9090    # rosbridge passe par Traefik (wss://), port 9090 non exposé
 #   ufw enable
 # ============================================================
 
@@ -97,7 +101,7 @@ services:
       - OPENID_PROVIDER_URL=https://accounts.google.com/.well-known/openid-configuration
       - OAUTH_CLIENT_ID=${OAUTH_CLIENT_ID}
       - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
-      - OAUTH_REDIRECT_URI=https://chat.monolithoid.com/oauth/oidc/callback
+      - OAUTH_REDIRECT_URI=https://chat.${DOMAIN}/oauth/oidc/callback
       - OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true
     depends_on:
       ollama:
@@ -109,7 +113,7 @@ services:
 
   # ----------------------------------------------------------
   # N8N — workflows
-  # Accès via tunnel SSH : ssh -L 5678:localhost:5678 user@monolithoid.com
+  # Accès via tunnel SSH : ssh -L 5678:localhost:5678 $VPS_USER@${DOMAIN}
   # ----------------------------------------------------------
   n8n:
     image: n8nio/n8n:latest
@@ -155,7 +159,7 @@ services:
   # Isolation réseau : bitterbot-net (internal: true)
   #   → seul Ollama est joignable, aucun accès internet
   #
-  # Accès via tunnel SSH : ssh -L 19001:localhost:19001 user@monolithoid.com
+  # Accès via tunnel SSH : ssh -L 19001:localhost:19001 $VPS_USER@${DOMAIN}
   #
   # Premier déploiement :
   #   cp core/bitterbot/bitterbot.json /opt/ia/bitterbot/config/bitterbot.json
@@ -164,7 +168,7 @@ services:
   #   chown -R 1000:1000 /opt/ia/bitterbot
   # ----------------------------------------------------------
   bitterbot-gateway:
-    image: monolithoid/bitterbot:latest
+    image: ${DOCKERHUB_USERNAME}/bitterbot:latest
     container_name: bitterbot-gateway
     restart: unless-stopped
     ports:
@@ -210,7 +214,7 @@ services:
 
   naoqi-bridge:
     build: ./robotics/nao_brain/naoqi_bridge
-    image: monolithoid/naoqi-bridge:latest
+    image: ${DOCKERHUB_USERNAME}/naoqi-bridge:latest
     container_name: naoqi-bridge
     restart: unless-stopped
     ports:
@@ -226,7 +230,7 @@ services:
 
   naoqi-driver:
     build: ./robotics/nao_brain/naoqi_driver
-    image: monolithoid/naoqi-driver:latest
+    image: ${DOCKERHUB_USERNAME}/naoqi-driver:latest
     container_name: naoqi-driver
     restart: unless-stopped
     network_mode: host
@@ -240,7 +244,7 @@ services:
 
   cognitive-renderer:
     build: ./robotics/nao_brain/cognitive_renderer
-    image: monolithoid/cognitive-renderer:latest
+    image: ${DOCKERHUB_USERNAME}/cognitive-renderer:latest
     container_name: cognitive-renderer
     restart: unless-stopped
     network_mode: host
@@ -252,7 +256,7 @@ services:
 
   body-gateway:
     build: ./robotics/nao_brain/body_gateway
-    image: monolithoid/body-gateway:latest
+    image: ${DOCKERHUB_USERNAME}/body-gateway:latest
     container_name: body-gateway
     restart: unless-stopped
     network_mode: host
@@ -273,6 +277,43 @@ services:
       cognitive-renderer:
         condition: service_started
 
+  # ----------------------------------------------------------
+  # ROS 2 BRIDGE — WebSocket rosbridge pour le script NAO
+  #
+  # ros2-bridge tourne en network_mode: host pour partager le
+  # domaine DDS 42 avec les autres nœuds ROS2 (naoqi-driver, etc.)
+  #
+  # rosbridge-proxy (Caddy) est sur le réseau Docker pour que
+  # Traefik puisse le router :
+  #   wss://rosbridge.$DOMAIN → Traefik (TLS) → Caddy (port 80)
+  #                           → host-gateway:9090 (ros2-bridge)
+  # ----------------------------------------------------------
+  ros2-bridge:
+    image: ${DOCKERHUB_USERNAME}/ros2-bridge:latest
+    container_name: ros2-bridge
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=42
+
+  rosbridge-proxy:
+    image: caddy:alpine
+    container_name: rosbridge-proxy
+    restart: unless-stopped
+    command: caddy reverse-proxy --from :80 --to host-gateway:9090
+    extra_hosts:
+      - "host-gateway:host-gateway"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.rosbridge.rule=Host(`rosbridge.${DOMAIN}`)"
+      - "traefik.http.routers.rosbridge.entrypoints=https"
+      - "traefik.http.routers.rosbridge.tls.certresolver=letsencrypt"
+      - "traefik.http.services.rosbridge.loadbalancer.server.port=80"
+    networks:
+      - robotics-net
+    depends_on:
+      - ros2-bridge
+
 # ============================================================
 # RÉSEAUX
 #
@@ -283,7 +324,10 @@ services:
 #   bitterbot-gateway, ollama
 #   Bitterbot ne peut joindre qu'Ollama — tout accès externe est bloqué.
 #
-# Nœuds ROS2 (naoqi-driver, cognitive-renderer, body-gateway) :
+# robotics-net (bridge, accès internet) :
+#   rosbridge-proxy — proxy WebSocket Caddy vers ros2-bridge (host)
+#
+# Nœuds ROS2 (ros2-bridge, naoqi-driver, cognitive-renderer, body-gateway) :
 #   network_mode: host — DDS ROS2 Humble (domain 42) sur le réseau hôte.
 # ============================================================
 networks:
@@ -293,3 +337,6 @@ networks:
   bitterbot-net:
     driver: bridge
     internal: true
+
+  robotics-net:
+    driver: bridge
