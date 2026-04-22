@@ -22,10 +22,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
     BRIDGE_PORT=8090
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
         python2.7 \
         python2-dev \
         curl \
-    && curl https://bootstrap.pypa.io/pip/2.7/get-pip.py -o /tmp/get-pip.py \
+    && update-ca-certificates \
+    && curl --retry 3 --retry-delay 5 \
+            https://bootstrap.pypa.io/pip/2.7/get-pip.py -o /tmp/get-pip.py \
     && python2.7 /tmp/get-pip.py \
     && rm /tmp/get-pip.py \
     && rm -rf /var/lib/apt/lists/*
