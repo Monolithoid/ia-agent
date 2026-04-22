@@ -48,27 +48,30 @@ Une fois connecté, le bridge s'abonne aux topics ROS 2 et exécute les commande
 scp robotics/nao_brain/naoqi_bridge/nao_ws_bridge.py nao@NAO_IP:/home/nao/nao_ws_bridge.py
 ```
 
-### 2. Installer la dépendance Python
+### 2. Installer les dépendances Python
 
-Sur NAO 2.1.x, `pip` n'est pas disponible et son installation via `get-pip.py` échoue car le robot ne peut pas atteindre PyPI. Comme `websocket-client` est un paquet Python pur, on contourne pip en transférant directement le wheel depuis la machine de dev.
+Sur NAO 2.1.x, `pip` n'est pas disponible et son installation via `get-pip.py` échoue car le robot ne peut pas atteindre PyPI. Comme tous ces paquets sont Python pur, on transfère les wheels depuis la machine de dev.
 
-**a) Télécharger le wheel sur ta machine de dev**
+`websocket-client` dépend de `six` — les deux doivent être installés.
+
+**a) Télécharger les wheels sur ta machine de dev**
 
 ```bash
-pip download --no-deps websocket-client==0.59.0 -d /tmp/ws-pkg/
-# Produit : websocket_client-0.59.0-py2.py3-none-any.whl
-scp /tmp/ws-pkg/websocket_client-0.59.0-py2.py3-none-any.whl nao@NAO_IP:/tmp/
+pip download --no-deps websocket-client==0.59.0 six -d /tmp/nao-pkg/
+scp /tmp/nao-pkg/*.whl nao@NAO_IP:/tmp/
 ```
 
-**b) Extraire le paquet sur le NAO**
+**b) Extraire les paquets sur le NAO**
 
 Un wheel est une archive zip — Python 2.7 peut l'extraire sans pip :
 
 ```bash
 ssh nao@NAO_IP
 python -c "
-import zipfile
-zipfile.ZipFile('/tmp/websocket_client-0.59.0-py2.py3-none-any.whl').extractall('/home/nao/pylib')
+import zipfile, glob
+for whl in glob.glob('/tmp/*.whl'):
+    zipfile.ZipFile(whl).extractall('/home/nao/pylib')
+    print('extrait: ' + whl)
 "
 echo 'export PYTHONPATH=/home/nao/pylib:$PYTHONPATH' >> /home/nao/.bashrc
 export PYTHONPATH=/home/nao/pylib:$PYTHONPATH

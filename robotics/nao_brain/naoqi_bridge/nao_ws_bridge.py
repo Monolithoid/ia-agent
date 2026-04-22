@@ -10,7 +10,7 @@ Usage :
     python /home/nao/nao_ws_bridge.py --vps wss://rosbridge.mon-domain.com
 
 Dependances :
-    websocket-client==0.59.0  (voir docs/nao.md pour l'installation)
+    websocket-client==0.59.0 + six  (voir docs/nao.md pour l'installation)
     naoqi (disponible nativement sur le robot)
 """
 
