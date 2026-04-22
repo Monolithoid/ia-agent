@@ -4,8 +4,7 @@
 //
 // Composants désactivés intentionnellement :
 //   - Tous les canaux messaging (WhatsApp, Telegram, Discord, Signal, Slack)
-//   - Wallet USDC / x402 / marketplace P2P
-//   - Discovery P2P (libp2p / Gossipsub)
+//   - Discovery P2P large zone (libp2p / Gossipsub)
 //   - Onramp Stripe (aucune clé cloud configurée)
 //
 // Composants actifs :
@@ -22,8 +21,10 @@
     defaults: {
       // Répertoire de travail — contient aussi les sous-dossiers onedrive/ et gdrive/
       workspace: "/home/node/.bitterbot/workspace",
-      // Modèle par défaut — changer pour "ollama:dolphin-llama3:8b" si besoin
-      model: "ollama:qwen2.5:7b",
+      // model.primary = référence canonique provider:nom
+      model: {
+        primary: "ollama:qwen2.5:7b",
+      },
     },
   },
 
@@ -37,39 +38,31 @@
         baseUrl: "http://ollama:11434",
         apiKey: "ollama-local",
         // API native Ollama : streaming + tool calling simultanés
-        // Alternative : "openai-completions" avec baseUrl se terminant par /v1
         api: "ollama",
+        // Liste des modèles exposés par ce provider (obligatoire depuis 85b5095)
+        models: [
+          { id: "qwen2.5:7b" },
+        ],
       },
     },
   },
 
   // ----------------------------------------------------------------
-  // CANAUX MESSAGING — tous désactivés
-  // Chaque section doit exister pour pouvoir être désactivée explicitement
+  // CANAUX MESSAGING — tous désactivés par omission
+  // Le schéma n'accepte plus "enabled" à la racine d'un channel ;
+  // la désactivation se fait au niveau account (accounts[].enabled).
+  // Ne pas définir la section = aucun canal actif.
   // ----------------------------------------------------------------
-  channels: {
-    whatsapp: { enabled: false },
-    telegram:  { enabled: false },
-    discord:   { enabled: false },
-    signal:    { enabled: false },
-    slack:     { enabled: false },
-  },
 
   // ----------------------------------------------------------------
-  // P2P / MARKETPLACE — désactivé
-  // Coupe libp2p, Gossipsub, peer discovery, bounty coordination
+  // P2P / DISCOVERY — large zone désactivée
+  // Coupe libp2p / Gossipsub sur le WAN. Le nœud reste joignable
+  // localement mais n'annonce rien sur le réseau public.
   // ----------------------------------------------------------------
   discovery: {
-    enabled: false,
-  },
-
-  // ----------------------------------------------------------------
-  // WALLET USDC — désactivé
-  // Aucune clé Stripe dans l'env → pas d'onramp possible de toute façon
-  // La variable BITTERBOT_ONRAMP_URL pointe vers un endpoint inexistant
-  // ----------------------------------------------------------------
-  wallet: {
-    enabled: false,
+    wideArea: {
+      enabled: false,
+    },
   },
 
   // ----------------------------------------------------------------
