@@ -22,6 +22,27 @@ import sys
 import threading
 import time
 
+# websocket-client evalue ssl.SSLSocket comme valeur par defaut d'un argument
+# meme pour des connexions ws:// ordinaires. Sur les builds Python 2.7 d'OpenNAO
+# ou le module ssl est absent, la lib fait ssl=None en interne, puis
+# None.SSLSocket leve AttributeError avant meme d'ouvrir le socket.
+# On injecte un stub minimal pour eviter ce crash.
+try:
+    import ssl as _ssl_probe
+    if not getattr(_ssl_probe, "SSLSocket", None):
+        raise ImportError("SSLSocket absent")
+except ImportError:
+    import types as _types
+    _stub = _types.ModuleType("ssl")
+    _stub.SSLSocket = type("SSLSocket", (object,), {})
+    _stub.SSLError = IOError
+    _stub.CERT_NONE = 0
+    _stub.CERT_OPTIONAL = 1
+    _stub.CERT_REQUIRED = 2
+    _stub.PROTOCOL_SSLv23 = 2
+    sys.modules["ssl"] = _stub
+    del _stub, _types
+
 import websocket
 
 try:
