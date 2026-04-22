@@ -43,35 +43,36 @@ scp robotics/nao_brain/naoqi_bridge/app.py nao@NAO_IP:/home/nao/nao_ws_bridge.py
 
 ### 2. Installer la dépendance Python
 
+Sur NAO 2.1.x, `pip` n'est pas préinstallé. Il faut d'abord l'ajouter.
+
+**a) Installer pip**
+
 ```bash
 ssh nao@NAO_IP
-
-# Installer websocket-client (Python 2.7)
-pip install --user websocket-client==0.59.0
+wget --no-check-certificate \
+     https://bootstrap.pypa.io/pip/2.7/get-pip.py \
+     -O /home/nao/get-pip.py
+python /home/nao/get-pip.py --user
+export PATH=$PATH:/home/nao/.local/bin
 ```
 
-> **`pip` non disponible sur NAO 2.1.x** (erreur `pip command not found`)
->
-> `curl` est absent sur OpenNAO — utiliser `wget` à la place :
-> ```bash
-> wget --no-check-certificate \
->      https://bootstrap.pypa.io/pip/2.7/get-pip.py \
->      -O /home/nao/get-pip.py
-> python /home/nao/get-pip.py --user
-> export PATH=$PATH:/home/nao/.local/bin
-> pip install --user websocket-client==0.59.0
-> ```
->
-> Pour rendre `PATH` permanent, ajouter la ligne `export` dans `/home/nao/.bashrc`.
->
-> **Alternative sans réseau depuis le robot** (si le réseau NAO bloque HTTPS) :
+Pour rendre le `PATH` permanent, ajouter la ligne `export` dans `/home/nao/.bashrc`.
+
+> **Si le robot ne peut pas accéder à HTTPS**, transférer `get-pip.py` depuis ta machine de dev :
 > ```bash
 > # Sur ta machine de dev
 > wget https://bootstrap.pypa.io/pip/2.7/get-pip.py
 > scp get-pip.py nao@NAO_IP:/home/nao/
 > # Puis sur le NAO
 > python /home/nao/get-pip.py --user
+> export PATH=$PATH:/home/nao/.local/bin
 > ```
+
+**b) Installer websocket-client**
+
+```bash
+pip install --user websocket-client==0.59.0
+```
 
 ### 3. Lancer le bridge manuellement
 
