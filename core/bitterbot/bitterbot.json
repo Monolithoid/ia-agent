@@ -51,6 +51,8 @@
   },
 
   gateway: {
+    // "local" = gateway autonome sans dépendance au cloud Bitterbot
+    mode: "local",
     auth: {
       // Doit correspondre exactement à BITTERBOT_GATEWAY_TOKEN dans docker-compose.yml
       token: "CHANGE_THIS_BITTERBOT_TOKEN",
