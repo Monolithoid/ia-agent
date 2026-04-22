@@ -47,12 +47,30 @@ scp robotics/nao_brain/naoqi_bridge/app.py nao@NAO_IP:/home/nao/nao_ws_bridge.py
 ssh nao@NAO_IP
 
 # Installer websocket-client (Python 2.7)
-pip install websocket-client==0.59.0
+pip install --user websocket-client==0.59.0
 ```
 
-> Si `pip` n'est pas disponible sur le NAO :
+> **`pip` non disponible sur NAO 2.1.x** (erreur `pip command not found`)
+>
+> `curl` est absent sur OpenNAO — utiliser `wget` à la place :
 > ```bash
-> curl https://bootstrap.pypa.io/pip/2.7/get-pip.py | python
+> wget --no-check-certificate \
+>      https://bootstrap.pypa.io/pip/2.7/get-pip.py \
+>      -O /home/nao/get-pip.py
+> python /home/nao/get-pip.py --user
+> export PATH=$PATH:/home/nao/.local/bin
+> pip install --user websocket-client==0.59.0
+> ```
+>
+> Pour rendre `PATH` permanent, ajouter la ligne `export` dans `/home/nao/.bashrc`.
+>
+> **Alternative sans réseau depuis le robot** (si le réseau NAO bloque HTTPS) :
+> ```bash
+> # Sur ta machine de dev
+> wget https://bootstrap.pypa.io/pip/2.7/get-pip.py
+> scp get-pip.py nao@NAO_IP:/home/nao/
+> # Puis sur le NAO
+> python /home/nao/get-pip.py --user
 > ```
 
 ### 3. Lancer le bridge manuellement
@@ -134,6 +152,8 @@ ps aux | grep nao_ws_bridge
 | Symptôme | Cause probable | Solution |
 |---|---|---|
 | Bridge ne se connecte pas | Port 9090 bloqué ou VPS_IP incorrect | Vérifier `ufw allow 9090` sur le VPS et l'IP utilisée |
-| `ImportError: No module named websocket` | websocket-client non installé | `pip install websocket-client==0.59.0` |
+| `pip command not found` | pip absent sur OpenNAO 2.1.x | Voir section « Installer la dépendance Python » ci-dessus (wget + --user) |
+| `ImportError: No module named websocket` | websocket-client non installé | `pip install --user websocket-client==0.59.0` |
+| `websocket-client` installé mais `import websocket` échoue | PATH `~/.local/bin` absent | `export PATH=$PATH:/home/nao/.local/bin` puis relancer |
 | Le robot ne parle pas | rosbridge non démarré ou topic incorrect | `docker logs ros2-bridge` sur le VPS |
 | Reconnexions en boucle | Timeout réseau NAO | Normal — le script reconnecte automatiquement |
