@@ -80,15 +80,15 @@ export PYTHONPATH=/home/nao/pylib:$PYTHONPATH
 ### 3. Lancer le bridge manuellement
 
 ```bash
-# Remplacer VPS_IP par l'IP publique ou le domaine du VPS
-python /home/nao/nao_ws_bridge.py --vps wss://rosbridge.$DOMAIN
+# Le NAO (Python 2.7 sans SSL) se connecte en ws:// direct sur le port 9090
+python /home/nao/nao_ws_bridge.py --vps ws://rosbridge.$DOMAIN:9090
 ```
 
 Les logs indiquent la connexion réussie :
 ```
-[bridge] Connecting to ws://VPS_IP:9090 ...
-[bridge] Connected. Subscribing to topics...
-[bridge] Ready.
+[bridge] Connexion a ws://rosbridge.$DOMAIN:9090 ...
+[bridge] Connecte. Abonnement aux topics ...
+[bridge] Pret.
 ```
 
 ---
@@ -102,7 +102,7 @@ Créer `/home/nao/autostart.sh` :
 #!/bin/bash
 export PYTHONPATH=/home/nao/pylib:$PYTHONPATH
 sleep 10   # attendre que le réseau soit établi
-python /home/nao/nao_ws_bridge.py --vps wss://rosbridge.mon-domain.com &
+python /home/nao/nao_ws_bridge.py --vps ws://rosbridge.mon-domain.com:9090 &
 ```
 
 > Remplacer `rosbridge.mon-domain.com` par la valeur de `$ROSBRIDGE_DOMAIN`.
@@ -159,5 +159,56 @@ ps aux | grep nao_ws_bridge
 | Bridge ne se connecte pas | Port 9090 bloqué ou VPS_IP incorrect | Vérifier `ufw allow 9090` sur le VPS et l'IP utilisée |
 | `pip command not found` ou `No matching distribution found for pip<21.0` | pip absent / PyPI inaccessible sur OpenNAO 2.1.x | Utiliser l'installation par wheel sans pip — voir section 2 |
 | `ImportError: No module named websocket` | wheel non extrait ou PYTHONPATH absent | Vérifier que `/home/nao/pylib` contient `websocket/` et que `PYTHONPATH` inclut `/home/nao/pylib` |
+| `Erreur : SSL not available.` | Module `ssl` Python absent sur OpenNAO | Python 2.7 compilé sans OpenSSL — voir section **SSL non disponible** ci-dessous |
 | Le robot ne parle pas | rosbridge non démarré ou topic incorrect | `docker logs ros2-bridge` sur le VPS |
 | Reconnexions en boucle | Timeout réseau NAO | Normal — le script reconnecte automatiquement |
+
+---
+
+## SSL non disponible
+
+### Diagnostic
+
+```bash
+ssh nao@NAO_IP
+python -c "import ssl; print(ssl.OPENSSL_VERSION)"
+```
+
+- Si la commande affiche la version OpenSSL → le module est disponible, l'erreur vient d'un autre problème TLS.
+- Si elle lève `ImportError: No module named ssl` → Python 2.7 sur ce robot a été compilé sans support SSL.
+
+### Solution A — vérifier la bibliothèque partagée
+
+Sur certains firmwares OpenNAO, `_ssl.so` existe mais n'est pas dans le `sys.path` par défaut :
+
+```bash
+find / -name "_ssl*.so" 2>/dev/null
+# Si trouvée, par exemple /usr/lib/python2.7/lib-dynload/_ssl.so :
+export PYTHONPATH=/usr/lib/python2.7/lib-dynload:$PYTHONPATH
+python -c "import ssl; print('OK')"
+```
+
+Ajouter la ligne `export PYTHONPATH=...` dans `/home/nao/.bashrc` pour la rendre permanente.
+
+### Solution B — tunnel SSL via stunnel
+
+Si `_ssl.so` est vraiment absent, `stunnel` crée un tunnel local non-chiffré → chiffré SSL vers le VPS :
+
+```bash
+# Installer stunnel sur le NAO (si opkg disponible)
+opkg install stunnel
+```
+
+Créer `/home/nao/stunnel-rosbridge.conf` :
+```ini
+[rosbridge]
+client = yes
+accept  = 127.0.0.1:9090
+connect = rosbridge.monolithoid.com:443
+```
+
+Lancer stunnel puis connecter le bridge en `ws://` :
+```bash
+stunnel /home/nao/stunnel-rosbridge.conf &
+python /home/nao/nao_ws_bridge.py --vps ws://127.0.0.1:9090
+```
