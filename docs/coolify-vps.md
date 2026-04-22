@@ -41,14 +41,14 @@ sudo bash /opt/ia-agent/setup-vps.sh
 ufw allow 22
 ufw allow 80
 ufw allow 443
-ufw allow 9090     # rosbridge ws:// — le NAO (Python 2.7, sans SSL) se connecte directement
+ufw allow from NAO_PUBLIC_IP to any port 9090  # rosbridge ws:// — accès réservé à l'IP publique du NAO
 ufw deny 11434
 ufw deny 3000
 ufw deny 5678
 ufw enable
 ```
 
-> Les ports 8001 (nao-gateway) et 19001 (Bitterbot) ne sont pas exposés directement. Le port 9090 est ouvert en clair pour le NAO (Python 2.7 compilé sans SSL) ; les autres clients WebSocket passent par `wss://$ROSBRIDGE_DOMAIN` via Traefik sur le port 443.
+> Les ports 8001 (nao-gateway) et 19001 (Bitterbot) ne sont pas exposés directement. Le port 9090 est restreint à l'IP publique du NAO (Python 2.7, OpenSSL trop vieux pour TLS 1.2) ; les autres clients WebSocket passent par `wss://$ROSBRIDGE_DOMAIN` via Traefik sur le port 443. Si l'IP du NAO est dynamique, la mettre à jour avec `ufw delete` + `ufw allow from NEW_IP to any port 9090`.
 
 ---
 
