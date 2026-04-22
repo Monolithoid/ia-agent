@@ -26,11 +26,11 @@ import urlparse
 import websocket
 
 try:
-    import ssl
-    HAS_SSL = True
+    import ssl as _ssl
+    _HAS_SSL = True
 except ImportError:
-    ssl = None
-    HAS_SSL = False
+    _ssl = None
+    _HAS_SSL = False
 
 try:
     from naoqi import ALProxy
@@ -97,6 +97,12 @@ class NaoBridge(object):
     # ------------------------------------------------------------------
 
     def run(self):
+        if self.vps_url.startswith("wss://") and not _HAS_SSL:
+            print("[bridge] ERREUR : module ssl Python introuvable — connexion wss:// impossible.", file=sys.stderr)
+            print("[bridge] Causes : Python 2.7 compile sans OpenSSL ou bibliotheque _ssl.so manquante.", file=sys.stderr)
+            print("[bridge] Solutions : voir docs/nao.md section Depannage (rubrique SSL).", file=sys.stderr)
+            return
+        sslopt = {"cert_reqs": _ssl.CERT_NONE} if _HAS_SSL and self.vps_url.startswith("wss://") else {}
         while not self._stop.is_set():
             print("[bridge] Connexion a {} ...".format(self.vps_url), file=sys.stderr)
             try:
@@ -107,7 +113,7 @@ class NaoBridge(object):
                     on_error=self._on_error,
                     on_close=self._on_close,
                 )
-                self.ws.run_forever(sslopt=self.ssl_options)
+                self.ws.run_forever(sslopt=sslopt)
             except Exception as e:
                 print("[bridge] Erreur WebSocket : {}".format(e), file=sys.stderr)
 
