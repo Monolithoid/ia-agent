@@ -27,6 +27,10 @@ import websocket
 
 try:
     import ssl as _ssl
+    # On some NAO Python 2.7 builds, ssl imports but SSLSocket is None
+    # because the underlying _ssl C extension is incomplete.
+    if not getattr(_ssl, "SSLSocket", None):
+        raise ImportError("ssl.SSLSocket unavailable")
     _HAS_SSL = True
 except ImportError:
     _ssl = None
@@ -51,7 +55,7 @@ def is_secure_websocket(url):
 
 
 def validate_ssl_support(vps_url):
-    if is_secure_websocket(vps_url) and not HAS_SSL:
+    if is_secure_websocket(vps_url) and not _HAS_SSL:
         print(
             "[bridge] ERREUR: Python n'a pas le module ssl, impossible d'utiliser {}".format(vps_url),
             file=sys.stderr
@@ -68,10 +72,10 @@ def build_ssl_options(vps_url):
     ssl_options = {}
     if not is_secure_websocket(vps_url):
         return ssl_options
-    if not HAS_SSL:
+    if not _HAS_SSL:
         return ssl_options
 
-    ssl_options["cert_reqs"] = ssl.CERT_NONE
+    ssl_options["cert_reqs"] = _ssl.CERT_NONE
     ssl_options["check_hostname"] = False
     return ssl_options
 
@@ -158,7 +162,20 @@ class NaoBridge(object):
         self._dispatch(topic, data)
 
     def _on_error(self, ws, error):
-        print("[bridge] Erreur : {}".format(error), file=sys.stderr)
+        msg = str(error)
+        if "SSLSocket" in msg or "NoneType" in msg:
+            print(
+                "[bridge] ERREUR SSL : ssl.SSLSocket indisponible sur ce Python 2.7 "
+                "(extension _ssl.so incomplete).",
+                file=sys.stderr,
+            )
+            print(
+                "[bridge] Utilisez une URL ws:// non chiffree ou voir docs/nao.md "
+                "section Depannage (rubrique SSL).",
+                file=sys.stderr,
+            )
+        else:
+            print("[bridge] Erreur : {}".format(error), file=sys.stderr)
 
     def _on_close(self, ws):
         print("[bridge] Connexion fermee.", file=sys.stderr)
