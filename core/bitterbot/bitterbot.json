@@ -41,7 +41,7 @@
         api: "ollama",
         // Liste des modèles exposés par ce provider (obligatoire depuis 85b5095)
         models: [
-          { id: "qwen2.5:7b" },
+          { id: "qwen2.5:7b", name: "Qwen 2.5 7B" },
         ],
       },
     },
