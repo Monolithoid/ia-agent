@@ -10,36 +10,20 @@
 // Composants actifs :
 //   - Inférence 100% locale via Ollama (http://ollama:11434)
 //   - Dream Engine (consolidation mémoire toutes les 2h)
-//   - Ingestion documents (workspace, OneDrive, Google Drive en lecture seule)
+//   - Ingestion documents (workspace)
 //   - Gateway WebSocket + API OpenAI-compatible sur le port 19001
+//
+// Schéma validé sur version 2026.2.15 (SHA 85b5095) via bitterbot doctor --fix
 
 {
-  // ----------------------------------------------------------------
-  // AGENT
-  // ----------------------------------------------------------------
-  agents: {
-    defaults: {
-      // Répertoire de travail — contient aussi les sous-dossiers onedrive/ et gdrive/
-      workspace: "/home/node/.bitterbot/workspace",
-      // model.primary = référence canonique provider:nom
-      model: {
-        primary: "ollama:qwen2.5:7b",
-      },
-    },
-  },
-
-  // ----------------------------------------------------------------
-  // FOURNISSEURS LLM — Ollama local uniquement
-  // ----------------------------------------------------------------
   models: {
     providers: {
       ollama: {
-        // Résolution Docker interne (service "ollama" sur le réseau bitterbot-net)
         baseUrl: "http://ollama:11434",
         apiKey: "ollama-local",
         // API native Ollama : streaming + tool calling simultanés
         api: "ollama",
-        // Liste des modèles exposés par ce provider (obligatoire depuis 85b5095)
+        // id + name tous les deux obligatoires
         models: [
           { id: "qwen2.5:7b", name: "Qwen 2.5 7B" },
         ],
@@ -47,38 +31,25 @@
     },
   },
 
-  // ----------------------------------------------------------------
-  // CANAUX MESSAGING — tous désactivés par omission
-  // Le schéma n'accepte plus "enabled" à la racine d'un channel ;
-  // la désactivation se fait au niveau account (accounts[].enabled).
-  // Ne pas définir la section = aucun canal actif.
-  // ----------------------------------------------------------------
+  agents: {
+    defaults: {
+      // model doit être un objet { primary, fallbacks? }, pas une string
+      model: {
+        primary: "ollama:qwen2.5:7b",
+      },
+      workspace: "/home/node/.bitterbot/workspace",
+    },
+  },
 
-  // ----------------------------------------------------------------
-  // P2P / DISCOVERY — large zone désactivée
-  // Coupe libp2p / Gossipsub sur le WAN. Le nœud reste joignable
-  // localement mais n'annonce rien sur le réseau public.
-  // ----------------------------------------------------------------
+  // Canaux messaging désactivés par omission (enabled invalide à la racine du channel)
+
   discovery: {
+    // enabled invalide à la racine — doit être sous wideArea
     wideArea: {
       enabled: false,
     },
   },
 
-  // ----------------------------------------------------------------
-  // DREAM ENGINE — actif (pipeline mémoire nocturne)
-  // Modes : Replay, Mutation, Extrapolation, Compression,
-  //         Simulation, Exploration, Research
-  // Cycle : toutes les 2h (déclenchement émotionnel si dopamine > 0.7)
-  // DB SQLite : /home/node/.bitterbot/memory/memory.db (persisté dans le volume)
-  // ----------------------------------------------------------------
-  // Pas de section à désactiver — le Dream Engine tourne par défaut.
-  // Pour forcer une consolidation manuelle :
-  //   docker exec bitterbot-gateway node bitterbot.mjs memory consolidate
-
-  // ----------------------------------------------------------------
-  // GATEWAY
-  // ----------------------------------------------------------------
   gateway: {
     auth: {
       // Doit correspondre exactement à BITTERBOT_GATEWAY_TOKEN dans docker-compose.yml
