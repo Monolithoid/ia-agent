@@ -21,14 +21,21 @@ Une fois connecté, le bridge s'abonne aux topics ROS 2 et exécute les commande
 
 ---
 
-## Fichier `nao_ws_bridge.py`
+## Deux scripts, deux rôles
 
-Situé dans `robotics/nao_brain/naoqi_bridge/` dans le dépôt, ce script Python 2.7 :
+| Script | Tourne sur | Rôle |
+|---|---|---|
+| `robotics/nao_brain/naoqi_bridge/nao_ws_bridge.py` | **Robot NAO** | WebSocket client → rosbridge VPS |
+| `robotics/nao_brain/naoqi_bridge/app.py` | **VPS (Docker)** | Serveur Flask HTTP, utilise le SDK naoqi pour parler au NAO via TCP:9559 |
 
-- Se connecte à rosbridge via WebSocket avec reconnexion automatique
+> `app.py` n'est **pas** destiné à tourner sur le robot — c'est un service VPS. Le déployer sur le NAO provoque une erreur `ImportError: No module named flask` car Flask n'est pas disponible sur OpenNAO.
+
+### `nao_ws_bridge.py` (script embarqué sur le NAO)
+
+- Se connecte à rosbridge via WebSocket **sortant** avec reconnexion automatique
 - S'abonne aux topics `/nao/speech`, `/nao/cmd_vel`, `/nao/gesture`, `/nao/leds`, `/nao/stop`
-- Publie sur `/nao/status` (batterie + température toutes les 30 s)
-- Utilise le SDK NAOqi (`qi` ou `naoqi`) pour piloter le robot
+- Publie sur `/nao/status` (batterie toutes les 30 s)
+- Utilise le module `naoqi` natif du robot (pas besoin de l'installer)
 
 ---
 
@@ -38,7 +45,7 @@ Situé dans `robotics/nao_brain/naoqi_bridge/` dans le dépôt, ce script Python
 
 ```bash
 # Depuis la racine du dépôt, sur ta machine de développement
-scp robotics/nao_brain/naoqi_bridge/app.py nao@NAO_IP:/home/nao/nao_ws_bridge.py
+scp robotics/nao_brain/naoqi_bridge/nao_ws_bridge.py nao@NAO_IP:/home/nao/nao_ws_bridge.py
 ```
 
 ### 2. Installer la dépendance Python
