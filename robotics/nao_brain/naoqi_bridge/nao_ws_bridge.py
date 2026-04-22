@@ -21,8 +21,16 @@ import json
 import sys
 import threading
 import time
+import urlparse
 
 import websocket
+
+try:
+    import ssl
+    HAS_SSL = True
+except ImportError:
+    ssl = None
+    HAS_SSL = False
 
 try:
     from naoqi import ALProxy
@@ -35,6 +43,37 @@ NAO_IP = "127.0.0.1"
 NAO_PORT = 9559
 RECONNECT_DELAY = 5  # secondes entre deux tentatives de reconnexion
 STATUS_INTERVAL = 30  # secondes entre deux publications de statut
+
+
+def is_secure_websocket(url):
+    parsed = urlparse.urlparse(url)
+    return parsed.scheme == "wss"
+
+
+def validate_ssl_support(vps_url):
+    if is_secure_websocket(vps_url) and not HAS_SSL:
+        print(
+            "[bridge] ERREUR: Python n'a pas le module ssl, impossible d'utiliser {}".format(vps_url),
+            file=sys.stderr
+        )
+        print(
+            "[bridge] Utilisez une URL ws:// ou installez un runtime Python/OpenSSL avec ssl.",
+            file=sys.stderr
+        )
+        return False
+    return True
+
+
+def build_ssl_options(vps_url):
+    ssl_options = {}
+    if not is_secure_websocket(vps_url):
+        return ssl_options
+    if not HAS_SSL:
+        return ssl_options
+
+    ssl_options["cert_reqs"] = ssl.CERT_NONE
+    ssl_options["check_hostname"] = False
+    return ssl_options
 
 
 def get_proxy(service):
@@ -51,6 +90,7 @@ class NaoBridge(object):
         self.vps_url = vps_url
         self.ws = None
         self._stop = threading.Event()
+        self.ssl_options = build_ssl_options(vps_url)
 
     # ------------------------------------------------------------------
     # Connexion / reconnexion
@@ -67,7 +107,7 @@ class NaoBridge(object):
                     on_error=self._on_error,
                     on_close=self._on_close,
                 )
-                self.ws.run_forever()
+                self.ws.run_forever(sslopt=self.ssl_options)
             except Exception as e:
                 print("[bridge] Erreur WebSocket : {}".format(e), file=sys.stderr)
 
@@ -245,6 +285,9 @@ if __name__ == "__main__":
 
     NAO_IP = args.nao_ip
     NAO_PORT = args.nao_port
+
+    if not validate_ssl_support(args.vps):
+        sys.exit(1)
 
     bridge = NaoBridge(args.vps)
     try:
