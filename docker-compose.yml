@@ -170,6 +170,7 @@ services:
   bitterbot-gateway:
     image: ${DOCKERHUB_USERNAME}/bitterbot:latest
     container_name: bitterbot-gateway
+    profiles: ["bitterbot"]
     restart: unless-stopped
     ports:
       - "127.0.0.1:19001:19001"
