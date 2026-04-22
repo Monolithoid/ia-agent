@@ -43,35 +43,29 @@ scp robotics/nao_brain/naoqi_bridge/app.py nao@NAO_IP:/home/nao/nao_ws_bridge.py
 
 ### 2. Installer la dépendance Python
 
-```bash
-ssh nao@NAO_IP
+Sur NAO 2.1.x, `pip` n'est pas disponible et son installation via `get-pip.py` échoue car le robot ne peut pas atteindre PyPI. Comme `websocket-client` est un paquet Python pur, on contourne pip en transférant directement le wheel depuis la machine de dev.
 
-# Installer websocket-client (Python 2.7)
-pip install --user websocket-client==0.59.0
+**a) Télécharger le wheel sur ta machine de dev**
+
+```bash
+pip download --no-deps websocket-client==0.59.0 -d /tmp/ws-pkg/
+# Produit : websocket_client-0.59.0-py2.py3-none-any.whl
+scp /tmp/ws-pkg/websocket_client-0.59.0-py2.py3-none-any.whl nao@NAO_IP:/tmp/
 ```
 
-> **`pip` non disponible sur NAO 2.1.x** (erreur `pip command not found`)
->
-> `curl` est absent sur OpenNAO — utiliser `wget` à la place :
-> ```bash
-> wget --no-check-certificate \
->      https://bootstrap.pypa.io/pip/2.7/get-pip.py \
->      -O /home/nao/get-pip.py
-> python /home/nao/get-pip.py --user
-> export PATH=$PATH:/home/nao/.local/bin
-> pip install --user websocket-client==0.59.0
-> ```
->
-> Pour rendre `PATH` permanent, ajouter la ligne `export` dans `/home/nao/.bashrc`.
->
-> **Alternative sans réseau depuis le robot** (si le réseau NAO bloque HTTPS) :
-> ```bash
-> # Sur ta machine de dev
-> wget https://bootstrap.pypa.io/pip/2.7/get-pip.py
-> scp get-pip.py nao@NAO_IP:/home/nao/
-> # Puis sur le NAO
-> python /home/nao/get-pip.py --user
-> ```
+**b) Extraire le paquet sur le NAO**
+
+Un wheel est une archive zip — Python 2.7 peut l'extraire sans pip :
+
+```bash
+ssh nao@NAO_IP
+python -c "
+import zipfile
+zipfile.ZipFile('/tmp/websocket_client-0.59.0-py2.py3-none-any.whl').extractall('/home/nao/pylib')
+"
+echo 'export PYTHONPATH=/home/nao/pylib:$PYTHONPATH' >> /home/nao/.bashrc
+export PYTHONPATH=/home/nao/pylib:$PYTHONPATH
+```
 
 ### 3. Lancer le bridge manuellement
 
@@ -96,6 +90,7 @@ Les logs indiquent la connexion réussie :
 Créer `/home/nao/autostart.sh` :
 ```bash
 #!/bin/bash
+export PYTHONPATH=/home/nao/pylib:$PYTHONPATH
 sleep 10   # attendre que le réseau soit établi
 python /home/nao/nao_ws_bridge.py --vps wss://rosbridge.mon-domain.com &
 ```
@@ -152,8 +147,7 @@ ps aux | grep nao_ws_bridge
 | Symptôme | Cause probable | Solution |
 |---|---|---|
 | Bridge ne se connecte pas | Port 9090 bloqué ou VPS_IP incorrect | Vérifier `ufw allow 9090` sur le VPS et l'IP utilisée |
-| `pip command not found` | pip absent sur OpenNAO 2.1.x | Voir section « Installer la dépendance Python » ci-dessus (wget + --user) |
-| `ImportError: No module named websocket` | websocket-client non installé | `pip install --user websocket-client==0.59.0` |
-| `websocket-client` installé mais `import websocket` échoue | PATH `~/.local/bin` absent | `export PATH=$PATH:/home/nao/.local/bin` puis relancer |
+| `pip command not found` ou `No matching distribution found for pip<21.0` | pip absent / PyPI inaccessible sur OpenNAO 2.1.x | Utiliser l'installation par wheel sans pip — voir section 2 |
+| `ImportError: No module named websocket` | wheel non extrait ou PYTHONPATH absent | Vérifier que `/home/nao/pylib` contient `websocket/` et que `PYTHONPATH` inclut `/home/nao/pylib` |
 | Le robot ne parle pas | rosbridge non démarré ou topic incorrect | `docker logs ros2-bridge` sur le VPS |
 | Reconnexions en boucle | Timeout réseau NAO | Normal — le script reconnecte automatiquement |
