@@ -93,7 +93,7 @@ services:
       - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
       - CHROMA_HTTP_HOST=chromadb
       - CHROMA_HTTP_PORT=8000
-      - DEFAULT_MODELS=qwen3:8b
+      - DEFAULT_MODELS=qwen2.5:7b
       - ENABLE_SIGNUP=false
       - ENABLE_OAUTH_SIGNUP=true
       - WEBUI_ADMIN_EMAIL=${WEBUI_ADMIN_EMAIL}

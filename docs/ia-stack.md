@@ -97,7 +97,7 @@ Chat WebUI (Qwen 3 8B)
 
 **Activation sur le modèle Qwen :**
 
-1. **Workspace → Models → `qwen3:8b`**
+1. **Workspace → Models → `qwen2.5:7b`**
 2. Activer le tool **NAO Robot Commands** dans la liste des outils
 3. Dans le champ **System Prompt**, coller :
 
