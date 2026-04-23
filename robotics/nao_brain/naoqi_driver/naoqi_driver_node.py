@@ -28,6 +28,7 @@ Variables d'environnement :
   NAOQI_BRIDGE_URL  URL du bridge Python 2.7, défaut http://localhost:8090
 """
 
+import base64
 import json
 import os
 import threading
@@ -41,6 +42,8 @@ from std_msgs.msg import Bool, Float32, String
 
 ROBOT_ID = os.environ.get("ROBOT_ID", "nao_01")
 BRIDGE_URL = os.environ.get("NAOQI_BRIDGE_URL", "http://localhost:8090")
+WHISPER_URL = os.environ.get("WHISPER_URL", "")
+LISTEN_DURATION = float(os.environ.get("LISTEN_DURATION", "4.0"))
 SSE_RECONNECT_DELAY = 5
 
 
@@ -64,12 +67,16 @@ class NAOqiDriverNode(Node):
         self.create_subscription(String, f"{ns}/actuators/posture", self._on_posture, 10)
         self.create_subscription(String, f"{ns}/actuators/move",    self._on_move,    10)
 
+        # ── Souscription audio : /nao/audio (publié par nao_ws_bridge via rosbridge) ──
+        self.create_subscription(String, "/nao/audio", self._on_audio, 10)
+
         # ── Stream SSE depuis naoqi_bridge ────────────────────────────────────
         self._sse_running = True
         threading.Thread(target=self._sse_loop, daemon=True).start()
 
         self.get_logger().info(
             f"naoqi_driver2 [{ROBOT_ID}] démarré — bridge : {BRIDGE_URL}"
+            + (f" | Whisper : {WHISPER_URL}" if WHISPER_URL else " | Whisper désactivé")
         )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -138,6 +145,43 @@ class NAOqiDriverNode(Node):
                 )
         except requests.RequestException as e:
             self.get_logger().error(f"Bridge {endpoint} request failed: {e}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Audio reçu depuis nao_ws_bridge via /nao/audio → Whisper → speech topic
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _on_audio(self, msg: String):
+        """Reçoit un WAV encodé en base64 publié par nao_ws_bridge et lance
+        la transcription Whisper en arrière-plan."""
+        if not WHISPER_URL:
+            return
+        threading.Thread(
+            target=self._transcribe_and_publish,
+            args=(msg.data,),
+            daemon=True,
+        ).start()
+
+    def _transcribe_and_publish(self, b64_audio: str):
+        try:
+            audio_bytes = base64.b64decode(b64_audio)
+            resp = requests.post(
+                f"{WHISPER_URL}/asr?task=transcribe&language=fr&output=json",
+                files={"audio_file": ("audio.wav", audio_bytes, "audio/wav")},
+                timeout=30,
+            )
+            if not resp.ok:
+                self.get_logger().warn(f"Whisper erreur {resp.status_code}")
+                return
+            text = resp.json().get("text", "").strip()
+            if text and len(text) > 3:
+                self.get_logger().info(f"STT [{ROBOT_ID}]: {text}")
+                out = String()
+                out.data = text
+                self.pub_speech.publish(out)
+            else:
+                self.get_logger().info("Transcription vide — rien à envoyer")
+        except Exception as e:
+            self.get_logger().warn(f"_transcribe_and_publish error: {e}")
 
     def _on_say(self, msg: String):
         self._post("/say", {"text": msg.data})

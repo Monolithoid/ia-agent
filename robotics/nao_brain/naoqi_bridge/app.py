@@ -119,10 +119,6 @@ def _broadcast(event):
 def _subscribe_events():
     """Register NAOqi callbacks that forward events to SSE subscribers."""
 
-    def on_word_recognized(value):
-        if value and len(value) >= 2 and value[1] > 0.4:
-            _broadcast({"topic": "speech_recognized", "data": value[0], "confidence": value[1]})
-
     def on_bumper_right(value):
         _broadcast({"topic": "bumper", "side": "right", "data": bool(value > 0.5)})
 
@@ -133,10 +129,6 @@ def _subscribe_events():
         _broadcast({"topic": "sonar", "sensor": "front", "data": float(value)})
 
     try:
-        sub_speech = _memory.subscriber("WordRecognized")
-        sub_speech.signal.connect(on_word_recognized)
-        app._sub_speech = sub_speech  # prevent GC
-
         sub_bumper_r = _memory.subscriber("RightBumperPressed")
         sub_bumper_r.signal.connect(on_bumper_right)
         app._sub_bumper_r = sub_bumper_r
