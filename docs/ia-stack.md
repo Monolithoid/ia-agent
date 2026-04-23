@@ -152,41 +152,21 @@ Utilisé par Open WebUI pour le RAG (Retrieval-Augmented Generation). Stocke les
 
 ---
 
-## Bitterbot — agent IA autonome
+## Bitterbot — agent IA autonome (désactivé)
 
-**Image :** `$DOCKERHUB_USERNAME/bitterbot:latest` (buildée par GitHub Actions, publiée sur Docker Hub)  
-**Port :** 19001 (lié à `127.0.0.1`)  
-**Accès :** tunnel SSH uniquement
+> Voir [ADR 003](decisions/003-ollama-direct-sans-bitterbot.md) pour le contexte complet.
 
-```bash
-ssh -L 19001:localhost:19001 $VPS_USER@$DOMAIN
-# WebSocket : ws://localhost:19001
-```
+Bitterbot est commenté dans `docker-compose.yml`. `body-gateway` appelle
+**Ollama directement** (`BRAIN_URL=http://localhost:11434`, `BRAIN_MODEL=qwen2.5:7b`).
 
-Agent avec :
-- **Mémoire long-terme** persistée en SQLite
-- **Dream Engine** : consolidation de mémoire toutes les 2 heures
-- **Inférence 100 % locale** via Ollama (pas d'API cloud)
-- **API compatible OpenAI** sur le port 19001
+Ce qu'on perd sans Bitterbot : mémoire long-terme SQLite, dream engine.  
+Ce qu'on garde : tout le pipeline de contrôle physique et le chat WebUI.
 
-**Isolation réseau :** `bitterbot-net` avec `internal: true` — aucun accès internet possible au niveau Docker. Seul Ollama est joignable via ce réseau.
+**Pour réactiver Bitterbot :**
 
-| Variable | Description |
-|---|---|
-| `BITTERBOT_GATEWAY_TOKEN` | Secret d'auth WebSocket — doit correspondre à `gateway.auth.token` dans `bitterbot.json` |
-
-**Volumes :**
-
-| Chemin hôte | Chemin container | Mode |
-|---|---|---|
-| `/opt/ia/bitterbot/config` | `/home/node/.bitterbot` | rw |
-| `/opt/ia/bitterbot/workspace` | `/home/node/.bitterbot/workspace` | rw |
-| `/opt/ia/sync/onedrive` | `/home/node/.bitterbot/workspace/onedrive` | ro |
-| `/opt/ia/sync/gdrive` | `/home/node/.bitterbot/workspace/gdrive` | ro |
-
-**Modifier la configuration :** éditer `/opt/ia/bitterbot/config/bitterbot.json` puis redémarrer le container.
-
-**Rebuild automatique :** GitHub Actions rebuild l'image tous les lundis à 3h00 UTC depuis le dépôt upstream Bitterbot.
+1. Décommenter `bitterbot-gateway` dans `docker-compose.yml`
+2. Changer dans `body-gateway` : `BRAIN_URL=http://localhost:19001`
+3. Redéployer
 
 ---
 
@@ -194,10 +174,11 @@ Agent avec :
 
 ```
 ai-network (bridge, internet)
-  └── ollama, open-webui, n8n, chromadb, nao-gateway
+  └── ollama, open-webui, n8n, chromadb, naoqi-bridge, chat-relay
 
 bitterbot-net (bridge, internal — aucun accès internet)
-  └── bitterbot-gateway, ollama
-```
+  └── (réservé pour Bitterbot — voir ADR 003)
 
-Bitterbot et Ollama sont simultanément dans `bitterbot-net`. Ollama reste aussi dans `ai-network` pour servir Open WebUI et n8n.
+robotics-net (bridge, internet)
+  └── rosbridge-proxy
+```

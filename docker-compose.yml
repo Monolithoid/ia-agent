@@ -156,43 +156,37 @@ services:
       - ai-network
 
   # ----------------------------------------------------------
-  # BITTERBOT — cerveau de NAO
-  # Agent IA local : Qwen3 via Ollama, Dream Engine intégré (2h),
-  # mémoire SQLite persistante.
+  # BITTERBOT — cerveau de NAO (désactivé — voir ADR 003)
   #
-  # Isolation réseau : bitterbot-net (internal: true)
-  #   → seul Ollama est joignable, aucun accès internet
+  # Bitterbot ajoute mémoire long-terme et dream engine, mais son API
+  # /v1/chat/completions n'était pas stable. body-gateway appelle
+  # désormais Ollama directement (BRAIN_URL=http://localhost:11434).
   #
-  # Accès via tunnel SSH : ssh -L 19001:localhost:19001 $VPS_USER@${DOMAIN}
-  #
-  # Premier déploiement :
-  #   cp core/bitterbot/bitterbot.json /opt/ia/bitterbot/config/bitterbot.json
-  #   sed -i 's/CHANGE_THIS_BITTERBOT_TOKEN/${BITTERBOT_GATEWAY_TOKEN}/' \
-  #       /opt/ia/bitterbot/config/bitterbot.json
-  #   chown -R 1000:1000 /opt/ia/bitterbot
+  # Pour réactiver : décommenter ce bloc, retirer la dépendance
+  # bitterbot-net ci-dessous et changer BRAIN_URL dans body-gateway.
   # ----------------------------------------------------------
-  bitterbot-gateway:
-    image: ${DOCKERHUB_USERNAME}/bitterbot:latest
-    container_name: bitterbot-gateway
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:19001:19001"
-    volumes:
-      - /opt/ia/bitterbot/config:/home/node/.bitterbot
-      - /opt/ia/bitterbot/workspace:/home/node/.bitterbot/workspace
-    environment:
-      HOME: /home/node
-      TERM: xterm-256color
-      BITTERBOT_GATEWAY_TOKEN: ${BITTERBOT_GATEWAY_TOKEN}
-      OLLAMA_API_KEY: "ollama-local"
-      BITTERBOT_SKIP_CHANNELS: "1"
-      BITTERBOT_ONRAMP_URL: "http://127.0.0.1:1/disabled"
-    command: ["node", "bitterbot.mjs", "gateway", "--bind", "lan", "--port", "19001"]
-    depends_on:
-      ollama:
-        condition: service_started
-    networks:
-      - bitterbot-net
+  # bitterbot-gateway:
+  #   image: ${DOCKERHUB_USERNAME}/bitterbot:latest
+  #   container_name: bitterbot-gateway
+  #   restart: unless-stopped
+  #   ports:
+  #     - "127.0.0.1:19001:19001"
+  #   volumes:
+  #     - /opt/ia/bitterbot/config:/home/node/.bitterbot
+  #     - /opt/ia/bitterbot/workspace:/home/node/.bitterbot/workspace
+  #   environment:
+  #     HOME: /home/node
+  #     TERM: xterm-256color
+  #     BITTERBOT_GATEWAY_TOKEN: ${BITTERBOT_GATEWAY_TOKEN}
+  #     OLLAMA_API_KEY: "ollama-local"
+  #     BITTERBOT_SKIP_CHANNELS: "1"
+  #     BITTERBOT_ONRAMP_URL: "http://127.0.0.1:1/disabled"
+  #   command: ["node", "bitterbot.mjs", "gateway", "--bind", "lan", "--port", "19001"]
+  #   depends_on:
+  #     ollama:
+  #       condition: service_started
+  #   networks:
+  #     - bitterbot-net
 
   # ----------------------------------------------------------
   # CORPS NAO — couche physique ROS2 Humble
@@ -204,7 +198,7 @@ services:
   #   naoqi-driver       → Nœud ROS2, traduit /bodies/{id}/sensors|actuators/*
   #                         Un nœud par corps physique (ROBOT_ID)
   #   cognitive-renderer → Nœud ROS2, /cognitive_state → LEDs + tête en continu
-  #   body-gateway       → Nœud ROS2, pont Bitterbot ↔ bus ROS2
+  #   body-gateway       → Nœud ROS2, pont Ollama ↔ bus ROS2
   #                         Injecte un system prompt JSON lors de chaque appel
   #                         Gère les ticks oniriques (DREAMING 2h-6h)
   #
@@ -294,8 +288,9 @@ services:
     network_mode: host
     environment:
       - ROS_DOMAIN_ID=42
-      - BITTERBOT_URL=http://localhost:19001
-      - BITTERBOT_GATEWAY_TOKEN=${BITTERBOT_GATEWAY_TOKEN}
+      - BRAIN_URL=http://localhost:11434
+      - BRAIN_MODEL=${BRAIN_MODEL:-qwen2.5:7b}
+      - BRAIN_API_KEY=${OLLAMA_API_KEYS}
       - BODY_REGISTRY=${NAO_ROBOT_ID:-nao_01}
       - DREAMING_HOUR_START=${DREAMING_HOUR_START:-2}
       - DREAMING_HOUR_END=${DREAMING_HOUR_END:-6}
@@ -304,8 +299,6 @@ services:
       - CHAT_PORT=8095
       - WAKE_WORD=${WAKE_WORD:-ok nao}
     depends_on:
-      bitterbot-gateway:
-        condition: service_started
       naoqi-driver:
         condition: service_started
       cognitive-renderer:
