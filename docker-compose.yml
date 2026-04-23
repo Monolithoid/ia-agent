@@ -97,7 +97,7 @@ services:
       - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
       - CHROMA_HTTP_HOST=chromadb
       - CHROMA_HTTP_PORT=8000
-      - DEFAULT_MODELS=qwen3:8b
+      - DEFAULT_MODELS=qwen2.5:7b
       - ENABLE_SIGNUP=false
       - ENABLE_OAUTH_SIGNUP=true
       - WEBUI_ADMIN_EMAIL=${WEBUI_ADMIN_EMAIL}
@@ -107,6 +107,8 @@ services:
       - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
       - OAUTH_REDIRECT_URI=https://chat.${DOMAIN}/oauth/oidc/callback
       - OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true
+    extra_hosts:
+      - "host-gateway:host-gateway"
     depends_on:
       ollama:
         condition: service_started
@@ -301,6 +303,8 @@ services:
       - DREAMING_HOUR_END=${DREAMING_HOUR_END:-6}
       - DREAMING_BATTERY_THRESHOLD=${DREAMING_BATTERY_THRESHOLD:-80.0}
       - DREAM_TICK_INTERVAL=${DREAM_TICK_INTERVAL:-300}
+      - CHAT_PORT=8095
+      - WAKE_WORD=${WAKE_WORD:-ok nao}
     depends_on:
       bitterbot-gateway:
         condition: service_started

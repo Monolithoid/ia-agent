@@ -68,6 +68,53 @@ Accès restreint aux comptes Google autorisés via SSO (OIDC). Les inscriptions 
 https://chat.$DOMAIN/oauth/oidc/callback
 ```
 
+### NAO Brain — chat WebUI comme interface du cerveau robotique
+
+Le Pipe `NAO Brain` (`robotics/nao_brain/webui/nao_pipe.py`) connecte le chat Open WebUI au **même pipeline complet** que la parole directe à NAO.
+
+Le mot de réveil **« ok nao »** active l'agent IA (Bitterbot / Qwen 2.5:7b). Celui-ci répond en langage naturel ET pilote simultanément ses corps physiques (NAO, drones, tout corps dans `BODY_REGISTRY`) via ROS 2.
+
+```
+ok nao, comment tu vas ?
+ok nao, dis bonjour et fais une révérence
+ok nao, avance vers la fenêtre
+ok nao, mets les LEDs en violet et assieds-toi
+```
+
+**Flux :**
+
+```
+Chat WebUI  ──"ok nao, [message]"──►  nao_pipe.py (Pipe)
+                                            │
+                              POST http://host-gateway:8095/chat
+                                            │
+                                     body-gateway (_infer_sync)
+                                            │
+                               Bitterbot API (Qwen 2.5:7b)
+                                            │
+                               JSON { thoughts, emotion, actions }
+                                            │
+                    ┌───────────────────────┘
+                    │
+              ROS 2 topics
+              ├─ /bodies/nao_01/actuators/say    → NAO parle
+              ├─ /bodies/nao_01/actuators/motion → geste
+              ├─ /bodies/nao_01/actuators/leds   → LEDs
+              └─ /bodies/drone_01/actuators/...  → drone, etc.
+                    │
+              Réponse JSON retournée au chat
+              (speech + actions affichées)
+```
+
+**Installation du Pipe (une seule fois, compte admin) :**
+
+1. `https://chat.$DOMAIN` → **Workspace → Functions → (+)**
+2. Coller le contenu de `robotics/nao_brain/webui/nao_pipe.py`
+3. Sélectionner le type **Pipe** → Enregistrer sous **NAO Brain**
+4. Le modèle **NAO Brain** apparaît dans la liste des modèles du chat
+
+Le Pipe communique avec `body-gateway` via `host-gateway:8095` (port HTTP ouvert sur l'hôte Docker par le service `body-gateway` en `network_mode: host`).
+
 ---
 
 ## n8n — orchestrateur de workflows
