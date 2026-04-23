@@ -59,6 +59,7 @@ _posture = None
 _battery = None
 _memory = None
 _sonar = None
+_asr = None
 _recorder = None
 
 # Thread-safe queue of NAO events to stream to subscribers
@@ -70,7 +71,7 @@ _event_queues_lock = threading.Lock()
 # ──────────────────────────────────────────────────────────────────────────────
 
 def connect_nao():
-    global _session, _tts, _motion, _leds, _posture, _battery, _memory, _sonar, _recorder
+    global _session, _tts, _motion, _leds, _posture, _battery, _memory, _sonar, _asr, _recorder
 
     if not HAS_QI:
         print("[naoqi_bridge] MOCK mode active — no NAO connection.", file=sys.stderr)
@@ -105,6 +106,16 @@ def connect_nao():
         except Exception as e:
             print("[naoqi_bridge] ALAudioRecorder unavailable: {}".format(e), file=sys.stderr)
 
+        try:
+            _asr = _session.service("ALSpeechRecognition")
+            _asr.setLanguage("French")
+            # enableWordSpotting=True : la phrase peut apparaître dans un énoncé plus long
+            _asr.setVocabulary(["ok nao", "okay nao"], True)
+            _asr.subscribe("naoqi_bridge_wakeword")
+            print("[naoqi_bridge] Wake word 'ok nao' actif.", file=sys.stderr)
+        except Exception as e:
+            print("[naoqi_bridge] ALSpeechRecognition unavailable: {}".format(e), file=sys.stderr)
+
         _subscribe_events()
         _start_battery_poll()
         print("[naoqi_bridge] Connected to NAO at {}".format(NAO_IP), file=sys.stderr)
@@ -124,12 +135,19 @@ def _broadcast(event):
                 pass  # slow consumer — drop event
 
 
+_WAKE_WORDS = {"ok nao", "okay nao", "ok nano", "ok no"}
+
+
 def _subscribe_events():
     """Register NAOqi callbacks that forward events to SSE subscribers."""
 
     def on_word_recognized(value):
-        if value and len(value) >= 2 and value[1] > 0.4:
-            _broadcast({"topic": "speech_recognized", "data": value[0], "confidence": value[1]})
+        # value = [recognized_phrase, confidence]
+        if not value or len(value) < 2 or value[1] < 0.3:
+            return
+        phrase = value[0].lower().strip()
+        if phrase in _WAKE_WORDS or any(w in phrase for w in _WAKE_WORDS):
+            _broadcast({"topic": "wake_word_detected", "confidence": value[1]})
 
     def on_bumper_right(value):
         _broadcast({"topic": "bumper", "side": "right", "data": bool(value > 0.5)})

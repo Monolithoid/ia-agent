@@ -71,11 +71,9 @@ class NAOqiDriverNode(Node):
         self._tts_cooldown_until = 0.0
         threading.Thread(target=self._sse_loop, daemon=True).start()
 
-        # ── Boucle STT Whisper (optionnelle, activée si WHISPER_URL est défini) ──
         if WHISPER_URL:
-            threading.Thread(target=self._listen_loop, daemon=True).start()
             self.get_logger().info(
-                f"naoqi_driver2 [{ROBOT_ID}] STT actif → Whisper : {WHISPER_URL}"
+                f"naoqi_driver2 [{ROBOT_ID}] Wake word actif → enregistrement via Whisper : {WHISPER_URL}"
             )
 
         self.get_logger().info(
@@ -109,7 +107,18 @@ class NAOqiDriverNode(Node):
     def _dispatch_event(self, event: dict):
         topic = event.get("topic", "")
 
-        if topic == "speech_recognized":
+        if topic == "wake_word_detected":
+            if not WHISPER_URL:
+                return
+            cooldown = self._tts_cooldown_until - time.time()
+            if cooldown > 0:
+                self.get_logger().info(
+                    f"Wake word ignoré — TTS en cours ({cooldown:.1f}s restantes)"
+                )
+                return
+            threading.Thread(target=self._on_wake_word, daemon=True).start()
+
+        elif topic == "speech_recognized":
             msg = String()
             msg.data = event.get("data", "")
             self.pub_speech.publish(msg)
@@ -150,47 +159,43 @@ class NAOqiDriverNode(Node):
             self.get_logger().error(f"Bridge {endpoint} request failed: {e}")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Boucle STT Whisper : enregistrement continu → transcription → speech topic
+    # Wake word → STT Whisper → speech topic
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _listen_loop(self):
-        """Enregistre des tranches audio depuis NAO, les transcrit via Whisper
-        et publie le texte sur le topic speech — alimentant ainsi body_gateway."""
-        while self._sse_running:
-            try:
-                cooldown = self._tts_cooldown_until - time.time()
-                if cooldown > 0:
-                    time.sleep(cooldown)
-                    continue
+    def _on_wake_word(self):
+        """Déclenché après détection de 'ok nao' : enregistre l'audio, transcrit via
+        Whisper et publie le texte sur le topic speech pour body_gateway."""
+        self.get_logger().info(f"[{ROBOT_ID}] Wake word détecté — enregistrement {LISTEN_DURATION}s …")
+        try:
+            resp = requests.post(
+                f"{BRIDGE_URL}/listen",
+                json={"duration": LISTEN_DURATION},
+                timeout=LISTEN_DURATION + 15,
+            )
+            if not resp.ok or not resp.content:
+                self.get_logger().warn("Enregistrement audio vide ou erreur bridge")
+                return
 
-                resp = requests.post(
-                    f"{BRIDGE_URL}/listen",
-                    json={"duration": LISTEN_DURATION},
-                    timeout=LISTEN_DURATION + 15,
-                )
-                if not resp.ok or not resp.content:
-                    time.sleep(1.0)
-                    continue
+            whisper_resp = requests.post(
+                f"{WHISPER_URL}/asr?task=transcribe&language=fr&output=json",
+                files={"audio_file": ("audio.wav", resp.content, "audio/wav")},
+                timeout=30,
+            )
+            if not whisper_resp.ok:
+                self.get_logger().warn(f"Whisper erreur {whisper_resp.status_code}")
+                return
 
-                whisper_resp = requests.post(
-                    f"{WHISPER_URL}/asr?task=transcribe&language=fr&output=json",
-                    files={"audio_file": ("audio.wav", resp.content, "audio/wav")},
-                    timeout=30,
-                )
-                if not whisper_resp.ok:
-                    time.sleep(1.0)
-                    continue
+            text = whisper_resp.json().get("text", "").strip()
+            if text and len(text) > 3:
+                self.get_logger().info(f"STT [{ROBOT_ID}]: {text}")
+                msg = String()
+                msg.data = text
+                self.pub_speech.publish(msg)
+            else:
+                self.get_logger().info("Transcription vide — rien à envoyer")
 
-                text = whisper_resp.json().get("text", "").strip()
-                if text and len(text) > 3:
-                    self.get_logger().info(f"STT [{ROBOT_ID}]: {text}")
-                    msg = String()
-                    msg.data = text
-                    self.pub_speech.publish(msg)
-
-            except Exception as e:
-                self.get_logger().warn(f"Listen loop error: {e}")
-                time.sleep(2.0)
+        except Exception as e:
+            self.get_logger().warn(f"_on_wake_word error: {e}")
 
     def _on_say(self, msg: String):
         # Bloque l'écoute pendant la durée estimée du TTS + marge
