@@ -45,6 +45,8 @@ except ImportError:
 NAO_IP = os.environ.get("NAO_IP", "")
 NAO_PORT = int(os.environ.get("NAO_PORT", "9559"))
 BRIDGE_PORT = int(os.environ.get("BRIDGE_PORT", "8090"))
+NAO_FTP_PASS = os.environ.get("NAO_FTP_PASS", "nao")
+LISTEN_AUDIO_PATH = "/home/nao/nao_audio.wav"
 
 app = Flask(__name__)
 
@@ -57,6 +59,7 @@ _posture = None
 _battery = None
 _memory = None
 _sonar = None
+_recorder = None
 
 # Thread-safe queue of NAO events to stream to subscribers
 _event_queues = []
@@ -67,7 +70,7 @@ _event_queues_lock = threading.Lock()
 # ──────────────────────────────────────────────────────────────────────────────
 
 def connect_nao():
-    global _session, _tts, _motion, _leds, _posture, _battery, _memory, _sonar
+    global _session, _tts, _motion, _leds, _posture, _battery, _memory, _sonar, _recorder
 
     if not HAS_QI:
         print("[naoqi_bridge] MOCK mode active — no NAO connection.", file=sys.stderr)
@@ -96,6 +99,11 @@ def connect_nao():
             _sonar.subscribe("naoqi_bridge")
         except Exception as e:
             print("[naoqi_bridge] Sonar unavailable: {}".format(e), file=sys.stderr)
+
+        try:
+            _recorder = _session.service("ALAudioRecorder")
+        except Exception as e:
+            print("[naoqi_bridge] ALAudioRecorder unavailable: {}".format(e), file=sys.stderr)
 
         _subscribe_events()
         _start_battery_poll()
@@ -292,6 +300,49 @@ def battery():
         except Exception as e:
             return jsonify({"error": str(e)}), 500
     return jsonify({"level": -1, "mock": True})
+
+
+@app.route("/listen", methods=["POST"])
+def listen():
+    """Record audio from NAO microphone and return the WAV file.
+
+    Body (JSON, optional): {"duration": 4.0}
+    Response: audio/wav binary, or {"error": "..."} on failure.
+
+    Audio is recorded on the robot via ALAudioRecorder then retrieved over FTP
+    (NAO exposes FTP on port 21 with credentials nao/NAO_FTP_PASS).
+    """
+    import ftplib
+    import io
+
+    data = request.json or {}
+    duration = float(data.get("duration", 4.0))
+
+    if not HAS_QI or not _session:
+        print("[MOCK] listen: {}s".format(duration), file=sys.stderr)
+        return Response(b"", mimetype="audio/wav")
+
+    if not _recorder:
+        return jsonify({"error": "ALAudioRecorder not available"}), 503
+
+    try:
+        _recorder.startMicrophonesRecording(LISTEN_AUDIO_PATH, "wav", 16000, [0, 0, 1, 0])
+        time.sleep(duration)
+        _recorder.stopMicrophonesRecording()
+        time.sleep(0.3)  # let the file flush to disk on the robot
+
+        ftp = ftplib.FTP()
+        ftp.connect(NAO_IP, 21, timeout=5)
+        ftp.login("nao", NAO_FTP_PASS)
+        buf = io.BytesIO()
+        ftp.retrbinary("RETR " + LISTEN_AUDIO_PATH, buf.write)
+        ftp.quit()
+
+        return Response(buf.getvalue(), mimetype="audio/wav")
+
+    except Exception as e:
+        print("[naoqi_bridge] listen error: {}".format(e), file=sys.stderr)
+        return jsonify({"error": str(e)}), 500
 
 
 # ──────────────────────────────────────────────────────────────────────────────

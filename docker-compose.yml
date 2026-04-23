@@ -18,11 +18,13 @@ version: "3.8"
 #   /opt/ia/chroma/              → base vectorielle
 #   /opt/ia/bitterbot/           → mémoire SQLite, config agent
 #   /opt/ia/nao/naoqi-sdk/       → SDK NAOqi Python 2.7 (fourni manuellement)
+#   /opt/ia/whisper/             → modèles Whisper ASR (téléchargés au premier démarrage)
 #
 # Avant de déployer :
 #   mkdir -p /opt/ia/{ollama,webui,n8n,chroma}
 #   mkdir -p /opt/ia/bitterbot/{config,workspace}
 #   mkdir -p /opt/ia/nao/naoqi-sdk
+#   mkdir -p /opt/ia/whisper
 #   cp core/bitterbot/bitterbot.json /opt/ia/bitterbot/config/bitterbot.json
 #   # Extraire le SDK NAOqi Python 2.7 dans /opt/ia/nao/naoqi-sdk/
 #   # (pynaoqi-python2.7-2.1.4.*-linux64.tar.gz depuis le portail SoftBank)
@@ -41,6 +43,9 @@ version: "3.8"
 #   NAO_IP                   : adresse IP du robot NAO
 #   NAO_PORT                 : 9559 (défaut NAOqi)
 #   NAO_ROBOT_ID             : nao_01 (identifiant ROS2 du corps)
+#   NAO_FTP_PASS             : mot de passe FTP du NAO (défaut: nao)
+#   LISTEN_DURATION          : durée d'écoute par tranche en secondes (défaut: 4.0)
+#   ASR_MODEL                : modèle Whisper à utiliser — tiny/base/small (défaut: small)
 #
 # Firewall (ports exposés publiquement) :
 #   ufw allow 22
@@ -225,6 +230,31 @@ services:
       - NAO_IP=${NAO_IP}
       - NAO_PORT=${NAO_PORT:-9559}
       - BRIDGE_PORT=8090
+      - NAO_FTP_PASS=${NAO_FTP_PASS:-nao}
+    networks:
+      - ai-network
+
+  # ----------------------------------------------------------
+  # WHISPER ASR — transcription vocale (STT)
+  #
+  # Reçoit des fichiers WAV depuis naoqi-driver et retourne
+  # le texte transcrit.  Modèle "small" (461 MB) est un bon
+  # compromis vitesse/précision pour le français sur CPU.
+  #
+  # Accès interne uniquement (127.0.0.1:9000).
+  # Premier démarrage : téléchargement du modèle (~460 MB).
+  # ----------------------------------------------------------
+  whisper-asr:
+    image: onerahmet/openai-whisper-asr-webservice:latest-cpu
+    container_name: whisper-asr
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - /opt/ia/whisper:/root/.cache/whisper
+    environment:
+      - ASR_MODEL=${ASR_MODEL:-small}
+      - ASR_LANGUAGE=fr
     networks:
       - ai-network
 
@@ -238,8 +268,12 @@ services:
       - ROS_DOMAIN_ID=42
       - ROBOT_ID=${NAO_ROBOT_ID:-nao_01}
       - NAOQI_BRIDGE_URL=http://localhost:8090
+      - WHISPER_URL=http://localhost:9000
+      - LISTEN_DURATION=${LISTEN_DURATION:-4.0}
     depends_on:
       naoqi-bridge:
+        condition: service_started
+      whisper-asr:
         condition: service_started
 
   cognitive-renderer:

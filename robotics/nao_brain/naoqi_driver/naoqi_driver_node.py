@@ -41,6 +41,8 @@ from std_msgs.msg import Bool, Float32, String
 
 ROBOT_ID = os.environ.get("ROBOT_ID", "nao_01")
 BRIDGE_URL = os.environ.get("NAOQI_BRIDGE_URL", "http://localhost:8090")
+WHISPER_URL = os.environ.get("WHISPER_URL", "")
+LISTEN_DURATION = float(os.environ.get("LISTEN_DURATION", "4.0"))
 SSE_RECONNECT_DELAY = 5
 
 
@@ -66,7 +68,15 @@ class NAOqiDriverNode(Node):
 
         # ── Stream SSE depuis naoqi_bridge ────────────────────────────────────
         self._sse_running = True
+        self._tts_cooldown_until = 0.0
         threading.Thread(target=self._sse_loop, daemon=True).start()
+
+        # ── Boucle STT Whisper (optionnelle, activée si WHISPER_URL est défini) ──
+        if WHISPER_URL:
+            threading.Thread(target=self._listen_loop, daemon=True).start()
+            self.get_logger().info(
+                f"naoqi_driver2 [{ROBOT_ID}] STT actif → Whisper : {WHISPER_URL}"
+            )
 
         self.get_logger().info(
             f"naoqi_driver2 [{ROBOT_ID}] démarré — bridge : {BRIDGE_URL}"
@@ -139,7 +149,54 @@ class NAOqiDriverNode(Node):
         except requests.RequestException as e:
             self.get_logger().error(f"Bridge {endpoint} request failed: {e}")
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Boucle STT Whisper : enregistrement continu → transcription → speech topic
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _listen_loop(self):
+        """Enregistre des tranches audio depuis NAO, les transcrit via Whisper
+        et publie le texte sur le topic speech — alimentant ainsi body_gateway."""
+        while self._sse_running:
+            try:
+                cooldown = self._tts_cooldown_until - time.time()
+                if cooldown > 0:
+                    time.sleep(cooldown)
+                    continue
+
+                resp = requests.post(
+                    f"{BRIDGE_URL}/listen",
+                    json={"duration": LISTEN_DURATION},
+                    timeout=LISTEN_DURATION + 15,
+                )
+                if not resp.ok or not resp.content:
+                    time.sleep(1.0)
+                    continue
+
+                whisper_resp = requests.post(
+                    f"{WHISPER_URL}/asr?task=transcribe&language=fr&output=json",
+                    files={"audio_file": ("audio.wav", resp.content, "audio/wav")},
+                    timeout=30,
+                )
+                if not whisper_resp.ok:
+                    time.sleep(1.0)
+                    continue
+
+                text = whisper_resp.json().get("text", "").strip()
+                if text and len(text) > 3:
+                    self.get_logger().info(f"STT [{ROBOT_ID}]: {text}")
+                    msg = String()
+                    msg.data = text
+                    self.pub_speech.publish(msg)
+
+            except Exception as e:
+                self.get_logger().warn(f"Listen loop error: {e}")
+                time.sleep(2.0)
+
     def _on_say(self, msg: String):
+        # Bloque l'écoute pendant la durée estimée du TTS + marge
+        word_count = len(msg.data.split())
+        estimated_tts = max(3.0, word_count * 0.35) + 1.5
+        self._tts_cooldown_until = time.time() + estimated_tts
         self._post("/say", {"text": msg.data})
 
     def _on_motion(self, msg: String):
