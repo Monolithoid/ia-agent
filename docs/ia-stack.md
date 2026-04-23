@@ -68,50 +68,52 @@ Accès restreint aux comptes Google autorisés via SSO (OIDC). Les inscriptions 
 https://chat.$DOMAIN/oauth/oidc/callback
 ```
 
-### Commandes vocales NAO depuis le chat ("ok nao")
+### NAO Brain — chat WebUI comme interface du cerveau robotique
 
-Le Tool `NAO Robot Commands` (`robotics/nao_brain/webui/nao_tool.py`) permet de contrôler NAO directement depuis le chat Open WebUI, exactement comme en lui parlant en direct. Le mot de réveil est **« ok nao »**.
+Le Pipe `NAO Brain` (`robotics/nao_brain/webui/nao_pipe.py`) connecte le chat Open WebUI au **même pipeline complet** que la parole directe à NAO.
+
+Le mot de réveil **« ok nao »** active l'agent IA (Bitterbot / Qwen 2.5:7b). Celui-ci répond en langage naturel ET pilote simultanément ses corps physiques (NAO, drones, tout corps dans `BODY_REGISTRY`) via ROS 2.
 
 ```
-ok nao, dis bonjour à tout le monde     → NAO parle
-ok nao, fais une révérence              → NAO s'incline
-ok nao, mets les LEDs en bleu           → LEDs bleues
-ok nao, avance un peu                   → NAO avance
-ok nao, arrête-toi                      → NAO stoppe
+ok nao, comment tu vas ?
+ok nao, dis bonjour et fais une révérence
+ok nao, avance vers la fenêtre
+ok nao, mets les LEDs en violet et assieds-toi
 ```
 
 **Flux :**
 
 ```
-Chat WebUI (Qwen 3 8B)
-  └─ détecte "ok nao" → appelle le Tool NAO
-       └─ POST http://naoqi-bridge:8090/say  {"text": "bonjour"}
-            └─ qi SDK → ALTextToSpeech.say()  → NAO parle
+Chat WebUI  ──"ok nao, [message]"──►  nao_pipe.py (Pipe)
+                                            │
+                              POST http://host-gateway:8095/chat
+                                            │
+                                     body-gateway (_infer_sync)
+                                            │
+                               Bitterbot API (Qwen 2.5:7b)
+                                            │
+                               JSON { thoughts, emotion, actions }
+                                            │
+                    ┌───────────────────────┘
+                    │
+              ROS 2 topics
+              ├─ /bodies/nao_01/actuators/say    → NAO parle
+              ├─ /bodies/nao_01/actuators/motion → geste
+              ├─ /bodies/nao_01/actuators/leds   → LEDs
+              └─ /bodies/drone_01/actuators/...  → drone, etc.
+                    │
+              Réponse JSON retournée au chat
+              (speech + actions affichées)
 ```
 
-**Installation du Tool (une seule fois, compte admin) :**
+**Installation du Pipe (une seule fois, compte admin) :**
 
-1. Ouvrir `https://chat.$DOMAIN` → **Workspace → Tools → (+)**
-2. Coller le contenu de `robotics/nao_brain/webui/nao_tool.py`
-3. Enregistrer sous le nom **NAO Robot Commands**
+1. `https://chat.$DOMAIN` → **Workspace → Functions → (+)**
+2. Coller le contenu de `robotics/nao_brain/webui/nao_pipe.py`
+3. Sélectionner le type **Pipe** → Enregistrer sous **NAO Brain**
+4. Le modèle **NAO Brain** apparaît dans la liste des modèles du chat
 
-**Activation sur le modèle Qwen :**
-
-1. **Workspace → Models → `qwen2.5:7b`**
-2. Activer le tool **NAO Robot Commands** dans la liste des outils
-3. Dans le champ **System Prompt**, coller :
-
-```
-Tu contrôles le robot NAO via les outils disponibles.
-Quand le message de l'utilisateur commence par « ok nao »,
-analyse la commande qui suit et appelle l'outil approprié
-(nao_say, nao_gesture, nao_leds, nao_move, nao_stop).
-Pour tout autre message, réponds normalement sans toucher aux outils NAO.
-```
-
-4. Enregistrer
-
-Le tool communique avec `naoqi-bridge` directement dans `ai-network` — aucune configuration réseau supplémentaire n'est nécessaire.
+Le Pipe communique avec `body-gateway` via `host-gateway:8095` (port HTTP ouvert sur l'hôte Docker par le service `body-gateway` en `network_mode: host`).
 
 ---
 

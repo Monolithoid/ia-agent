@@ -38,6 +38,7 @@ import os
 import re
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import requests
 import rclpy
@@ -57,6 +58,8 @@ DREAMING_HOUR_END = int(os.environ.get("DREAMING_HOUR_END", "6"))
 DREAMING_BATTERY_THRESHOLD = float(os.environ.get("DREAMING_BATTERY_THRESHOLD", "80.0"))
 DREAM_TICK_INTERVAL = int(os.environ.get("DREAM_TICK_INTERVAL", "300"))
 PROXIMITY_THRESHOLD = float(os.environ.get("PROXIMITY_THRESHOLD", "1.5"))
+CHAT_PORT = int(os.environ.get("CHAT_PORT", "8095"))
+WAKE_WORD = os.environ.get("WAKE_WORD", "ok nao").lower()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Prompts système injectés lors des appels à Bitterbot
@@ -147,6 +150,9 @@ class BodyGatewayNode(Node):
         self._dream_thread = threading.Thread(target=self._dream_loop, daemon=True)
         self._dream_thread.start()
 
+        if CHAT_PORT > 0:
+            self._start_chat_server()
+
         self._publish_cognitive("idle")
         self.get_logger().info(
             f"body_gateway démarré — corps : {', '.join(BODY_REGISTRY)}"
@@ -208,6 +214,113 @@ class BodyGatewayNode(Node):
             return
         self._state = "AWAKE"
         self._trigger_inference(body_id, text)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Pipeline d'inférence principal
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Endpoint HTTP — canal d'entrée WebUI chat
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _start_chat_server(self):
+        node = self
+
+        class _ChatHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                if self.path != "/chat":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    body = json.loads(self.rfile.read(length))
+                except Exception:
+                    self.send_response(400)
+                    self.end_headers()
+                    return
+
+                text = body.get("text", "").strip()
+                robot_id = body.get("robot_id", BODY_REGISTRY[0])
+
+                if not text:
+                    self._respond(400, {"error": "missing text"})
+                    return
+
+                result = node._infer_sync(robot_id, text)
+                self._respond(200, result)
+
+            def _respond(self, code: int, data: dict):
+                payload = json.dumps(data).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, fmt, *args):
+                pass  # logging via ROS uniquement
+
+        server = HTTPServer(("0.0.0.0", CHAT_PORT), _ChatHandler)
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        self.get_logger().info(f"Chat HTTP endpoint démarré → :{CHAT_PORT}/chat")
+
+    def _infer_sync(self, body_id: str, user_input: str) -> dict:
+        """Inférence synchrone pour le canal HTTP (WebUI chat). Retourne la réponse."""
+        self._publish_cognitive("thinking")
+        self._state = "AWAKE"
+
+        if not self._infer_lock.acquire(timeout=25):
+            return {"speech": "Je suis occupé, réessaie dans un instant.", "error": "busy"}
+
+        try:
+            system_prompt = _AWAKE_SYSTEM.format(body_ids=", ".join(BODY_REGISTRY))
+            response = requests.post(
+                f"{BITTERBOT_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {BITTERBOT_TOKEN}"},
+                json={
+                    "model": "bitterbot",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user",   "content": f"[{body_id}] {user_input}"},
+                    ],
+                    "stream": False,
+                    "temperature": 0.7,
+                },
+                timeout=20,
+            )
+            response.raise_for_status()
+
+            raw = response.json()["choices"][0]["message"]["content"]
+            parsed = self._parse_json(raw)
+
+            self._publish_emotion(parsed.get("emotion", "neutral"))
+            self._publish_cognitive("responding")
+            self._dispatch_actions(parsed.get("actions", []))
+
+            speech_text = " ".join(
+                a.get("text", "")
+                for a in parsed.get("actions", [])
+                if a.get("type") == "speech"
+            )
+            return {
+                "thoughts": parsed.get("thoughts", ""),
+                "emotion":  parsed.get("emotion", "neutral"),
+                "speech":   speech_text,
+                "actions":  parsed.get("actions", []),
+            }
+
+        except requests.RequestException as e:
+            self.get_logger().error(f"Bitterbot API error (chat): {e}")
+            self._fallback(body_id)
+            return {"speech": "Je réfléchis, un instant.", "error": str(e)}
+        except Exception as e:
+            self.get_logger().error(f"Chat infer error: {e}")
+            return {"speech": "Une erreur s'est produite.", "error": str(e)}
+        finally:
+            self._infer_lock.release()
+            self._publish_cognitive("listening")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Pipeline d'inférence principal
