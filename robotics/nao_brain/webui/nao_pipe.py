@@ -38,10 +38,9 @@ from pydantic import BaseModel, Field
 class Tools:
     class Valves(BaseModel):
         body_gateway_url: str = Field(
-            default="http://host-gateway:8095",
+            default="http://chat-relay:8095",
             description=(
-                "URL du body-gateway. host-gateway résout vers l'IP de l'hôte Docker "
-                "(configuré via extra_hosts dans open-webui)."
+                "URL du chat-relay (proxy Caddy sur ai-network → body-gateway:8095 sur l'hôte)."
             ),
         )
         robot_id: str = Field(

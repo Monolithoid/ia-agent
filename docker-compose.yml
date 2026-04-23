@@ -103,8 +103,6 @@ services:
       - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
       - OAUTH_REDIRECT_URI=https://chat.${DOMAIN}/oauth/oidc/callback
       - OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true
-    extra_hosts:
-      - "host-gateway:host-gateway"
     depends_on:
       ollama:
         condition: service_started
@@ -318,11 +316,31 @@ services:
     depends_on:
       - ros2-bridge
 
+  # ----------------------------------------------------------
+  # CHAT RELAY — pont WebUI ↔ body-gateway (HTTP)
+  #
+  # body-gateway tourne en network_mode: host (nécessaire pour ROS2 DDS)
+  # et ne peut donc pas être directement sur ai-network.
+  # Ce proxy Caddy fait le pont : open-webui l'atteint via chat-relay:8095,
+  # et lui-même relaie vers host-gateway:8095 (body-gateway sur l'hôte).
+  # ----------------------------------------------------------
+  chat-relay:
+    image: caddy:alpine
+    container_name: chat-relay
+    restart: unless-stopped
+    command: caddy reverse-proxy --from :8095 --to host-gateway:8095
+    extra_hosts:
+      - "host-gateway:host-gateway"
+    networks:
+      - ai-network
+    depends_on:
+      - body-gateway
+
 # ============================================================
 # RÉSEAUX
 #
 # ai-network (bridge, accès internet) :
-#   ollama, open-webui, n8n, chromadb, naoqi-bridge
+#   ollama, open-webui, n8n, chromadb, naoqi-bridge, chat-relay
 #
 # bitterbot-net (bridge, internal: true — aucun accès internet) :
 #   bitterbot-gateway, ollama
