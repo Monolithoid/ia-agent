@@ -22,8 +22,9 @@ Multi-corps :
   Chaque action JSON porte un champ "body" → routage automatique.
 
 Variables d'environnement :
-  BITTERBOT_URL              défaut http://localhost:19001
-  BITTERBOT_GATEWAY_TOKEN    token d'auth Bitterbot
+  BRAIN_URL                  défaut http://localhost:11434  (Ollama)
+  BRAIN_MODEL                défaut qwen2.5:7b
+  BRAIN_API_KEY              clé API Ollama (OLLAMA_API_KEYS)
   BODY_REGISTRY              liste séparée par virgules, défaut "nao_01"
   DREAMING_HOUR_START        défaut 2
   DREAMING_HOUR_END          défaut 6
@@ -50,8 +51,9 @@ from std_msgs.msg import Bool, Float32, String
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 
-BITTERBOT_URL = os.environ.get("BITTERBOT_URL", "http://localhost:19001")
-BITTERBOT_TOKEN = os.environ.get("BITTERBOT_GATEWAY_TOKEN", "")
+BRAIN_URL   = os.environ.get("BRAIN_URL",   "http://localhost:11434")
+BRAIN_MODEL = os.environ.get("BRAIN_MODEL", "qwen2.5:7b")
+BRAIN_API_KEY = os.environ.get("BRAIN_API_KEY", "")
 BODY_REGISTRY = [b.strip() for b in os.environ.get("BODY_REGISTRY", "nao_01").split(",") if b.strip()]
 DREAMING_HOUR_START = int(os.environ.get("DREAMING_HOUR_START", "2"))
 DREAMING_HOUR_END = int(os.environ.get("DREAMING_HOUR_END", "6"))
@@ -277,10 +279,10 @@ class BodyGatewayNode(Node):
         try:
             system_prompt = _AWAKE_SYSTEM.format(body_ids=", ".join(BODY_REGISTRY))
             response = requests.post(
-                f"{BITTERBOT_URL}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {BITTERBOT_TOKEN}"},
+                f"{BRAIN_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {BRAIN_API_KEY}"},
                 json={
-                    "model": "bitterbot",
+                    "model": BRAIN_MODEL,
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user",   "content": f"[{body_id}] {user_input}"},
@@ -346,10 +348,10 @@ class BodyGatewayNode(Node):
             ).format(body_ids=", ".join(BODY_REGISTRY))
 
             response = requests.post(
-                f"{BITTERBOT_URL}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {BITTERBOT_TOKEN}"},
+                f"{BRAIN_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {BRAIN_API_KEY}"},
                 json={
-                    "model": "bitterbot",
+                    "model": BRAIN_MODEL,
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user",   "content": f"[{body_id}] {user_input}"},
