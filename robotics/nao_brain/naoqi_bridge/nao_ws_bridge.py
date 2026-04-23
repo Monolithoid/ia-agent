@@ -7,43 +7,25 @@ Etablit une connexion WebSocket SORTANTE vers rosbridge sur le VPS,
 s'abonne aux topics de commande et publie le statut du robot.
 
 Usage :
-    python /home/nao/nao_ws_bridge.py --vps ws://rosbridge.mon-domain.com
+    python /home/nao/nao_ws_bridge.py --vps ws://IP_VPS:9090
 
 Dependances :
-    websocket-client==0.59.0 + six  (voir docs/nao.md pour l'installation)
+    Aucune dependance externe — client WebSocket pur Python 2.7 integre.
     naoqi (disponible nativement sur le robot)
 """
 
 from __future__ import print_function
 
 import argparse
+import base64
+import hashlib
 import json
+import os
+import socket
+import struct
 import sys
 import threading
 import time
-
-# websocket-client evalue ssl.SSLSocket comme valeur par defaut d'un argument
-# meme pour des connexions ws:// ordinaires. Sur les builds Python 2.7 d'OpenNAO
-# ou le module ssl est absent, la lib fait ssl=None en interne, puis
-# None.SSLSocket leve AttributeError avant meme d'ouvrir le socket.
-# On injecte un stub minimal pour eviter ce crash.
-try:
-    import ssl as _ssl_probe
-    if not getattr(_ssl_probe, "SSLSocket", None):
-        raise ImportError("SSLSocket absent")
-except ImportError:
-    import types as _types
-    _stub = _types.ModuleType("ssl")
-    _stub.SSLSocket = type("SSLSocket", (object,), {})
-    _stub.SSLError = IOError
-    _stub.CERT_NONE = 0
-    _stub.CERT_OPTIONAL = 1
-    _stub.CERT_REQUIRED = 2
-    _stub.PROTOCOL_SSLv23 = 2
-    sys.modules["ssl"] = _stub
-    del _stub, _types
-
-import websocket
 
 try:
     from naoqi import ALProxy
@@ -54,9 +36,202 @@ except ImportError:
 
 NAO_IP = "127.0.0.1"
 NAO_PORT = 9559
-RECONNECT_DELAY = 5  # secondes entre deux tentatives de reconnexion
-STATUS_INTERVAL = 30  # secondes entre deux publications de statut
+RECONNECT_DELAY = 5
+STATUS_INTERVAL = 30
 
+
+# ======================================================================
+# Client WebSocket pur Python 2.7 (RFC 6455, ws:// uniquement)
+# Remplace websocket-client pour eviter toute dependance au module ssl.
+# ======================================================================
+
+class _WebSocketApp(object):
+
+    _GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+    def __init__(self, url, on_open=None, on_message=None,
+                 on_error=None, on_close=None):
+        self.url = url
+        self.on_open = on_open
+        self.on_message = on_message
+        self.on_error = on_error
+        self.on_close = on_close
+        self._sock = None
+        self._closed = False
+
+    # ------------------------------------------------------------------
+    # API publique
+    # ------------------------------------------------------------------
+
+    def send(self, data):
+        if isinstance(data, unicode):
+            data = data.encode("utf-8")
+        self._send_frame(data, opcode=0x1)
+
+    def close(self):
+        self._closed = True
+        if self._sock:
+            try:
+                self._send_frame(b"", opcode=0x8)
+            except Exception:
+                pass
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+
+    def run_forever(self, **kwargs):
+        try:
+            self._connect()
+        except Exception as exc:
+            if self.on_error:
+                self.on_error(self, exc)
+            if self.on_close:
+                self.on_close(self)
+            return
+
+        if self.on_open:
+            self.on_open(self)
+
+        try:
+            self._recv_loop()
+        except Exception as exc:
+            if not self._closed and self.on_error:
+                self.on_error(self, exc)
+
+        if self.on_close:
+            self.on_close(self)
+
+    # ------------------------------------------------------------------
+    # Connexion TCP + handshake HTTP/WebSocket
+    # ------------------------------------------------------------------
+
+    def _connect(self):
+        if not self.url.startswith("ws://"):
+            raise ValueError("Seule ws:// est supportee (recu: {})".format(self.url))
+        tail = self.url[5:]
+
+        if "/" in tail:
+            host_port, path = tail.split("/", 1)
+            path = "/" + path
+        else:
+            host_port, path = tail, "/"
+
+        if ":" in host_port:
+            host, port_str = host_port.rsplit(":", 1)
+            port = int(port_str)
+        else:
+            host, port = host_port, 80
+
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.settimeout(10)
+        self._sock.connect((host, port))
+        self._sock.settimeout(None)
+
+        raw_key = base64.b64encode(os.urandom(16)).decode("ascii")
+        req = (
+            "GET {path} HTTP/1.1\r\n"
+            "Host: {host}:{port}\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            "Sec-WebSocket-Key: {key}\r\n"
+            "Sec-WebSocket-Version: 13\r\n"
+            "\r\n"
+        ).format(path=path, host=host, port=port, key=raw_key)
+        self._sock.sendall(req.encode("ascii"))
+
+        resp = b""
+        while b"\r\n\r\n" not in resp:
+            chunk = self._sock.recv(4096)
+            if not chunk:
+                raise IOError("Connexion fermee pendant le handshake")
+            resp += chunk
+
+        status_line = resp.split(b"\r\n")[0]
+        if b"101" not in status_line:
+            raise IOError("Echec handshake WebSocket : {}".format(
+                status_line.decode("ascii", "replace")))
+
+        expected = base64.b64encode(
+            hashlib.sha1(
+                (raw_key + self._GUID).encode("ascii")
+            ).digest()
+        ).decode("ascii")
+        if expected not in resp.decode("ascii", "replace"):
+            raise IOError("Sec-WebSocket-Accept invalide")
+
+    # ------------------------------------------------------------------
+    # Framing WebSocket (RFC 6455)
+    # ------------------------------------------------------------------
+
+    def _send_frame(self, data, opcode=0x1):
+        if isinstance(data, unicode):
+            data = data.encode("utf-8")
+        mask_key = bytearray(os.urandom(4))
+        payload = bytearray(data)
+        length = len(payload)
+
+        header = bytearray()
+        header.append(0x80 | opcode)
+        if length < 126:
+            header.append(0x80 | length)
+        elif length < 65536:
+            header.append(0x80 | 126)
+            header.extend(struct.pack(">H", length))
+        else:
+            header.append(0x80 | 127)
+            header.extend(struct.pack(">Q", length))
+        header.extend(mask_key)
+
+        masked = bytearray(length)
+        for i, b in enumerate(payload):
+            masked[i] = b ^ mask_key[i % 4]
+
+        self._sock.sendall(bytes(header) + bytes(masked))
+
+    def _recv_exact(self, n):
+        buf = b""
+        while len(buf) < n:
+            chunk = self._sock.recv(n - len(buf))
+            if not chunk:
+                raise IOError("Connexion fermee")
+            buf += chunk
+        return buf
+
+    def _recv_loop(self):
+        while not self._closed:
+            b0, b1 = bytearray(self._recv_exact(2))
+            opcode = b0 & 0x0F
+            is_masked = (b1 & 0x80) != 0
+            length = b1 & 0x7F
+            if length == 126:
+                length = struct.unpack(">H", self._recv_exact(2))[0]
+            elif length == 127:
+                length = struct.unpack(">Q", self._recv_exact(8))[0]
+
+            mask_key = bytearray(self._recv_exact(4)) if is_masked else None
+            payload = bytearray(self._recv_exact(length))
+
+            if mask_key:
+                for i in range(length):
+                    payload[i] ^= mask_key[i % 4]
+
+            if opcode == 0x1:   # texte
+                if self.on_message:
+                    self.on_message(self, payload.decode("utf-8", "replace"))
+            elif opcode == 0x2: # binaire
+                if self.on_message:
+                    self.on_message(self, bytes(payload))
+            elif opcode == 0x8: # close
+                self._closed = True
+                break
+            elif opcode == 0x9: # ping → pong
+                self._send_frame(bytes(payload), opcode=0xA)
+
+
+# ======================================================================
+# Bridge NAO ↔ rosbridge
+# ======================================================================
 
 def get_proxy(service):
     try:
@@ -81,7 +256,7 @@ class NaoBridge(object):
         while not self._stop.is_set():
             print("[bridge] Connexion a {} ...".format(self.vps_url), file=sys.stderr)
             try:
-                self.ws = websocket.WebSocketApp(
+                self.ws = _WebSocketApp(
                     self.vps_url,
                     on_open=self._on_open,
                     on_message=self._on_message,
@@ -259,7 +434,7 @@ class NaoBridge(object):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="NAO WebSocket bridge")
-    parser.add_argument("--vps", required=True, help="URL rosbridge (ex: ws://rosbridge.mon-domain.com)")
+    parser.add_argument("--vps", required=True, help="URL rosbridge (ex: ws://IP_VPS:9090)")
     parser.add_argument("--nao-ip", default="127.0.0.1", help="IP du NAO (defaut: 127.0.0.1)")
     parser.add_argument("--nao-port", type=int, default=9559)
     args = parser.parse_args()
