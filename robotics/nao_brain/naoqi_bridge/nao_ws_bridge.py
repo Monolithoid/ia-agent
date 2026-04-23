@@ -247,6 +247,8 @@ class NaoBridge(object):
         self.vps_url = vps_url
         self.ws = None
         self._stop = threading.Event()
+        self._busy_until = 0.0       # timestamp jusqu'auquel le wake word est ignoré
+        self._wakeword_started = False  # évite de relancer le thread à chaque reconnexion
 
     # ------------------------------------------------------------------
     # Connexion / reconnexion
@@ -293,8 +295,12 @@ class NaoBridge(object):
             ws.send(json.dumps({"op": "subscribe", "topic": topic, "type": msg_type}))
 
         ws.send(json.dumps({"op": "advertise", "topic": "/nao/status", "type": "std_msgs/String"}))
+        ws.send(json.dumps({"op": "advertise", "topic": "/nao/audio",  "type": "std_msgs/String"}))
         print("[bridge] Pret.", file=sys.stderr)
         threading.Thread(target=self._status_loop).start()
+        if not self._wakeword_started:
+            self._wakeword_started = True
+            threading.Thread(target=self._wakeword_loop).start()
 
     def _on_message(self, ws, raw):
         try:
@@ -405,6 +411,76 @@ class NaoBridge(object):
                 proxy.stopMove()
             except Exception as e:
                 print("[bridge] stop error: {}".format(e), file=sys.stderr)
+
+    # ------------------------------------------------------------------
+    # Publication du statut (batterie) toutes les STATUS_INTERVAL s
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Wake word → enregistrement audio → publication /nao/audio
+    # ------------------------------------------------------------------
+
+    def _wakeword_loop(self):
+        memory = get_proxy("ALMemory")
+        asr    = get_proxy("ALSpeechRecognition")
+        if not memory or not asr:
+            print("[bridge] ASR non disponible — wake word désactivé.", file=sys.stderr)
+            return
+        try:
+            asr.setLanguage("French")
+            asr.setVocabulary(["ok nao", "okay nao"], True)
+            asr.subscribe("nao_ws_bridge_ww")
+            print("[bridge] Wake word 'ok nao' actif.", file=sys.stderr)
+        except Exception as e:
+            print("[bridge] ASR init error: {}".format(e), file=sys.stderr)
+            return
+
+        last_word = ""
+        while not self._stop.is_set():
+            try:
+                if time.time() < self._busy_until:
+                    time.sleep(0.2)
+                    continue
+                value = memory.getData("WordRecognized")
+                if value and len(value) >= 2 and float(value[1]) > 0.3:
+                    phrase = value[0].lower().strip()
+                    if phrase != last_word and ("ok nao" in phrase or "okay nao" in phrase):
+                        last_word = phrase
+                        self._busy_until = time.time() + 20.0  # bloque pendant écoute + TTS
+                        threading.Thread(target=self._record_and_publish).start()
+            except Exception as e:
+                print("[bridge] wakeword_loop error: {}".format(e), file=sys.stderr)
+            time.sleep(0.2)
+
+    def _record_and_publish(self):
+        audio_path = "/home/nao/nao_audio.wav"
+        recorder = get_proxy("ALAudioRecorder")
+        if not recorder:
+            print("[bridge] ALAudioRecorder non disponible.", file=sys.stderr)
+            return
+        try:
+            print("[bridge] Enregistrement 4s ...", file=sys.stderr)
+            recorder.startMicrophonesRecording(audio_path, "wav", 16000, [0, 0, 1, 0])
+            time.sleep(4.0)
+            recorder.stopMicrophonesRecording()
+            time.sleep(0.3)  # laisse le fichier se fermer proprement
+
+            with open(audio_path, "rb") as f:
+                audio_bytes = f.read()
+
+            encoded = base64.b64encode(audio_bytes)
+            if isinstance(encoded, bytes):
+                encoded = encoded.decode("ascii")
+
+            if self.ws and not self._stop.is_set():
+                self.ws.send(json.dumps({
+                    "op":    "publish",
+                    "topic": "/nao/audio",
+                    "msg":   {"data": encoded},
+                }))
+                print("[bridge] Audio publié ({} octets).".format(len(audio_bytes)), file=sys.stderr)
+        except Exception as e:
+            print("[bridge] _record_and_publish error: {}".format(e), file=sys.stderr)
 
     # ------------------------------------------------------------------
     # Publication du statut (batterie) toutes les STATUS_INTERVAL s
