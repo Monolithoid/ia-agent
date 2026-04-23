@@ -243,7 +243,7 @@ services:
   # Premier démarrage : téléchargement du modèle (~460 MB).
   # ----------------------------------------------------------
   whisper-asr:
-    image: onerahmet/openai-whisper-asr-webservice:latest-cpu
+    image: onerahmet/openai-whisper-asr-webservice:latest
     container_name: whisper-asr
     restart: unless-stopped
     ports:
