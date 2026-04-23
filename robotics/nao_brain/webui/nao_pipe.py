@@ -1,24 +1,30 @@
 """
 title: NAO Brain
 author: ia-agent
-version: 0.2.0
+version: 0.3.0
 description: >
   Connecte le chat Open WebUI au cerveau robotique complet
   (body-gateway → Bitterbot → ROS 2 → NAO / drones / corps enregistrés).
 
-  Le mot de réveil « ok nao » active l'agent. Il répond en langage naturel
-  ET pilote simultanément ses corps physiques via le même pipeline qu'en
-  interaction directe (parole, sonar, bumper).
+  Le mot de réveil « ok nao » active l'agent. Qwen détecte le préfixe
+  et appelle cet outil, qui injecte le message dans le même pipeline
+  que la parole directe à NAO.
 
   Exemples :
     ok nao, comment tu vas ?
-    ok nao, dis bonjour à tout le monde et fais une révérence
+    ok nao, dis bonjour et fais une révérence
     ok nao, avance vers la fenêtre
     ok nao, mets les LEDs en violet et assieds-toi
 
   Installation dans Open WebUI :
-    Workspace → Functions → (+) → coller ce fichier → Type : Pipe → Enregistrer
-    Le modèle « NAO Brain » apparaît dans la liste des modèles du chat.
+    Workspace → Tools → (+) → coller ce fichier → Enregistrer
+    Puis : Workspace → Models → qwen2.5:7b → activer NAO Brain
+    Et coller le system prompt indiqué ci-dessous.
+
+  System prompt recommandé pour qwen2.5:7b :
+    Quand le message de l'utilisateur commence par « ok nao »,
+    appelle l'outil talk_to_nao avec la commande qui suit le préfixe.
+    Pour tout autre message, réponds normalement sans utiliser l'outil.
 
 required_open_webui_version: 0.3.0
 """
@@ -29,7 +35,7 @@ import requests
 from pydantic import BaseModel, Field
 
 
-class Pipe:
+class Tools:
     class Valves(BaseModel):
         body_gateway_url: str = Field(
             default="http://host-gateway:8095",
@@ -42,35 +48,19 @@ class Pipe:
             default="nao_01",
             description="Corps principal ciblé par défaut (doit être dans BODY_REGISTRY).",
         )
-        wake_word: str = Field(
-            default="ok nao",
-            description="Préfixe qui active le pipeline robotique.",
-        )
 
     def __init__(self):
         self.valves = self.Valves()
 
-    def pipes(self) -> list[dict]:
-        return [{"id": "nao-brain", "name": "NAO Brain"}]
-
-    def pipe(self, body: dict) -> str:
-        messages = body.get("messages", [])
-        if not messages:
-            return "Aucun message."
-
-        last = messages[-1].get("content", "").strip()
-        wake = self.valves.wake_word.lower()
-
-        if not last.lower().startswith(wake):
-            return (
-                f"Je suis le cerveau de NAO. "
-                f"Commence ton message par **« {self.valves.wake_word} »** pour me réveiller."
-            )
-
-        command = last[len(wake):].strip().lstrip(",").lstrip(":").strip()
-        if not command:
-            return "NAO est à l'écoute — que dois-je faire ?"
-
+    def talk_to_nao(self, command: str) -> str:
+        """
+        Send a command to the NAO robot brain (Bitterbot via body-gateway).
+        The brain processes the command, speaks through NAO, triggers gestures,
+        LEDs, movement and any other registered body (drones, etc.).
+        Use this tool whenever the user says "ok nao" followed by a command.
+        :param command: The instruction to send to the robot brain (without the "ok nao" prefix).
+        :return: What NAO said and the actions it performed.
+        """
         try:
             r = requests.post(
                 f"{self.valves.body_gateway_url}/chat",
