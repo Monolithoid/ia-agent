@@ -68,6 +68,51 @@ Accès restreint aux comptes Google autorisés via SSO (OIDC). Les inscriptions 
 https://chat.$DOMAIN/oauth/oidc/callback
 ```
 
+### Commandes vocales NAO depuis le chat ("ok nao")
+
+Le Tool `NAO Robot Commands` (`robotics/nao_brain/webui/nao_tool.py`) permet de contrôler NAO directement depuis le chat Open WebUI, exactement comme en lui parlant en direct. Le mot de réveil est **« ok nao »**.
+
+```
+ok nao, dis bonjour à tout le monde     → NAO parle
+ok nao, fais une révérence              → NAO s'incline
+ok nao, mets les LEDs en bleu           → LEDs bleues
+ok nao, avance un peu                   → NAO avance
+ok nao, arrête-toi                      → NAO stoppe
+```
+
+**Flux :**
+
+```
+Chat WebUI (Qwen 3 8B)
+  └─ détecte "ok nao" → appelle le Tool NAO
+       └─ POST http://naoqi-bridge:8090/say  {"text": "bonjour"}
+            └─ qi SDK → ALTextToSpeech.say()  → NAO parle
+```
+
+**Installation du Tool (une seule fois, compte admin) :**
+
+1. Ouvrir `https://chat.$DOMAIN` → **Workspace → Tools → (+)**
+2. Coller le contenu de `robotics/nao_brain/webui/nao_tool.py`
+3. Enregistrer sous le nom **NAO Robot Commands**
+
+**Activation sur le modèle Qwen :**
+
+1. **Workspace → Models → `qwen3:8b`**
+2. Activer le tool **NAO Robot Commands** dans la liste des outils
+3. Dans le champ **System Prompt**, coller :
+
+```
+Tu contrôles le robot NAO via les outils disponibles.
+Quand le message de l'utilisateur commence par « ok nao »,
+analyse la commande qui suit et appelle l'outil approprié
+(nao_say, nao_gesture, nao_leds, nao_move, nao_stop).
+Pour tout autre message, réponds normalement sans toucher aux outils NAO.
+```
+
+4. Enregistrer
+
+Le tool communique avec `naoqi-bridge` directement dans `ai-network` — aucune configuration réseau supplémentaire n'est nécessaire.
+
 ---
 
 ## n8n — orchestrateur de workflows
