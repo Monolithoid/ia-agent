@@ -427,7 +427,11 @@ class NaoBridge(object):
             print("[bridge] ASR non disponible — wake word désactivé.", file=sys.stderr)
             return
         try:
-            asr.setLanguage("French")
+            try:
+                asr.setLanguage("French")
+            except Exception:
+                asr.setLanguage("English")
+                print("[bridge] ASR: French non disponible, bascule sur English.", file=sys.stderr)
             asr.setVocabulary(["ok nao", "okay nao"], True)
             asr.subscribe("nao_ws_bridge_ww")
             print("[bridge] Wake word 'ok nao' actif.", file=sys.stderr)
