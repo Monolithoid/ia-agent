@@ -26,9 +26,10 @@ Une fois connecté, le bridge s'abonne aux topics ROS 2 et exécute les commande
 | Script | Tourne sur | Rôle |
 |---|---|---|
 | `robotics/nao_brain/naoqi_bridge/nao_ws_bridge.py` | **Robot NAO** | WebSocket client → rosbridge VPS |
-| `robotics/nao_brain/naoqi_bridge/app.py` | **VPS (Docker)** | Serveur Flask HTTP, utilise le SDK naoqi pour parler au NAO via TCP:9559 |
+| `robotics/nao_brain/naoqi_bridge/app.py` | **VPS (Docker)** | API HTTP de compatibilité pour la chaîne brain/body en mode connexion sortante robot |
 
 > `app.py` n'est **pas** destiné à tourner sur le robot — c'est un service VPS. Le déployer sur le NAO provoque une erreur `ImportError: No module named flask` car Flask n'est pas disponible sur OpenNAO.
+> Ce dépôt est orienté mode **connexion initiée par le robot** : `app.py` ne tente plus de connexion directe au robot par IP/PORT.
 
 ### `nao_ws_bridge.py` (script embarqué sur le NAO)
 
