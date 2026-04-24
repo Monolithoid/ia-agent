@@ -70,6 +70,9 @@ class NAOqiDriverNode(Node):
         # ── Souscription audio : /nao/audio (publié par nao_ws_bridge via rosbridge) ──
         self.create_subscription(String, "/nao/audio", self._on_audio, 10)
 
+        # ── Topic connexion physique : SSE up ↔ bridge/NAO joignable ────────
+        self.pub_connected = self.create_publisher(Bool, f"{ns}/connected", 10)
+
         # ── Stream SSE depuis naoqi_bridge ────────────────────────────────────
         self._sse_running = True
         threading.Thread(target=self._sse_loop, daemon=True).start()
@@ -83,12 +86,18 @@ class NAOqiDriverNode(Node):
     # SSE : événements NAO → topics ROS2
     # ─────────────────────────────────────────────────────────────────────────
 
+    def _publish_connected(self, state: bool):
+        msg = Bool()
+        msg.data = state
+        self.pub_connected.publish(msg)
+
     def _sse_loop(self):
         while self._sse_running:
             try:
                 with requests.get(f"{BRIDGE_URL}/events", stream=True, timeout=None) as resp:
                     resp.raise_for_status()
                     self.get_logger().info("SSE connecté")
+                    self._publish_connected(True)
                     for raw_line in resp.iter_lines():
                         if not self._sse_running:
                             break
@@ -98,6 +107,7 @@ class NAOqiDriverNode(Node):
                                 self._dispatch_event(json.loads(payload))
             except Exception as e:
                 if self._sse_running:
+                    self._publish_connected(False)
                     self.get_logger().warn(
                         f"SSE déconnecté : {e} — reconnexion dans {SSE_RECONNECT_DELAY}s"
                     )

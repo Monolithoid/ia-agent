@@ -141,6 +141,8 @@ class BodyGatewayNode(Node):
         self._pub_leds:    dict[str, object] = {}
         self._pub_posture: dict[str, object] = {}
         self._pub_move:    dict[str, object] = {}
+        # État de connexion physique publié par chaque naoqi_driver
+        self._body_connected: dict[str, bool] = {b: False for b in BODY_REGISTRY}
 
         for body_id in BODY_REGISTRY:
             self._register_body(body_id)
@@ -191,6 +193,11 @@ class BodyGatewayNode(Node):
             Float32, f"{ns}/sensors/battery",
             lambda msg, bid=body_id: self._on_battery(bid, msg), 10
         )
+        # Connexion physique (publié par naoqi_driver lors des reconnexions)
+        self.create_subscription(
+            Bool, f"{ns}/connected",
+            lambda msg, bid=body_id: self._on_body_connected(bid, msg), 10
+        )
 
         self.get_logger().info(f"Corps enregistré : {body_id}")
 
@@ -200,6 +207,14 @@ class BodyGatewayNode(Node):
 
     def _on_battery(self, body_id: str, msg: Float32):
         self._batteries[body_id] = msg.data
+
+    def _on_body_connected(self, body_id: str, msg: Bool):
+        prev = self._body_connected.get(body_id, False)
+        self._body_connected[body_id] = msg.data
+        if msg.data and not prev:
+            self.get_logger().info(f"[{body_id}] Corps connecté (plug-and-play)")
+        elif not msg.data and prev:
+            self.get_logger().warn(f"[{body_id}] Corps déconnecté")
 
     def _on_sonar(self, body_id: str, msg: Range):
         if msg.range < PROXIMITY_THRESHOLD and self._state == "IDLE":
@@ -408,6 +423,12 @@ class BodyGatewayNode(Node):
             body_id = action.get("body", BODY_REGISTRY[0])
             if body_id not in BODY_REGISTRY:
                 self.get_logger().warn(f"Corps inconnu '{body_id}' — action ignorée")
+                continue
+
+            if not self._body_connected.get(body_id, False):
+                self.get_logger().warn(
+                    f"[{body_id}] Corps non connecté — action '{action.get('type','')}' ignorée"
+                )
                 continue
 
             kind = action.get("type", "")
