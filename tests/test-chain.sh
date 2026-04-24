@@ -62,9 +62,22 @@ _check() {
     }
 }
 
-# Vérifie qu'un conteneur est running
+# ─── Résolution de conteneur robuste aux suffixes Coolify ────────────────────
+# Coolify renomme les conteneurs (préfixe projet, suffixe aléatoire).
+# Le label com.docker.compose.service=<nom> est lui toujours stable.
+# Les noms DNS à l'intérieur des réseaux Docker restent les noms de service
+# définis dans le compose — seul le nom du conteneur change.
+
+_container() {
+    # Retourne le nom du premier conteneur running pour ce service.
+    docker ps \
+        --filter "label=com.docker.compose.service=$1" \
+        --filter "status=running" \
+        --format "{{.Names}}" | head -1
+}
+
 _container_running() {
-    docker inspect --format='{{.State.Status}}' "$1" 2>/dev/null | grep -q "^running$"
+    [ -n "$(_container "$1")" ]
 }
 
 echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════╗${NC}"
@@ -77,19 +90,21 @@ echo -e "${YELLOW}╚═══════════════════�
 _head 0 "Conteneurs Docker"
 
 for svc in open-webui chat-relay body-gateway naoqi-bridge naoqi-driver; do
-    if _container_running "$svc"; then
-        _pass "container $svc : running"
+    cname=$(_container "$svc")
+    if [ -n "$cname" ]; then
+        _pass "service $svc : running  (→ $cname)"
     else
-        _fail "container $svc : NOT running"
+        _fail "service $svc : aucun conteneur running trouvé"
     fi
 done
 
 # Optionnel (ne bloque pas les tests suivants)
 for svc in ollama chromadb n8n whisper-asr cognitive-renderer ros2-bridge; do
-    if _container_running "$svc"; then
-        _pass "container $svc : running"
+    cname=$(_container "$svc")
+    if [ -n "$cname" ]; then
+        _pass "service $svc : running  (→ $cname)"
     else
-        _skip "container $svc : absent (optionnel pour ce test)"
+        _skip "service $svc : absent (optionnel pour ce test)"
     fi
 done
 
@@ -100,14 +115,21 @@ _head 1 "open-webui → chat-relay:8095 (ai-network)"
 
 echo -e "  ${BLUE}→${NC} Envoie POST /chat depuis le conteneur open-webui vers chat-relay:8095"
 
-# Vérifie d'abord que le réseau DNS fonctionne (ping DNS)
-_check "résolution DNS chat-relay depuis open-webui" \
-    "docker exec open-webui getent hosts chat-relay"
+# Résolution du conteneur open-webui (nom variable selon Coolify)
+_C_WEBUI=$(_container open-webui)
 
-# Vérifie que chat-relay accepte les connexions (sans attendre l'inférence)
-_check "TCP chat-relay:8095 joignable depuis open-webui" \
-    "docker exec open-webui sh -c 'timeout 5 curl -sf --max-time 5 -o /dev/null -w \"%{http_code}\" http://chat-relay:8095/chat -X POST -H \"Content-Type: application/json\" -d \"{\\\"text\\\":\\\"\\\",\\\"robot_id\\\":\\\"nao_01\\\"}\"' | grep -E '400|200'"
-# 400 = body-gateway reçoit et rejette "missing text" — maillon OK
+if [ -z "$_C_WEBUI" ]; then
+    _fail "open-webui introuvable — maillons 1 et 2 ignorés"
+else
+    # Vérifie d'abord que le réseau DNS fonctionne
+    _check "résolution DNS chat-relay depuis open-webui ($_C_WEBUI)" \
+        "docker exec $_C_WEBUI getent hosts chat-relay"
+
+    # Vérifie que chat-relay accepte les connexions (sans attendre l'inférence)
+    _check "TCP chat-relay:8095 joignable depuis open-webui" \
+        "docker exec $_C_WEBUI sh -c 'timeout 5 curl -sf --max-time 5 -o /dev/null -w \"%{http_code}\" http://chat-relay:8095/chat -X POST -H \"Content-Type: application/json\" -d \"{\\\"text\\\":\\\"\\\",\\\"robot_id\\\":\\\"nao_01\\\"}\"' | grep -E '400|200'"
+    # 400 = body-gateway reçoit et rejette "missing text" — maillon OK
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MAILLON 2 — chat-relay → body-gateway (host-gateway:8095)
@@ -122,10 +144,12 @@ _check "body-gateway /chat répond depuis le host (port 8095)" \
      -d '{\"text\":\"\",\"robot_id\":\"nao_01\"}' | grep -i 'missing\|error\|speech'"
 # body-gateway répond 400 {"error":"missing text"} = maillon OK
 
-_check "Caddy chat-relay proxie correctement (depuis open-webui)" \
-    "docker exec open-webui sh -c 'curl -sf --max-time 5 -X POST http://chat-relay:8095/chat \
-     -H \"Content-Type: application/json\" \
-     -d \"{\\\"text\\\":\\\"\\\",\\\"robot_id\\\":\\\"nao_01\\\"}\"' | grep -i 'missing\|error\|speech'"
+if [ -n "${_C_WEBUI:-}" ]; then
+    _check "Caddy chat-relay proxie correctement (depuis open-webui)" \
+        "docker exec $_C_WEBUI sh -c 'curl -sf --max-time 5 -X POST http://chat-relay:8095/chat \
+         -H \"Content-Type: application/json\" \
+         -d \"{\\\"text\\\":\\\"\\\",\\\"robot_id\\\":\\\"nao_01\\\"}\"' | grep -i 'missing\|error\|speech'"
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MAILLON 3 — body-gateway → Ollama (localhost:11434)
@@ -166,15 +190,16 @@ _head 4 "body-gateway → ROS2 DDS domain 42"
 
 echo -e "  ${BLUE}→${NC} Vérifie que les topics ROS2 sont publiés"
 
-if _container_running "naoqi-driver"; then
-    _check "ros2 topic list donne /cognitive_state et /bodies/*" \
-        "docker exec naoqi-driver bash -c \
+_C_DRIVER=$(_container naoqi-driver)
+if [ -n "$_C_DRIVER" ]; then
+    _check "ros2 topic list donne /cognitive_state et /bodies/* (→ $_C_DRIVER)" \
+        "docker exec $_C_DRIVER bash -c \
          'source /opt/ros/humble/setup.bash && ROS_DOMAIN_ID=42 \
           timeout 5 ros2 topic list 2>/dev/null' \
          | grep -E '/cognitive_state|/bodies'"
 
     _check "/cognitive_state a un publisher actif" \
-        "docker exec naoqi-driver bash -c \
+        "docker exec $_C_DRIVER bash -c \
          'source /opt/ros/humble/setup.bash && ROS_DOMAIN_ID=42 \
           timeout 5 ros2 topic info /cognitive_state 2>/dev/null' \
          | grep -i 'publisher'"
@@ -221,8 +246,13 @@ _check "naoqi-bridge connected=false (NAO off)" \
        print(s)\""
 
 # Vérifie que les logs naoqi-bridge montrent bien MOCK mode
-_check "naoqi-bridge logs contiennent MOCK" \
-    "docker logs --tail=50 naoqi-bridge 2>&1 | grep -i 'mock\|MOCK'"
+_C_BRIDGE=$(_container naoqi-bridge)
+if [ -n "$_C_BRIDGE" ]; then
+    _check "naoqi-bridge logs contiennent MOCK (→ $_C_BRIDGE)" \
+        "docker logs --tail=50 $_C_BRIDGE 2>&1 | grep -i 'mock\|MOCK'"
+else
+    _skip "naoqi-bridge introuvable — vérification des logs ignorée"
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MAILLON 7 — n8n accessible (bonus — n8n n'est pas dans la chaîne directe)
@@ -232,10 +262,10 @@ _head 7 "n8n (bonus — workflow orchestration, hors chaîne directe)"
 echo -e "  ${BLUE}→${NC} n8n est dans ai-network mais n'est pas dans la chaîne chat directe"
 
 if _container_running "n8n"; then
-    _check "n8n port 5678 répond (accès SSH tunnel)" \
+    _check "n8n port 5678 répond (→ $(_container n8n))" \
         "curl -sf --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:5678/ | grep -E '200|301|302'"
 else
-    _skip "n8n container non démarré"
+    _skip "n8n non démarré"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
