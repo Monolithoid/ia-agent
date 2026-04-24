@@ -52,14 +52,16 @@ _skip() { echo -e "  ${BLUE}⊘ SKIP${NC}  $1"; }
 # Teste une commande ; $1 = description, reste = commande
 _check() {
     local desc="$1"; shift
-    local out
-    out=$(eval "$@" 2>&1) && {
+    local out rc
+    out=$(eval "$@" 2>&1)
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
         _pass "$desc"
         [ -n "$out" ] && _info "$(echo "$out" | head -3)"
-    } || {
+    else
         _fail "$desc"
         [ -n "$out" ] && _info "$(echo "$out" | head -5)"
-    }
+    fi
 }
 
 # ─── Résolution de conteneur robuste aux suffixes Coolify ────────────────────
@@ -125,10 +127,10 @@ else
     _check "résolution DNS chat-relay depuis open-webui ($_C_WEBUI)" \
         "docker exec $_C_WEBUI getent hosts chat-relay"
 
-    # Vérifie que chat-relay accepte les connexions (sans attendre l'inférence)
-    _check "TCP chat-relay:8095 joignable depuis open-webui" \
-        "docker exec $_C_WEBUI sh -c 'timeout 5 curl -sf --max-time 5 -o /dev/null -w \"%{http_code}\" http://chat-relay:8095/chat -X POST -H \"Content-Type: application/json\" -d \"{\\\"text\\\":\\\"\\\",\\\"robot_id\\\":\\\"nao_01\\\"}\"' | grep -E '400|200'"
-    # 400 = body-gateway reçoit et rejette "missing text" — maillon OK
+    # Vérifie que chat-relay répond (toute réponse HTTP = connexion établie)
+    # On accepte 2xx/4xx/5xx — une connexion refusée donnerait "000".
+    _check "TCP chat-relay:8095 joignable depuis open-webui (toute réponse HTTP)" \
+        "docker exec $_C_WEBUI sh -c 'curl -s --max-time 5 -o /dev/null -w \"%{http_code}\" http://chat-relay:8095/chat -X POST -H \"Content-Type: application/json\" -d \"{\\\"text\\\":\\\"\\\",\\\"robot_id\\\":\\\"nao_01\\\"}\"' | grep -E '^[2-5][0-9][0-9]$'"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -138,15 +140,16 @@ _head 2 "chat-relay → host-gateway:8095 (body-gateway)"
 
 echo -e "  ${BLUE}→${NC} Caddy dans chat-relay doit atteindre l'hôte sur :8095"
 
+# Sans -f : body-gateway retourne 400 {"error":"missing text"} pour texte vide.
+# curl -f supprimerait le corps sur 4xx et ferait échouer le test à tort.
 _check "body-gateway /chat répond depuis le host (port 8095)" \
-    "curl -sf --max-time 5 -X POST http://localhost:8095/chat \
+    "curl -s --max-time 5 -X POST http://localhost:8095/chat \
      -H 'Content-Type: application/json' \
      -d '{\"text\":\"\",\"robot_id\":\"nao_01\"}' | grep -i 'missing\|error\|speech'"
-# body-gateway répond 400 {"error":"missing text"} = maillon OK
 
 if [ -n "${_C_WEBUI:-}" ]; then
-    _check "Caddy chat-relay proxie correctement (depuis open-webui)" \
-        "docker exec $_C_WEBUI sh -c 'curl -sf --max-time 5 -X POST http://chat-relay:8095/chat \
+    _check "Caddy chat-relay proxie vers body-gateway (depuis open-webui)" \
+        "docker exec $_C_WEBUI sh -c 'curl -s --max-time 5 -X POST http://chat-relay:8095/chat \
          -H \"Content-Type: application/json\" \
          -d \"{\\\"text\\\":\\\"\\\",\\\"robot_id\\\":\\\"nao_01\\\"}\"' | grep -i 'missing\|error\|speech'"
 fi
@@ -261,9 +264,14 @@ _head 7 "n8n (bonus — workflow orchestration, hors chaîne directe)"
 
 echo -e "  ${BLUE}→${NC} n8n est dans ai-network mais n'est pas dans la chaîne chat directe"
 
-if _container_running "n8n"; then
-    _check "n8n port 5678 répond (→ $(_container n8n))" \
-        "curl -sf --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:5678/ | grep -E '200|301|302'"
+# n8n n'a pas de ports: dans le compose — il n'est pas exposé sur le host.
+# On le teste depuis open-webui qui est dans le même ai-network.
+# n8n a l'auth basique active → 401 est une réponse valide (service up).
+if _container_running "n8n" && [ -n "${_C_WEBUI:-}" ]; then
+    _check "n8n répond sur ai-network (→ $(_container n8n))" \
+        "docker exec $_C_WEBUI curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://n8n:5678/ | grep -E '200|301|302|401'"
+elif _container_running "n8n"; then
+    _skip "n8n running mais open-webui introuvable pour tester depuis ai-network"
 else
     _skip "n8n non démarré"
 fi
