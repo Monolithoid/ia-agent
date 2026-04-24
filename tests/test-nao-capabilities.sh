@@ -60,11 +60,11 @@ _post() {
     local desc="$1"; shift
     local body="$1"; shift
     local endpoint="$1"; shift
-    local out rc
-    out=$(curl -sf --max-time "$TIMEOUT" -X POST "${BRIDGE}${endpoint}" \
+    local out
+    # -s sans -f : on récupère toujours le corps (utile pour afficher les erreurs 4xx/5xx)
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}${endpoint}" \
           -H "Content-Type: application/json" -d "$body" 2>&1)
-    rc=$?
-    if [ "$rc" -eq 0 ] && echo "$out" | grep -q '"ok".*true'; then
+    if echo "$out" | grep -q '"ok".*true'; then
         _pass "$desc"
         _info "$out"
     else
@@ -77,20 +77,15 @@ _get() {
     local desc="$1"; shift
     local endpoint="$1"; shift
     local pattern="${1:-}"
-    local out rc
-    out=$(curl -sf --max-time "$TIMEOUT" "${BRIDGE}${endpoint}" 2>&1)
-    rc=$?
-    if [ "$rc" -eq 0 ]; then
-        if [ -z "$pattern" ] || echo "$out" | grep -qE "$pattern"; then
-            _pass "$desc"
-            _info "$out"
-        else
-            _fail "$desc (pattern '$pattern' absent)"
-            _info "$out"
-        fi
+    local out
+    # -s sans -f : corps toujours visible même en cas d'erreur HTTP
+    out=$(curl -s --max-time "$TIMEOUT" "${BRIDGE}${endpoint}" 2>&1)
+    if [ -z "$pattern" ] || echo "$out" | grep -qE "$pattern"; then
+        _pass "$desc"
+        _info "$out"
     else
-        _fail "$desc"
-        [ -n "$out" ] && _info "$(echo "$out" | head -5)"
+        _fail "$desc (pattern '$pattern' absent)"
+        _info "$out"
     fi
 }
 
