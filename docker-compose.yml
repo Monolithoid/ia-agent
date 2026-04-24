@@ -347,15 +347,31 @@ services:
   # body-gateway tourne en network_mode: host (nécessaire pour ROS2 DDS)
   # et ne peut donc pas être directement sur ai-network.
   # Ce proxy Caddy fait le pont : open-webui l'atteint via chat-relay:8095,
-  # et lui-même relaie vers host-gateway:8095 (body-gateway sur l'hôte).
+  # et lui-même relaie vers l'IP gateway du réseau hôte détectée au démarrage.
+  #
+  # On n'utilise PAS extra_hosts/host-gateway : ce mécanisme Docker 20.10+
+  # ne fonctionne pas dans certains environnements Coolify.
+  # À la place, on lit /proc/net/route (route par défaut) pour obtenir
+  # l'IP passerelle du bridge Docker — universellement disponible.
   # ----------------------------------------------------------
   chat-relay:
     image: caddy:alpine
     container_name: chat-relay
     restart: unless-stopped
-    command: caddy reverse-proxy --from :8095 --to host-gateway:8095
-    extra_hosts:
-      - "host-gateway:host-gateway"
+    command:
+      - sh
+      - -c
+      - |-
+          gw=$(awk 'NR>1 && $2=="00000000" {
+            printf "%d.%d.%d.%d",
+              strtonum("0x" substr($3,7,2)),
+              strtonum("0x" substr($3,5,2)),
+              strtonum("0x" substr($3,3,2)),
+              strtonum("0x" substr($3,1,2))
+            exit
+          }' /proc/net/route)
+          echo "[chat-relay] gateway hôte détecté : $gw"
+          exec caddy reverse-proxy --from :8095 --to "$gw:8095"
     networks:
       - ai-network
     depends_on:

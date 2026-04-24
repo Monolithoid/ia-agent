@@ -136,7 +136,7 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 # MAILLON 2 — chat-relay → body-gateway (host-gateway:8095)
 # ─────────────────────────────────────────────────────────────────────────────
-_head 2 "chat-relay → host-gateway:8095 (body-gateway)"
+_head 2 "chat-relay → gateway hôte :8095 (body-gateway)"
 
 echo -e "  ${BLUE}→${NC} Caddy dans chat-relay doit atteindre l'hôte sur :8095"
 
@@ -147,11 +147,21 @@ _check "body-gateway /chat répond depuis le host (port 8095)" \
      -H 'Content-Type: application/json' \
      -d '{\"text\":\"\",\"robot_id\":\"nao_01\"}' | grep -i 'missing\|error\|speech'"
 
+# Vérifie que chat-relay a bien détecté le gateway hôte au démarrage
+_C_RELAY=$(_container chat-relay)
+if [ -n "$_C_RELAY" ]; then
+    _check "chat-relay a détecté le gateway hôte (→ $_C_RELAY)" \
+        "docker logs --tail=20 $_C_RELAY 2>&1 | grep 'gateway hôte détecté'"
+fi
+
 if [ -n "${_C_WEBUI:-}" ]; then
+    # Récupère la réponse brute pour afficher un diagnostic utile en cas d'échec
     _check "Caddy chat-relay proxie vers body-gateway (depuis open-webui)" \
-        "docker exec $_C_WEBUI sh -c 'curl -s --max-time 5 -X POST http://chat-relay:8095/chat \
+        "resp=\$(docker exec $_C_WEBUI sh -c 'curl -s --max-time 5 -X POST http://chat-relay:8095/chat \
          -H \"Content-Type: application/json\" \
-         -d \"{\\\"text\\\":\\\"\\\",\\\"robot_id\\\":\\\"nao_01\\\"}\"' | grep -i 'missing\|error\|speech'"
+         -d \"{\\\"text\\\":\\\"\\\",\\\"robot_id\\\":\\\"nao_01\\\"}\"') \
+         && echo \"\$resp\" | grep -i 'missing\|error\|speech' \
+         || { echo \"Réponse inattendue : \$resp\"; false; }"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
