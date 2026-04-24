@@ -362,15 +362,15 @@ services:
       - sh
       - -c
       - |-
-          hex=$(awk 'NR>1 && $2=="00000000" {print $3; exit}' /proc/net/route)
-          if [ -z "$hex" ]; then
+          hex=$$(awk 'NR>1 && $$2=="00000000" {print $$3; exit}' /proc/net/route)
+          if [ -z "$$hex" ]; then
             echo "[chat-relay] ERREUR : aucune route par défaut dans /proc/net/route" >&2
             exit 1
           fi
-          gw=$(printf '%d.%d.%d.%d' \
-            "0x${hex:6:2}" "0x${hex:4:2}" "0x${hex:2:2}" "0x${hex:0:2}")
-          echo "[chat-relay] gateway hôte détecté : $gw"
-          exec caddy reverse-proxy --from :8095 --to "$gw:8095"
+          gw=$$(printf '%d.%d.%d.%d' \
+            "0x$${hex:6:2}" "0x$${hex:4:2}" "0x$${hex:2:2}" "0x$${hex:0:2}")
+          echo "[chat-relay] gateway hôte détecté : $$gw"
+          exec caddy reverse-proxy --from :8095 --to "$$gw:8095"
     networks:
       - ai-network
     depends_on:
