@@ -184,7 +184,8 @@ def say():
         except Exception as e:
             return jsonify({"error": str(e)}), 500
     else:
-        print("[MOCK] say: {}".format(text), file=sys.stderr)
+        sys.stderr.write("[MOCK] say: {}\n".format(
+            text.encode("utf-8") if isinstance(text, unicode) else text))
 
     return jsonify({"ok": True})
 
