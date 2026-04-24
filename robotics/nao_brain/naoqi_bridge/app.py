@@ -1,7 +1,7 @@
 #!/usr/bin/env python2
 # -*- coding: utf-8 -*-
 """
-naoqi_bridge — Python 2.7 HTTP bridge between the VPS and NAO via qi SDK.
+naoqi_bridge — Python 2.7 HTTP bridge between the VPS and body stack.
 
 Exposes:
   POST /say              {"text": "..."}
@@ -14,12 +14,7 @@ Exposes:
   GET  /events           → Server-Sent Events stream (sonar, bumper, battery)
   GET  /health           → {"ok": true, "connected": true/false}
 
-The qi SDK requires the NAOqi Python SDK (Python 2.7) installed.
-Mount the SDK directory at /opt/naoqi-sdk and set PYTHONPATH accordingly.
-
 Environment variables:
-  NAO_IP              IP address of the NAO robot (required for real mode)
-  NAO_PORT            NAOqi port, default 9559
   BRIDGE_PORT         HTTP port to listen on, default 8090
   RECONNECT_INTERVAL  Seconds between reconnection attempts, default 15
 """
@@ -35,17 +30,12 @@ import time
 
 from flask import Flask, Response, jsonify, request
 
-try:
-    import qi
-    HAS_QI = True
-except ImportError:
-    HAS_QI = False
-    print("[naoqi_bridge] WARNING: qi module not found — running in MOCK mode.", file=sys.stderr)
-
-NAO_IP             = os.environ.get("NAO_IP", "")
-NAO_PORT           = int(os.environ.get("NAO_PORT", "9559"))
 BRIDGE_PORT        = int(os.environ.get("BRIDGE_PORT", "8090"))
 RECONNECT_INTERVAL = int(os.environ.get("RECONNECT_INTERVAL", "15"))
+
+
+def _mock_reason():
+    return "robot_initiated_ws_only"
 
 app = Flask(__name__)
 
@@ -75,12 +65,9 @@ _event_queues_lock = threading.Lock()
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _disconnect():
-    """Clear all service proxies. The reconnect loop will retry shortly."""
+    """Clear all service proxies."""
     global _session, _tts, _motion, _leds, _posture, _battery, _memory, _sonar
     with _conn_lock:
-        if _session is not None:
-            print("[naoqi_bridge] Connection lost — will retry in {}s.".format(
-                RECONNECT_INTERVAL), file=sys.stderr)
         _session = _tts = _motion = _leds = _posture = _battery = _memory = _sonar = None
     # Drop stale event subscriptions (old memory proxy is dead)
     for attr in ("_sub_bumper_r", "_sub_bumper_l", "_sub_sonar"):
@@ -90,67 +77,14 @@ def _disconnect():
             pass
 
 
-def _connect_once():
-    """Try one connection attempt. Returns True on success."""
-    global _session, _tts, _motion, _leds, _posture, _battery, _memory, _sonar
-    global _battery_poll_started
-
-    if not HAS_QI or not NAO_IP:
-        return False
-
-    url = "tcp://{}:{}".format(NAO_IP, NAO_PORT)
-    print("[naoqi_bridge] Connecting to {}...".format(url), file=sys.stderr)
-    try:
-        session  = qi.Session()
-        session.connect(url)
-        tts      = session.service("ALTextToSpeech")
-        motion   = session.service("ALMotion")
-        leds     = session.service("ALLeds")
-        posture  = session.service("ALRobotPosture")
-        battery  = session.service("ALBattery")
-        memory   = session.service("ALMemory")
-        sonar    = None
-        try:
-            sonar = session.service("ALSonar")
-            sonar.subscribe("naoqi_bridge")
-        except Exception as e:
-            print("[naoqi_bridge] Sonar unavailable: {}".format(e), file=sys.stderr)
-
-        with _conn_lock:
-            _session = session
-            _tts     = tts
-            _motion  = motion
-            _leds    = leds
-            _posture = posture
-            _battery = battery
-            _memory  = memory
-            _sonar   = sonar
-
-        _subscribe_events()
-
-        if not _battery_poll_started:
-            _start_battery_poll()
-            _battery_poll_started = True
-
-        print("[naoqi_bridge] Connected to NAO at {}.".format(NAO_IP), file=sys.stderr)
-        return True
-
-    except Exception as e:
-        print("[naoqi_bridge] Connection attempt failed: {}".format(e), file=sys.stderr)
-        return False
-
-
 def _reconnect_loop():
-    """Daemon thread: keep trying to connect whenever the session is lost."""
-    if not HAS_QI or not NAO_IP:
-        print("[naoqi_bridge] MOCK mode active — reconnect loop idle.", file=sys.stderr)
-        return
-
+    """Daemon thread kept for backward compatibility (outbound robots only)."""
+    has_logged_mode = False
     while True:
-        with _conn_lock:
-            connected = _session is not None
-        if not connected:
-            _connect_once()
+        if not has_logged_mode:
+            print("[naoqi_bridge] Running in outbound-robot mode (no direct IP/PORT connect).",
+                  file=sys.stderr)
+            has_logged_mode = True
         time.sleep(RECONNECT_INTERVAL)
 
 
@@ -230,7 +164,13 @@ def _start_battery_poll():
 def health():
     with _conn_lock:
         connected = _session is not None
-    return jsonify({"ok": True, "nao_ip": NAO_IP, "connected": connected})
+    return jsonify({
+        "ok": True,
+        "mode": "robot_initiated_ws",
+        "connected": connected,
+        "mock": not connected,
+        "mock_reason": _mock_reason() if not connected else "",
+    })
 
 
 @app.route("/say", methods=["POST"])
