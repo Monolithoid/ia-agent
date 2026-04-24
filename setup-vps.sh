@@ -99,10 +99,16 @@ configure_firewall() {
     ufw allow 8000  comment "Coolify UI"
     ufw allow 9090  comment "rosbridge WebSocket (NAO)"
 
+    # body-gateway : autorisé depuis le subnet Docker bridge (chat-relay → host:8095)
+    # Docker crée typiquement des bridges en 172.16-31.x.x ou 10.x.x.x selon le daemon
+    ufw allow from 172.16.0.0/12 to any port 8095 comment "body-gateway depuis Docker bridge (ai-network)"
+    ufw allow from 10.0.0.0/8    to any port 8095 comment "body-gateway depuis Docker bridge (ai-network, alt)"
+
     # Ports internes — non exposés publiquement
     ufw deny 11434  comment "Ollama (reverse proxy uniquement)"
     ufw deny 3000   comment "Open WebUI (reverse proxy uniquement)"
     ufw deny 5678   comment "n8n (SSH tunnel uniquement)"
+    ufw deny 8095   comment "body-gateway (Docker bridge uniquement, voir règles allow ci-dessus)"
 
     ufw --force enable
     log "UFW activé."
