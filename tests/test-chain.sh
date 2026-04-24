@@ -147,10 +147,12 @@ _check "body-gateway /chat répond depuis le host (port 8095)" \
      -H 'Content-Type: application/json' \
      -d '{\"text\":\"\",\"robot_id\":\"nao_01\"}' | grep -i 'missing\|error\|speech'"
 
-# Vérifie que chat-relay a bien détecté le gateway hôte au démarrage
+# Affiche les logs de démarrage de chat-relay pour diagnostic
 _C_RELAY=$(_container chat-relay)
 if [ -n "$_C_RELAY" ]; then
-    _check "chat-relay a détecté le gateway hôte (→ $_C_RELAY)" \
+    _info "Logs de démarrage chat-relay (→ $_C_RELAY) :"
+    docker logs --tail=10 "$_C_RELAY" 2>&1 | while IFS= read -r line; do _info "  $line"; done
+    _check "chat-relay a détecté le gateway hôte" \
         "docker logs --tail=20 $_C_RELAY 2>&1 | grep 'gateway hôte détecté'"
 fi
 
