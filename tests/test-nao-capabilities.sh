@@ -376,7 +376,7 @@ fi
 _head "7 — Flux SSE  (GET /events)"
 
 _sub "Connexion SSE et réception du keepalive"
-out=$(curl -sf --max-time 20 -N -H "Accept: text/event-stream" \
+out=$(curl -s --max-time 20 -N -H "Accept: text/event-stream" \
       "${BRIDGE}/events" 2>&1 | head -5 || true)
 if echo "$out" | grep -qE "data:|keepalive"; then
     _pass "/events stream SSE actif (keepalive ou data reçu)"
@@ -389,7 +389,7 @@ fi
 if [ "$CONNECTED" = "true" ]; then
     _sub "Batterie disponible dans le stream (poll 30 s — attend 35 s)"
     _warn "Ce test attend jusqu'à 35 s (polling batterie)"
-    out=$(curl -sf --max-time 40 -N -H "Accept: text/event-stream" \
+    out=$(curl -s --max-time 40 -N -H "Accept: text/event-stream" \
           "${BRIDGE}/events" 2>&1 \
           | grep -m1 '"topic":"battery"' || true)
     if [ -n "$out" ]; then
@@ -417,42 +417,44 @@ else
 fi
 
 _sub "/motion avec joint invalide"
-out=$(curl -sf --max-time 10 -X POST "${BRIDGE}/motion" \
+out=$(curl -s --max-time 10 -X POST "${BRIDGE}/motion" \
       -H "Content-Type: application/json" \
       -d '{"joint":"JointInexistant","angle":0.5,"speed":0.1}' 2>&1)
-rc=$?
 if [ "$CONNECTED" = "true" ]; then
-    # Avec NAO réel : NAOqi devrait retourner une erreur
+    # Avec NAO réel : NAOqi valide le nom du joint et doit retourner une erreur
     if echo "$out" | grep -q '"error"'; then
-        _pass "/motion joint invalide → erreur NAOqi retournée"
-        _info "$out"
+        _pass "/motion joint invalide → erreur NAOqi retournée (correct)"
     else
-        _fail "/motion joint invalide → erreur NAOqi attendue"
-        _info "$out"
+        _fail "/motion joint invalide → NAOqi aurait dû rejeter ce joint"
     fi
 else
-    # En mock : le bridge accepte n'importe quoi (pas de validation NAOqi)
-    _skip "/motion joint invalide — mock accepte tout (validation côté NAOqi uniquement)"
-    _info "$out"
+    # En mock : le bridge ne valide pas, {"ok":true} est le comportement attendu
+    if echo "$out" | grep -q '"ok".*true'; then
+        _pass "/motion joint invalide → mock retourne ok:true (validation absente en mock, normal)"
+    else
+        _fail "/motion joint invalide → réponse inattendue du mock"
+    fi
 fi
+_info "$out"
 
 _sub "/posture avec nom invalide"
-out=$(curl -sf --max-time 10 -X POST "${BRIDGE}/posture" \
+out=$(curl -s --max-time 10 -X POST "${BRIDGE}/posture" \
       -H "Content-Type: application/json" \
       -d '{"posture":"PostureInexistante","speed":0.5}' 2>&1)
-rc=$?
 if [ "$CONNECTED" = "true" ]; then
     if echo "$out" | grep -q '"error"'; then
-        _pass "/posture invalide → erreur NAOqi retournée"
-        _info "$out"
+        _pass "/posture invalide → erreur NAOqi retournée (correct)"
     else
-        _fail "/posture invalide → erreur NAOqi attendue"
-        _info "$out"
+        _fail "/posture invalide → NAOqi aurait dû rejeter cette posture"
     fi
 else
-    _skip "/posture invalide — mock accepte tout"
-    _info "$out"
+    if echo "$out" | grep -q '"ok".*true'; then
+        _pass "/posture invalide → mock retourne ok:true (validation absente en mock, normal)"
+    else
+        _fail "/posture invalide → réponse inattendue du mock"
+    fi
 fi
+_info "$out"
 
 _sub "Endpoint inexistant → 404"
 code=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" \
