@@ -40,8 +40,6 @@ version: "3.8"
 #   OAUTH_CLIENT_SECRET      : idem
 #   BITTERBOT_GATEWAY_TOKEN  : openssl rand -hex 32
 #   GATEWAY_API_KEY          : openssl rand -hex 32
-#   NAO_IP                   : adresse IP du robot NAO (optionnel si nao_ws_bridge seul)
-#   NAO_PORT                 : 9559 (défaut NAOqi)
 #   NAO_ROBOT_ID             : nao_01 (identifiant ROS2 du corps)
 #   LISTEN_DURATION          : durée d'écoute après wake word en secondes (défaut: 4.0)
 #   ASR_MODEL                : modèle Whisper — tiny/base/small (défaut: small)
@@ -191,40 +189,22 @@ services:
   # ----------------------------------------------------------
   # CORPS NAO — couche physique ROS2 Humble
   #
-  # Quatre services forment le pont cerveau → corps :
+  # Trois services forment le pont cerveau → corps :
   #
-  #   naoqi-bridge       → Python 2.7 + qi SDK, parle à NAO via TCP:9559
-  #                         Expose HTTP/SSE sur 127.0.0.1:8090
-  #   naoqi-driver       → Nœud ROS2, traduit /bodies/{id}/sensors|actuators/*
-  #                         Un nœud par corps physique (ROBOT_ID)
+  #   naoqi-driver       → Nœud ROS2, relaie /bodies/{id}/actuators/* et
+  #                         /naoqi/* vers /nao/* (rosbridge → nao_ws_bridge).
+  #                         NAO initie la connexion WebSocket sortante —
+  #                         aucune adresse IP ni port du robot requis côté VPS.
   #   cognitive-renderer → Nœud ROS2, /cognitive_state → LEDs + tête en continu
   #   body-gateway       → Nœud ROS2, pont Ollama ↔ bus ROS2
   #                         Injecte un system prompt JSON lors de chaque appel
   #                         Gère les ticks oniriques (DREAMING 2h-6h)
   #
   # Réseau : network_mode host pour les nœuds ROS2 (DDS domain 42)
-  #   → Bitterbot joignable sur localhost:19001
-  #   → naoqi-bridge joignable sur localhost:8090
   #
-  # Multi-corps futur : ajouter un naoqi-bridge + naoqi-driver par robot/drone
-  # avec un ROBOT_ID distinct, et ajouter l'ID dans BODY_REGISTRY.
+  # Multi-corps : ajouter un naoqi-driver par robot/drone avec un ROBOT_ID
+  # distinct, et ajouter l'ID dans BODY_REGISTRY.
   # ----------------------------------------------------------
-
-  naoqi-bridge:
-    build: ./robotics/nao_brain/naoqi_bridge
-    image: ${DOCKERHUB_USERNAME}/naoqi-bridge:latest
-    container_name: naoqi-bridge
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8090:8090"
-    volumes:
-      - /opt/ia/nao/naoqi-sdk:/opt/naoqi-sdk:ro
-    environment:
-      - NAO_IP=${NAO_IP}
-      - NAO_PORT=${NAO_PORT:-9559}
-      - BRIDGE_PORT=8090
-    networks:
-      - ai-network
 
   # ----------------------------------------------------------
   # WHISPER ASR — transcription vocale (STT)
@@ -259,12 +239,10 @@ services:
     environment:
       - ROS_DOMAIN_ID=42
       - ROBOT_ID=${NAO_ROBOT_ID:-nao_01}
-      - NAOQI_BRIDGE_URL=http://localhost:8090
       - WHISPER_URL=http://localhost:9000
       - LISTEN_DURATION=${LISTEN_DURATION:-4.0}
+      - NAO_STATUS_TIMEOUT=${NAO_STATUS_TIMEOUT:-90}
     depends_on:
-      naoqi-bridge:
-        condition: service_started
       whisper-asr:
         condition: service_started
 
@@ -380,7 +358,7 @@ services:
 # RÉSEAUX
 #
 # ai-network (bridge, accès internet) :
-#   ollama, open-webui, n8n, chromadb, naoqi-bridge, chat-relay
+#   ollama, open-webui, n8n, chromadb, chat-relay
 #
 # bitterbot-net (bridge, internal: true — aucun accès internet) :
 #   bitterbot-gateway, ollama
