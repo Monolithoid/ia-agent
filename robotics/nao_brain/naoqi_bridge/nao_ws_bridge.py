@@ -28,16 +28,23 @@ import threading
 import time
 
 try:
-    from naoqi import ALProxy
+    from naoqi import ALProxy, ALModule, ALBroker
     HAS_NAOQI = True
 except ImportError:
     HAS_NAOQI = False
+    ALBroker = None
+    class ALModule(object):
+        def __init__(self, name):
+            pass
     print("[bridge] WARNING: module naoqi introuvable — mode MOCK actif", file=sys.stderr)
 
 NAO_IP = "127.0.0.1"
 NAO_PORT = 9559
 RECONNECT_DELAY = 5
 STATUS_INTERVAL = 30
+
+_BROKER      = None  # ALBroker local (doit rester vivant pour les callbacks)
+_CAPTURE_REF = None  # empêche le GC de l'instance _AudioCapture courante
 
 
 # ======================================================================
@@ -241,6 +248,81 @@ def get_proxy(service):
         return None
 
 
+def _ensure_broker():
+    global _BROKER
+    if _BROKER is not None:
+        return True
+    if not HAS_NAOQI or ALBroker is None:
+        return False
+    try:
+        _BROKER = ALBroker("naoBridgeBroker", "0.0.0.0", 0, NAO_IP, NAO_PORT)
+        return True
+    except Exception as e:
+        print("[bridge] ALBroker init error: {}".format(e), file=sys.stderr)
+        return False
+
+
+class _AudioCapture(ALModule):
+    """Module NAOqi recevant les trames audio et détectant la fin de parole par VAD."""
+
+    _RATE         = 16000
+    _SPEECH_RMS   = 600    # seuil RMS déclenchant la capture
+    _SILENCE_RMS  = 200    # seuil RMS en-dessous duquel c'est du silence
+    _SILENCE_SEC  = 1.5    # secondes de silence consécutives pour stopper
+    _SAMPLES_CALL = 170    # échantillons/trame NAO à 16kHz (valeur par défaut)
+    _MAX_SEC      = 10.0   # timeout de sécurité
+
+    def __init__(self, name):
+        ALModule.__init__(self, name)
+        self._name     = name
+        self._pcm      = []
+        self._speaking = False
+        self._sil_n    = 0
+        self._sil_need = int(self._SILENCE_SEC * self._RATE / self._SAMPLES_CALL)
+        self._done     = threading.Event()
+
+    def processRemote(self, nb_ch, nb_samp, _ts, buffer):
+        if self._done.is_set():
+            return
+        try:
+            samples = [buffer[i] for i in range(0, nb_ch * nb_samp, nb_ch)]
+        except TypeError:
+            all_s = struct.unpack_from("<{}h".format(nb_ch * nb_samp), bytes(buffer))
+            samples = list(all_s[::nb_ch])
+        if not samples:
+            return
+        rms = (sum(s * s for s in samples) / len(samples)) ** 0.5
+        if not self._speaking:
+            if rms > self._SPEECH_RMS:
+                self._speaking = True
+                self._pcm.extend(samples)
+        else:
+            self._pcm.extend(samples)
+            if rms < self._SILENCE_RMS:
+                self._sil_n += 1
+                if self._sil_n >= self._sil_need:
+                    self._done.set()
+            else:
+                self._sil_n = 0
+
+    def to_wav(self):
+        import io as _io
+        if not self._pcm:
+            return b""
+        raw = struct.pack("<{}h".format(len(self._pcm)), *self._pcm)
+        buf = _io.BytesIO()
+        buf.write(b"RIFF")
+        buf.write(struct.pack("<I", 36 + len(raw)))
+        buf.write(b"WAVE")
+        buf.write(b"fmt ")
+        buf.write(struct.pack("<IHHIIHH", 16, 1, 1,
+                              self._RATE, self._RATE * 2, 2, 16))
+        buf.write(b"data")
+        buf.write(struct.pack("<I", len(raw)))
+        buf.write(raw)
+        return buf.getvalue()
+
+
 class NaoBridge(object):
 
     def __init__(self, vps_url):
@@ -250,7 +332,7 @@ class NaoBridge(object):
         self._busy_until = 0.0       # timestamp jusqu'auquel le wake word est ignoré
         self._wakeword_started = False  # évite de relancer le thread à chaque reconnexion
         self._asr = None             # proxy ASR conservé pour unsubscribe à l'arrêt
-        self._recorder = None        # proxy recorder conservé pour stopMicrophonesRecording
+        self._audio_capture = None   # module _AudioCapture en cours d'enregistrement
 
     # ------------------------------------------------------------------
     # Connexion / reconnexion
@@ -282,14 +364,17 @@ class NaoBridge(object):
             self.ws.close()
 
     def _cleanup_resources(self):
-        """Libère les ressources NAOqi : désabonnement ASR, arrêt éventuel de l'enregistrement."""
-        if self._recorder:
-            try:
-                self._recorder.stopMicrophonesRecording()
-                print("[bridge] Enregistrement audio arrêté.", file=sys.stderr)
-            except Exception as e:
-                print("[bridge] Erreur arrêt recorder: {}".format(e), file=sys.stderr)
-            self._recorder = None
+        """Libère les ressources NAOqi : désabonnement ASR, arrêt éventuel de la capture VAD."""
+        if self._audio_capture:
+            self._audio_capture._done.set()
+            audio_dev = get_proxy("ALAudioDevice")
+            if audio_dev:
+                try:
+                    audio_dev.unsubscribe(self._audio_capture._name)
+                    print("[bridge] Capture VAD arrêtée.", file=sys.stderr)
+                except Exception as e:
+                    print("[bridge] Erreur arrêt VAD: {}".format(e), file=sys.stderr)
+            self._audio_capture = None
 
         if self._asr:
             try:
@@ -529,22 +614,43 @@ class NaoBridge(object):
             time.sleep(0.2)
 
     def _record_and_publish(self):
-        audio_path = "/home/nao/nao_audio.wav"
-        recorder = get_proxy("ALAudioRecorder")
-        if not recorder:
-            print("[bridge] ALAudioRecorder non disponible.", file=sys.stderr)
-            return
-        try:
-            print("[bridge] Enregistrement 4s ...", file=sys.stderr)
-            self._recorder = recorder
-            recorder.startMicrophonesRecording(audio_path, "wav", 16000, [0, 0, 1, 0])
-            time.sleep(4.0)
-            recorder.stopMicrophonesRecording()
-            self._recorder = None
-            time.sleep(0.3)  # laisse le fichier se fermer proprement
+        global _CAPTURE_REF
 
-            with open(audio_path, "rb") as f:
-                audio_bytes = f.read()
+        if not _ensure_broker():
+            print("[bridge] Broker NAOqi non disponible — enregistrement annulé.", file=sys.stderr)
+            return
+
+        module_name = "NaoCap{:05d}".format(int(time.time() * 10) % 100000)
+        capture = _AudioCapture(module_name)
+        _CAPTURE_REF = capture
+        self._audio_capture = capture
+
+        audio_dev = get_proxy("ALAudioDevice")
+        if not audio_dev:
+            print("[bridge] ALAudioDevice non disponible.", file=sys.stderr)
+            _CAPTURE_REF = None
+            self._audio_capture = None
+            return
+
+        try:
+            print("[bridge] Ecoute VAD (max {}s) ...".format(_AudioCapture._MAX_SEC),
+                  file=sys.stderr)
+            audio_dev.setClientPreferences(module_name, _AudioCapture._RATE, 0, 0)
+            audio_dev.subscribe(module_name)
+
+            capture._done.wait(_AudioCapture._MAX_SEC + 1.0)
+
+            audio_dev.unsubscribe(module_name)
+            self._audio_capture = None
+            _CAPTURE_REF = None
+
+            if not capture._speaking:
+                print("[bridge] Aucune parole détectée.", file=sys.stderr)
+                return
+
+            audio_bytes = capture.to_wav()
+            if not audio_bytes:
+                return
 
             encoded = base64.b64encode(audio_bytes)
             if isinstance(encoded, bytes):
@@ -556,9 +662,17 @@ class NaoBridge(object):
                     "topic": "/nao/audio",
                     "msg":   {"data": encoded},
                 }))
-                print("[bridge] Audio publié ({} octets).".format(len(audio_bytes)), file=sys.stderr)
+                duration = len(capture._pcm) / float(_AudioCapture._RATE)
+                print("[bridge] Audio VAD publié ({} octets, {:.1f}s).".format(
+                    len(audio_bytes), duration), file=sys.stderr)
         except Exception as e:
             print("[bridge] _record_and_publish error: {}".format(e), file=sys.stderr)
+            try:
+                audio_dev.unsubscribe(module_name)
+            except Exception:
+                pass
+            self._audio_capture = None
+            _CAPTURE_REF = None
 
     # ------------------------------------------------------------------
     # Publication du statut (batterie) toutes les STATUS_INTERVAL s
