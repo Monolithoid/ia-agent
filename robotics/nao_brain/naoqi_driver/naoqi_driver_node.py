@@ -46,7 +46,6 @@ ROBOT_ID = os.environ.get("ROBOT_ID", "nao_01")
 WHISPER_URL = os.environ.get("WHISPER_URL", "")
 LISTEN_DURATION = float(os.environ.get("LISTEN_DURATION", "4.0"))
 NAO_STATUS_TIMEOUT = float(os.environ.get("NAO_STATUS_TIMEOUT", "90.0"))
-NAOQI_BRIDGE_URL = os.environ.get("NAOQI_BRIDGE_URL", "http://localhost:8090")
 
 
 class NAOqiDriverNode(Node):
@@ -136,21 +135,6 @@ class NAOqiDriverNode(Node):
         msg = Bool()
         msg.data = state
         self.pub_connected.publish(msg)
-        threading.Thread(
-            target=self._notify_bridge,
-            args=(state,),
-            daemon=True,
-        ).start()
-
-    def _notify_bridge(self, state: bool):
-        try:
-            requests.post(
-                f"{NAOQI_BRIDGE_URL}/connected",
-                json={"connected": state},
-                timeout=3,
-            )
-        except Exception:
-            pass
 
     # ─────────────────────────────────────────────────────────────────────────
     # Audio NAO → Whisper STT → topic speech
