@@ -1,20 +1,21 @@
 """
 title: NAO Brain
 author: ia-agent
-version: 0.3.0
+version: 0.4.0
 description: >
-  Connecte le chat Open WebUI au cerveau robotique complet
+  Console cerveau — connecte Open WebUI directement au cerveau robotique
   (body-gateway → Bitterbot → ROS 2 → NAO / drones / corps enregistrés).
 
-  Le mot de réveil « ok nao » active l'agent. Qwen détecte le préfixe
-  et appelle cet outil, qui injecte le message dans le même pipeline
-  que la parole directe à NAO.
+  Chaque message est injecté dans le pipeline cognitif de Bitterbot.
+  NAO réagit physiquement (parole, gestes, LEDs, déplacement) à chaque
+  réponse du cerveau. Le WebUI sert de console de sondage : ce que vous
+  tapez est traité comme une stimulation directe du cerveau.
 
   Exemples :
-    ok nao, comment tu vas ?
-    ok nao, dis bonjour et fais une révérence
-    ok nao, avance vers la fenêtre
-    ok nao, mets les LEDs en violet et assieds-toi
+    Comment tu vas ?
+    Dis bonjour et fais une révérence
+    Avance vers la fenêtre
+    Mets les LEDs en violet et assieds-toi
 
   Installation dans Open WebUI :
     Workspace → Tools → (+) → coller ce fichier → Enregistrer
@@ -22,9 +23,10 @@ description: >
     Et coller le system prompt indiqué ci-dessous.
 
   System prompt recommandé pour qwen2.5:7b :
-    Quand le message de l'utilisateur commence par « ok nao »,
-    appelle l'outil talk_to_nao avec la commande qui suit le préfixe.
-    Pour tout autre message, réponds normalement sans utiliser l'outil.
+    Tu es une interface de sondage direct vers le cerveau du robot NAO.
+    Pour CHAQUE message de l'utilisateur, sans exception, appelle
+    l'outil talk_to_nao en passant le message tel quel comme commande.
+    Ne réponds jamais toi-même — laisse toujours le cerveau répondre.
 
 required_open_webui_version: 0.3.0
 """
@@ -53,11 +55,11 @@ class Tools:
 
     def talk_to_nao(self, command: str) -> str:
         """
-        Send a command to the NAO robot brain (Bitterbot via body-gateway).
-        The brain processes the command, speaks through NAO, triggers gestures,
-        LEDs, movement and any other registered body (drones, etc.).
-        Use this tool whenever the user says "ok nao" followed by a command.
-        :param command: The instruction to send to the robot brain (without the "ok nao" prefix).
+        Inject a message into the NAO robot brain (Bitterbot via body-gateway).
+        The brain processes the message, speaks the response through NAO's speakers,
+        and triggers physical reactions: gestures, LEDs, movement.
+        Always call this tool for every user message — the brain always responds.
+        :param command: The message to send to the robot brain.
         :return: What NAO said and the actions it performed.
         """
         try:
