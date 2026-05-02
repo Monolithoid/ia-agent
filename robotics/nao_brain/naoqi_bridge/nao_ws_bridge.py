@@ -490,17 +490,39 @@ class NaoBridge(object):
             return
 
         last_word = ""
+        _exiting_busy = False
         while not self._stop.is_set():
             try:
                 if time.time() < self._busy_until:
+                    _exiting_busy = True
                     time.sleep(0.2)
                     continue
+
+                if _exiting_busy:
+                    # Première itération après la période occupée :
+                    # on vide le cache ALMemory pour éviter une fausse détection
+                    # sur la valeur residuelle du dernier "ok nao".
+                    _exiting_busy = False
+                    last_word = ""
+                    try:
+                        memory.insertData("WordRecognized", ["", 0.0])
+                    except Exception:
+                        pass
+                    time.sleep(0.2)
+                    continue
+
                 value = memory.getData("WordRecognized")
                 if value and len(value) >= 2 and float(value[1]) > 0.3:
                     phrase = value[0].lower().strip()
                     if phrase != last_word and ("ok nao" in phrase or "okay nao" in phrase):
                         last_word = phrase
                         self._busy_until = time.time() + 20.0  # bloque pendant écoute + TTS
+                        # Efface immédiatement le cache ALMemory pour éviter une re-détection
+                        # si body_gateway répond lentement et dépasse les 20 s.
+                        try:
+                            memory.insertData("WordRecognized", ["", 0.0])
+                        except Exception:
+                            pass
                         threading.Thread(target=self._record_and_publish).start()
             except Exception as e:
                 print("[bridge] wakeword_loop error: {}".format(e), file=sys.stderr)

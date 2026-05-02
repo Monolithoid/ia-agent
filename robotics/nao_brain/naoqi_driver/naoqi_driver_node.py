@@ -116,15 +116,20 @@ class NAOqiDriverNode(Node):
             self.get_logger().info(f"[{ROBOT_ID}] NAO connecté via rosbridge")
 
     def _check_connection(self):
-        if not self._connected or self._last_status_time == 0.0:
+        if self._last_status_time == 0.0:
             return
         elapsed = time.time() - self._last_status_time
         if elapsed > NAO_STATUS_TIMEOUT:
-            self._connected = False
-            self._publish_connected(False)
-            self.get_logger().warn(
-                f"[{ROBOT_ID}] Pas de /nao/status depuis {elapsed:.0f}s — déconnecté"
-            )
+            if self._connected:
+                self._connected = False
+                self._publish_connected(False)
+                self.get_logger().warn(
+                    f"[{ROBOT_ID}] Pas de /nao/status depuis {elapsed:.0f}s — déconnecté"
+                )
+        elif self._connected:
+            # Republication périodique : body_gateway reçoit l'état dans les 15 s
+            # après son (re)démarrage, même si naoqi_driver n'a pas changé d'état.
+            self._publish_connected(True)
 
     def _publish_connected(self, state: bool):
         msg = Bool()
