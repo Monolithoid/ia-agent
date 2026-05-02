@@ -106,19 +106,20 @@ _head "0 — Prérequis"
 
 _get "naoqi-bridge /health répond" "/health" '"ok"'
 
-# Récupère l'état de connexion une seule fois pour les branches physiques
-HEALTH=$(curl -sf --max-time 5 "${BRIDGE}/health" 2>/dev/null || echo "{}")
-CONNECTED=$(echo "$HEALTH" | python3 -c \
-    "import json,sys; d=json.load(sys.stdin); print('true' if d.get('connected') else 'false')" \
-    2>/dev/null || echo "false")
-
-if [ "$CONNECTED" = "true" ]; then
-    _info "NAO connecté — tests physiques disponibles"
-elif [ "$PHYSICAL" -eq 1 ]; then
-    _warn "connected=false mais --nao demandé — le bridge est en mode mock"
-    _warn "Les tests physiques vont passer (mock répond ok=true) mais NAO ne bougera pas"
+if [ "$PHYSICAL" -eq 1 ]; then
+    HEALTH=$(curl -sf --max-time 5 "${BRIDGE}/health" 2>/dev/null || echo "{}")
+    CONNECTED=$(echo "$HEALTH" | python3 -c \
+        "import json,sys; d=json.load(sys.stdin); print('true' if d.get('connected') else 'false')" \
+        2>/dev/null || echo "false")
+    if [ "$CONNECTED" = "true" ]; then
+        _info "NAO connecté — mode NAO physique actif"
+    else
+        _fail "connected=false — NAO non connecté, impossible de lancer --nao"
+        _info "$HEALTH"
+        exit 1
+    fi
 else
-    _info "connected=false — mode mock (normal si NAO éteint)"
+    _info "Mode mock — les commandes sont simulées (relancer avec --nao quand NAO est allumé)"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -129,7 +130,7 @@ _head "1 — Batterie  (GET /battery)"
 _sub "Lecture du niveau de charge"
 _get "GET /battery → niveau retourné" "/battery" '"level"'
 
-if [ "$CONNECTED" = "true" ]; then
+if [ "$PHYSICAL" -eq 1 ]; then
     LEVEL=$(curl -sf --max-time 5 "${BRIDGE}/battery" 2>/dev/null \
         | python3 -c "import json,sys; print(json.load(sys.stdin).get('level','?'))" 2>/dev/null)
     _info "Niveau batterie : ${LEVEL}%"
@@ -386,7 +387,7 @@ else
     [ -n "$out" ] && _info "$out"
 fi
 
-if [ "$CONNECTED" = "true" ]; then
+if [ "$PHYSICAL" -eq 1 ]; then
     _sub "Batterie disponible dans le stream (poll 30 s — attend 35 s)"
     _warn "Ce test attend jusqu'à 35 s (polling batterie)"
     out=$(curl -s --max-time 40 -N -H "Accept: text/event-stream" \
@@ -399,7 +400,7 @@ if [ "$CONNECTED" = "true" ]; then
         _fail "/events topic battery absent en 40 s"
     fi
 else
-    _skip "test batterie SSE ignoré (NAO non connecté)"
+    _skip "test batterie SSE ignoré (mode mock)"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -420,7 +421,7 @@ _sub "/motion avec joint invalide"
 out=$(curl -s --max-time 10 -X POST "${BRIDGE}/motion" \
       -H "Content-Type: application/json" \
       -d '{"joint":"JointInexistant","angle":0.5,"speed":0.1}' 2>&1)
-if [ "$CONNECTED" = "true" ]; then
+if [ "$PHYSICAL" -eq 1 ]; then
     # Avec NAO réel : NAOqi valide le nom du joint et doit retourner une erreur
     if echo "$out" | grep -q '"error"'; then
         _pass "/motion joint invalide → erreur NAOqi retournée (correct)"
@@ -441,7 +442,7 @@ _sub "/posture avec nom invalide"
 out=$(curl -s --max-time 10 -X POST "${BRIDGE}/posture" \
       -H "Content-Type: application/json" \
       -d '{"posture":"PostureInexistante","speed":0.5}' 2>&1)
-if [ "$CONNECTED" = "true" ]; then
+if [ "$PHYSICAL" -eq 1 ]; then
     if echo "$out" | grep -q '"error"'; then
         _pass "/posture invalide → erreur NAOqi retournée (correct)"
     else
