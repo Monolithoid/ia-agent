@@ -427,9 +427,9 @@ class BodyGatewayNode(Node):
 
             if not self._body_connected.get(body_id, False):
                 self.get_logger().warn(
-                    f"[{body_id}] Corps non connecté — action '{action.get('type','')}' ignorée"
+                    f"[{body_id}] Corps non connecté (heartbeat absent) — "
+                    f"action '{action.get('type','')}' envoyée quand même"
                 )
-                continue
 
             kind = action.get("type", "")
             try:
