@@ -257,8 +257,10 @@ services:
     environment:
       - BRIDGE_PORT=8090
       - RECONNECT_INTERVAL=15
+      - ROSBRIDGE_URL=ws://rosbridge-proxy:80
     networks:
       - ai-network
+      - robotics-net
 
   naoqi-driver:
     build: ./robotics/nao_brain/naoqi_driver

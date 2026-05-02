@@ -13,17 +13,24 @@ Exposes:
   GET  /battery          → {"level": 85}
   GET  /events           → Server-Sent Events stream (sonar, bumper, battery)
   GET  /health           → {"ok": true, "connected": true/false}
+  POST /connected        {"connected": true/false}  — called by naoqi_driver
 
 Environment variables:
   BRIDGE_PORT         HTTP port to listen on, default 8090
   RECONNECT_INTERVAL  Seconds between reconnection attempts, default 15
+  ROSBRIDGE_URL       ws:// URL of rosbridge (e.g. ws://rosbridge-proxy:80)
+                      When set and connected=true, commands are forwarded to
+                      the real NAO via rosbridge instead of being mocked.
 """
 
 from __future__ import print_function
 
+import base64
+import hashlib
 import json
 import os
 import Queue
+import struct
 import sys
 import threading
 import time
@@ -32,6 +39,7 @@ from flask import Flask, Response, jsonify, request
 
 BRIDGE_PORT        = int(os.environ.get("BRIDGE_PORT", "8090"))
 RECONNECT_INTERVAL = int(os.environ.get("RECONNECT_INTERVAL", "15"))
+ROSBRIDGE_URL      = os.environ.get("ROSBRIDGE_URL", "")
 
 
 def _mock_reason():
@@ -61,6 +69,90 @@ _battery_poll_started = False
 # ── SSE event bus ─────────────────────────────────────────────────────────────
 _event_queues      = []
 _event_queues_lock = threading.Lock()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Rosbridge publish helper (pure Python 2.7 WebSocket client, send-only)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _rosbridge_publish(topic, msg_type, msg):
+    """
+    Open a WebSocket connection to rosbridge, advertise topic, publish msg,
+    then close.  Fire-and-forget — caller does not wait for a reply.
+
+    Returns True on success, False on any error (bridge falls back to mock log).
+    """
+    if not ROSBRIDGE_URL or not ROSBRIDGE_URL.startswith("ws://"):
+        return False
+
+    try:
+        tail = ROSBRIDGE_URL[5:]
+        if "/" in tail:
+            host_port, path_rest = tail.split("/", 1)
+            path = "/" + path_rest
+        else:
+            host_port, path = tail, "/"
+
+        if ":" in host_port:
+            host, port_str = host_port.rsplit(":", 1)
+            port = int(port_str)
+        else:
+            host, port = host_port, 80
+
+        import socket as _socket
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        sock.settimeout(5)
+        sock.connect((host, port))
+
+        raw_key = base64.b64encode(os.urandom(16)).decode("ascii")
+        handshake = (
+            "GET {path} HTTP/1.1\r\n"
+            "Host: {host}:{port}\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            "Sec-WebSocket-Key: {key}\r\n"
+            "Sec-WebSocket-Version: 13\r\n"
+            "\r\n"
+        ).format(path=path, host=host, port=port, key=raw_key)
+        sock.sendall(handshake.encode("ascii"))
+
+        resp = b""
+        while b"\r\n\r\n" not in resp:
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise IOError("Connection closed during WS handshake")
+            resp += chunk
+        if b"101" not in resp.split(b"\r\n")[0]:
+            sock.close()
+            raise IOError("WS handshake failed: {}".format(resp.split(b"\r\n")[0]))
+
+        def _send_frame(text):
+            if isinstance(text, unicode):
+                text = text.encode("utf-8")
+            payload = bytearray(text)
+            n = len(payload)
+            mask_key = bytearray(os.urandom(4))
+            hdr = bytearray([0x81])  # FIN + text opcode
+            if n < 126:
+                hdr.append(0x80 | n)
+            elif n < 65536:
+                hdr.append(0x80 | 126)
+                hdr.extend(struct.pack(">H", n))
+            else:
+                hdr.append(0x80 | 127)
+                hdr.extend(struct.pack(">Q", n))
+            hdr.extend(mask_key)
+            masked = bytearray(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+            sock.sendall(bytes(hdr) + bytes(masked))
+
+        _send_frame(json.dumps({"op": "advertise", "topic": topic, "type": msg_type}))
+        _send_frame(json.dumps({"op": "publish",   "topic": topic, "msg":  msg}))
+        sock.close()
+        return True
+
+    except Exception as e:
+        print("[bridge] rosbridge_publish error ({}): {}".format(topic, e), file=sys.stderr)
+        return False
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -184,6 +276,12 @@ def set_connected():
     state = bool(data.get("connected", False))
     with _conn_lock:
         _ws_connected = state
+    if state:
+        print("[naoqi_bridge] NAO connected via rosbridge"
+              + (" — forwarding to {}".format(ROSBRIDGE_URL) if ROSBRIDGE_URL else " (no ROSBRIDGE_URL, mock only)"),
+              file=sys.stderr)
+    else:
+        print("[naoqi_bridge] NAO disconnected", file=sys.stderr)
     return jsonify({"ok": True, "connected": state})
 
 
@@ -199,6 +297,13 @@ def say():
         except Exception as e:
             _disconnect()
             return jsonify({"error": str(e)}), 500
+    elif _ws_connected:
+        ok = _rosbridge_publish(
+            "/nao/speech", "std_msgs/String",
+            {"data": text.encode("utf-8") if isinstance(text, unicode) else text},
+        )
+        if not ok:
+            return jsonify({"error": "rosbridge unreachable"}), 503
     else:
         sys.stderr.write("[MOCK] say: {}\n".format(
             text.encode("utf-8") if isinstance(text, unicode) else text))
@@ -220,6 +325,13 @@ def motion():
         except Exception as e:
             _disconnect()
             return jsonify({"error": str(e)}), 500
+    elif _ws_connected:
+        ok = _rosbridge_publish(
+            "/nao/motion", "std_msgs/String",
+            {"data": json.dumps({"joint": str(joint), "angle": angle, "speed": speed})},
+        )
+        if not ok:
+            return jsonify({"error": "rosbridge unreachable"}), 503
     else:
         print("[MOCK] motion: {} -> {:.2f} rad".format(joint, angle), file=sys.stderr)
 
@@ -241,6 +353,14 @@ def leds():
         except Exception as e:
             _disconnect()
             return jsonify({"error": str(e)}), 500
+    elif _ws_connected:
+        # nao_ws_bridge expects "name" (not "group") in the LED payload
+        ok = _rosbridge_publish(
+            "/nao/leds", "std_msgs/String",
+            {"data": json.dumps({"name": group, "r": r, "g": g, "b": b, "duration": duration})},
+        )
+        if not ok:
+            return jsonify({"error": "rosbridge unreachable"}), 503
     else:
         print("[MOCK] leds: {} rgb({:.2f},{:.2f},{:.2f}) {}s".format(
             group, r, g, b, duration), file=sys.stderr)
@@ -260,6 +380,15 @@ def posture():
         except Exception as e:
             _disconnect()
             return jsonify({"error": str(e)}), 500
+    elif _ws_connected:
+        # /nao/gesture carries the posture name as plain string data.
+        # speed is not forwarded because nao_ws_bridge calls goToPosture(name, 0.5).
+        ok = _rosbridge_publish(
+            "/nao/gesture", "std_msgs/String",
+            {"data": posture_name},
+        )
+        if not ok:
+            return jsonify({"error": "rosbridge unreachable"}), 503
     else:
         print("[MOCK] posture: {} speed={}".format(posture_name, speed), file=sys.stderr)
 
@@ -279,6 +408,16 @@ def move():
         except Exception as e:
             _disconnect()
             return jsonify({"error": str(e)}), 500
+    elif _ws_connected:
+        ok = _rosbridge_publish(
+            "/nao/cmd_vel", "geometry_msgs/Twist",
+            {
+                "linear":  {"x": x,     "y": y,   "z": 0.0},
+                "angular": {"x": 0.0,   "y": 0.0, "z": theta},
+            },
+        )
+        if not ok:
+            return jsonify({"error": "rosbridge unreachable"}), 503
     else:
         print("[MOCK] move: x={} y={} theta={}".format(x, y, theta), file=sys.stderr)
 
@@ -293,6 +432,10 @@ def move_stop():
         except Exception as e:
             _disconnect()
             return jsonify({"error": str(e)}), 500
+    elif _ws_connected:
+        ok = _rosbridge_publish("/nao/stop", "std_msgs/Empty", {})
+        if not ok:
+            return jsonify({"error": "rosbridge unreachable"}), 503
     else:
         print("[MOCK] move: stop", file=sys.stderr)
     return jsonify({"ok": True})
