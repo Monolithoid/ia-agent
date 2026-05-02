@@ -249,6 +249,8 @@ class NaoBridge(object):
         self._stop = threading.Event()
         self._busy_until = 0.0       # timestamp jusqu'auquel le wake word est ignoré
         self._wakeword_started = False  # évite de relancer le thread à chaque reconnexion
+        self._asr = None             # proxy ASR conservé pour unsubscribe à l'arrêt
+        self._recorder = None        # proxy recorder conservé pour stopMicrophonesRecording
 
     # ------------------------------------------------------------------
     # Connexion / reconnexion
@@ -275,8 +277,27 @@ class NaoBridge(object):
 
     def stop(self):
         self._stop.set()
+        self._cleanup_resources()
         if self.ws:
             self.ws.close()
+
+    def _cleanup_resources(self):
+        """Libère les ressources NAOqi : désabonnement ASR, arrêt éventuel de l'enregistrement."""
+        if self._recorder:
+            try:
+                self._recorder.stopMicrophonesRecording()
+                print("[bridge] Enregistrement audio arrêté.", file=sys.stderr)
+            except Exception as e:
+                print("[bridge] Erreur arrêt recorder: {}".format(e), file=sys.stderr)
+            self._recorder = None
+
+        if self._asr:
+            try:
+                self._asr.unsubscribe("nao_ws_bridge_ww")
+                print("[bridge] ASR désabonné.", file=sys.stderr)
+            except Exception as e:
+                print("[bridge] Erreur désabonnement ASR: {}".format(e), file=sys.stderr)
+            self._asr = None
 
     # ------------------------------------------------------------------
     # Evenements WebSocket
@@ -285,12 +306,13 @@ class NaoBridge(object):
     def _on_open(self, ws):
         print("[bridge] Connecte. Abonnement aux topics ...", file=sys.stderr)
         topics = [
-            ("/nao/speech",  "std_msgs/String"),
-            ("/nao/cmd_vel", "geometry_msgs/Twist"),
-            ("/nao/gesture", "std_msgs/String"),
-            ("/nao/leds",    "std_msgs/String"),
-            ("/nao/stop",    "std_msgs/Empty"),
-            ("/nao/motion",  "std_msgs/String"),
+            ("/nao/speech",    "std_msgs/String"),
+            ("/nao/cmd_vel",   "geometry_msgs/Twist"),
+            ("/nao/gesture",   "std_msgs/String"),
+            ("/nao/leds",      "std_msgs/String"),
+            ("/nao/stop",      "std_msgs/Empty"),
+            ("/nao/motion",    "std_msgs/String"),
+            ("/nao/shutdown",  "std_msgs/Empty"),
         ]
         for topic, msg_type in topics:
             ws.send(json.dumps({"op": "subscribe", "topic": topic, "type": msg_type}))
@@ -353,6 +375,9 @@ class NaoBridge(object):
             )
         elif topic == "/nao/stop":
             self._stop_move()
+        elif topic == "/nao/shutdown":
+            print("[bridge] Commande /nao/shutdown reçue — arrêt propre.", file=sys.stderr)
+            threading.Thread(target=self.stop).start()
         elif topic == "/nao/motion":
             try:
                 payload = json.loads(data.get("data", "{}"))
@@ -458,6 +483,7 @@ class NaoBridge(object):
                 print("[bridge] ASR: French non disponible, bascule sur English.", file=sys.stderr)
             asr.setVocabulary(["ok nao", "okay nao"], True)
             asr.subscribe("nao_ws_bridge_ww")
+            self._asr = asr
             print("[bridge] Wake word 'ok nao' actif.", file=sys.stderr)
         except Exception as e:
             print("[bridge] ASR init error: {}".format(e), file=sys.stderr)
@@ -488,9 +514,11 @@ class NaoBridge(object):
             return
         try:
             print("[bridge] Enregistrement 4s ...", file=sys.stderr)
+            self._recorder = recorder
             recorder.startMicrophonesRecording(audio_path, "wav", 16000, [0, 0, 1, 0])
             time.sleep(4.0)
             recorder.stopMicrophonesRecording()
+            self._recorder = None
             time.sleep(0.3)  # laisse le fichier se fermer proprement
 
             with open(audio_path, "rb") as f:
@@ -550,4 +578,6 @@ if __name__ == "__main__":
     try:
         bridge.run()
     except KeyboardInterrupt:
+        print("\n[bridge] Ctrl+C reçu — arrêt propre en cours ...", file=sys.stderr)
         bridge.stop()
+        print("[bridge] Arrêté.", file=sys.stderr)
