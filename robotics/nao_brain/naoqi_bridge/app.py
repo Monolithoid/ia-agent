@@ -52,6 +52,9 @@ _battery  = None
 _memory   = None
 _sonar    = None
 
+# Set to True by POST /connected when naoqi_driver detects NAO via rosbridge.
+_ws_connected = False
+
 # Battery poll thread is started once and keeps running (checks _battery each iteration).
 _battery_poll_started = False
 
@@ -163,7 +166,7 @@ def _start_battery_poll():
 @app.route("/health")
 def health():
     with _conn_lock:
-        connected = _session is not None
+        connected = (_session is not None) or _ws_connected
     return jsonify({
         "ok": True,
         "mode": "robot_initiated_ws",
@@ -171,6 +174,17 @@ def health():
         "mock": not connected,
         "mock_reason": _mock_reason() if not connected else "",
     })
+
+
+@app.route("/connected", methods=["POST"])
+def set_connected():
+    """Called by naoqi_driver when NAO connection state changes via rosbridge."""
+    global _ws_connected
+    data = request.json or {}
+    state = bool(data.get("connected", False))
+    with _conn_lock:
+        _ws_connected = state
+    return jsonify({"ok": True, "connected": state})
 
 
 @app.route("/say", methods=["POST"])
