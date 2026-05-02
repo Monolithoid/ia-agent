@@ -290,6 +290,7 @@ class NaoBridge(object):
             ("/nao/gesture", "std_msgs/String"),
             ("/nao/leds",    "std_msgs/String"),
             ("/nao/stop",    "std_msgs/Empty"),
+            ("/nao/motion",  "std_msgs/String"),
         ]
         for topic, msg_type in topics:
             ws.send(json.dumps({"op": "subscribe", "topic": topic, "type": msg_type}))
@@ -352,6 +353,16 @@ class NaoBridge(object):
             )
         elif topic == "/nao/stop":
             self._stop_move()
+        elif topic == "/nao/motion":
+            try:
+                payload = json.loads(data.get("data", "{}"))
+            except ValueError:
+                return
+            self._motion_joint(
+                str(payload.get("joint", "HeadYaw")),
+                float(payload.get("angle", 0.0)),
+                float(payload.get("speed", 0.05)),
+            )
 
     # ------------------------------------------------------------------
     # Commandes NAOqi
@@ -411,6 +422,19 @@ class NaoBridge(object):
                 proxy.stopMove()
             except Exception as e:
                 print("[bridge] stop error: {}".format(e), file=sys.stderr)
+
+    def _motion_joint(self, joint, angle, speed):
+        if not HAS_NAOQI:
+            print("[MOCK] motion_joint: {} -> {:.3f} rad speed={}".format(joint, angle, speed),
+                  file=sys.stderr)
+            return
+        proxy = get_proxy("ALMotion")
+        if proxy:
+            try:
+                proxy.setStiffnesses("Head", 1.0)
+                proxy.angleInterpolationWithSpeed([joint], [angle], speed, True)
+            except Exception as e:
+                print("[bridge] motion_joint error: {}".format(e), file=sys.stderr)
 
     # ------------------------------------------------------------------
     # Publication du statut (batterie) toutes les STATUS_INTERVAL s

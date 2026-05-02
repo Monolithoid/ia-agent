@@ -2,30 +2,31 @@
 """
 naoqi_driver2 — Nœud ROS2 Humble pour un corps NAO.
 
-Traduit les topics /bodies/{ROBOT_ID}/* en appels HTTP vers naoqi_bridge,
-et publie les événements NAO (parole, sonar, batterie, bumper) vers le même
-namespace — consommés par body_gateway.
+Relaie les topics /bodies/{ROBOT_ID}/actuators/* et /naoqi/* vers les topics
+/nao/* que nao_ws_bridge.py (embarqué sur NAO) écoute via rosbridge.
 
-Chaque instance de ce nœud gère UN corps physique identifié par ROBOT_ID.
-Pour plusieurs NAO, lancer plusieurs instances avec des ROBOT_ID distincts
-(et des NAOQI_BRIDGE_URL distincts si plusieurs bridges).
+NAO initie la connexion WebSocket sortante vers rosbridge (VPS) — aucune
+adresse IP ni port du robot n'est requis côté VPS.  La présence de messages
+sur /nao/status signale que le robot est connecté.
 
-Topics publiés (NAO → body_gateway) :
-  /bodies/{ROBOT_ID}/sensors/speech    std_msgs/String
-  /bodies/{ROBOT_ID}/sensors/sonar     sensor_msgs/Range
-  /bodies/{ROBOT_ID}/sensors/battery   std_msgs/Float32
-  /bodies/{ROBOT_ID}/sensors/bumper    std_msgs/Bool
+Flux commandes (cerveau → NAO) :
+  /bodies/{id}/actuators/say     → /nao/speech   (std_msgs/String)
+  /bodies/{id}/actuators/motion  → /nao/motion   (std_msgs/String JSON)
+  /bodies/{id}/actuators/leds    → /nao/leds     (std_msgs/String JSON)
+  /bodies/{id}/actuators/posture → /nao/gesture  (std_msgs/String)
+  /bodies/{id}/actuators/move    → /nao/cmd_vel  (geometry_msgs/Twist)
+  /naoqi/leds                    → /nao/leds     (depuis cognitive_renderer)
+  /naoqi/motion                  → /nao/motion   (depuis cognitive_renderer)
 
-Topics souscrits (body_gateway → NAO) :
-  /bodies/{ROBOT_ID}/actuators/say     std_msgs/String
-  /bodies/{ROBOT_ID}/actuators/motion  std_msgs/String  (JSON)
-  /bodies/{ROBOT_ID}/actuators/leds    std_msgs/String  (JSON)
-  /bodies/{ROBOT_ID}/actuators/posture std_msgs/String
-  /bodies/{ROBOT_ID}/actuators/move    std_msgs/String  (JSON)
+Flux capteurs (NAO → cerveau) :
+  /nao/status  → /bodies/{id}/sensors/battery  (batterie + heartbeat connexion)
+  /nao/audio   → Whisper STT → /bodies/{id}/sensors/speech
 
 Variables d'environnement :
   ROBOT_ID          identifiant de ce corps, défaut "nao_01"
-  NAOQI_BRIDGE_URL  URL du bridge Python 2.7, défaut http://localhost:8090
+  WHISPER_URL       URL du service Whisper ASR, vide = désactivé
+  LISTEN_DURATION   durée d'enregistrement audio en secondes, défaut 4.0
+  NAO_STATUS_TIMEOUT secondes sans /nao/status avant de marquer déconnecté, défaut 90
 """
 
 import base64
@@ -36,15 +37,15 @@ import time
 
 import requests
 import rclpy
+from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from sensor_msgs.msg import Range
 from std_msgs.msg import Bool, Float32, String
 
 ROBOT_ID = os.environ.get("ROBOT_ID", "nao_01")
-BRIDGE_URL = os.environ.get("NAOQI_BRIDGE_URL", "http://localhost:8090")
 WHISPER_URL = os.environ.get("WHISPER_URL", "")
 LISTEN_DURATION = float(os.environ.get("LISTEN_DURATION", "4.0"))
-SSE_RECONNECT_DELAY = 5
+NAO_STATUS_TIMEOUT = float(os.environ.get("NAO_STATUS_TIMEOUT", "90.0"))
 
 
 class NAOqiDriverNode(Node):
@@ -53,116 +54,88 @@ class NAOqiDriverNode(Node):
         super().__init__("naoqi_driver2")
 
         ns = f"/bodies/{ROBOT_ID}"
+        self._last_status_time = 0.0
+        self._connected = False
 
         # ── Publishers : capteurs NAO → ROS2 ──────────────────────────────────
         self.pub_speech  = self.create_publisher(String,  f"{ns}/sensors/speech",  10)
         self.pub_battery = self.create_publisher(Float32, f"{ns}/sensors/battery", 10)
         self.pub_bumper  = self.create_publisher(Bool,    f"{ns}/sensors/bumper",  10)
         self.pub_sonar   = self.create_publisher(Range,   f"{ns}/sensors/sonar",   10)
+        self.pub_connected = self.create_publisher(Bool,  f"{ns}/connected",       10)
 
-        # ── Subscribers : commandes ROS2 → NAO ───────────────────────────────
+        # ── Publishers : commandes → NAO (via rosbridge → nao_ws_bridge) ──────
+        self.pub_nao_speech  = self.create_publisher(String, "/nao/speech",  10)
+        self.pub_nao_cmd_vel = self.create_publisher(Twist,  "/nao/cmd_vel", 10)
+        self.pub_nao_gesture = self.create_publisher(String, "/nao/gesture", 10)
+        self.pub_nao_leds    = self.create_publisher(String, "/nao/leds",    10)
+        self.pub_nao_motion  = self.create_publisher(String, "/nao/motion",  10)
+
+        # ── Subscribers : commandes /bodies/*/actuators/* ─────────────────────
         self.create_subscription(String, f"{ns}/actuators/say",     self._on_say,     10)
         self.create_subscription(String, f"{ns}/actuators/motion",  self._on_motion,  10)
         self.create_subscription(String, f"{ns}/actuators/leds",    self._on_leds,    10)
         self.create_subscription(String, f"{ns}/actuators/posture", self._on_posture, 10)
         self.create_subscription(String, f"{ns}/actuators/move",    self._on_move,    10)
 
-        # ── Souscription audio : /nao/audio (publié par nao_ws_bridge via rosbridge) ──
+        # ── Subscribers : cognitive_renderer → même canaux physiques ──────────
+        self.create_subscription(String, "/naoqi/leds",   self._on_naoqi_leds,   10)
+        self.create_subscription(String, "/naoqi/motion", self._on_naoqi_motion, 10)
+
+        # ── Subscriber statut NAO : batterie + heartbeat connexion ─────────────
+        self.create_subscription(String, "/nao/status", self._on_nao_status, 10)
+
+        # ── Subscriber audio NAO → transcription Whisper ──────────────────────
         self.create_subscription(String, "/nao/audio", self._on_audio, 10)
 
-        # ── Topic connexion physique : SSE up ↔ bridge/NAO joignable ────────
-        self.pub_connected = self.create_publisher(Bool, f"{ns}/connected", 10)
-
-        # ── Stream SSE depuis naoqi_bridge ────────────────────────────────────
-        self._sse_running = True
-        threading.Thread(target=self._sse_loop, daemon=True).start()
+        # ── Timer heartbeat : détecte déconnexion NAO toutes les 15 s ─────────
+        self.create_timer(15.0, self._check_connection)
 
         self.get_logger().info(
-            f"naoqi_driver2 [{ROBOT_ID}] démarré — bridge : {BRIDGE_URL}"
+            f"naoqi_driver2 [{ROBOT_ID}] démarré"
             + (f" | Whisper : {WHISPER_URL}" if WHISPER_URL else " | Whisper désactivé")
         )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # SSE : événements NAO → topics ROS2
+    # NAO → statut batterie + état connexion
     # ─────────────────────────────────────────────────────────────────────────
+
+    def _on_nao_status(self, msg: String):
+        self._last_status_time = time.time()
+        try:
+            data = json.loads(msg.data)
+            level = float(data.get("battery", -1))
+            bat = Float32()
+            bat.data = level
+            self.pub_battery.publish(bat)
+        except (json.JSONDecodeError, ValueError):
+            pass
+        if not self._connected:
+            self._connected = True
+            self._publish_connected(True)
+            self.get_logger().info(f"[{ROBOT_ID}] NAO connecté via rosbridge")
+
+    def _check_connection(self):
+        if not self._connected or self._last_status_time == 0.0:
+            return
+        elapsed = time.time() - self._last_status_time
+        if elapsed > NAO_STATUS_TIMEOUT:
+            self._connected = False
+            self._publish_connected(False)
+            self.get_logger().warn(
+                f"[{ROBOT_ID}] Pas de /nao/status depuis {elapsed:.0f}s — déconnecté"
+            )
 
     def _publish_connected(self, state: bool):
         msg = Bool()
         msg.data = state
         self.pub_connected.publish(msg)
 
-    def _sse_loop(self):
-        while self._sse_running:
-            try:
-                with requests.get(f"{BRIDGE_URL}/events", stream=True, timeout=None) as resp:
-                    resp.raise_for_status()
-                    self.get_logger().info("SSE connecté")
-                    self._publish_connected(True)
-                    for raw_line in resp.iter_lines():
-                        if not self._sse_running:
-                            break
-                        if raw_line and raw_line.startswith(b"data:"):
-                            payload = raw_line[5:].strip()
-                            if payload:
-                                self._dispatch_event(json.loads(payload))
-            except Exception as e:
-                if self._sse_running:
-                    self._publish_connected(False)
-                    self.get_logger().warn(
-                        f"SSE déconnecté : {e} — reconnexion dans {SSE_RECONNECT_DELAY}s"
-                    )
-                    time.sleep(SSE_RECONNECT_DELAY)
-
-    def _dispatch_event(self, event: dict):
-        topic = event.get("topic", "")
-
-        if topic == "speech_recognized":
-            msg = String()
-            msg.data = event.get("data", "")
-            self.pub_speech.publish(msg)
-
-        elif topic == "battery":
-            msg = Float32()
-            msg.data = float(event.get("data", 0))
-            self.pub_battery.publish(msg)
-
-        elif topic == "bumper":
-            msg = Bool()
-            msg.data = bool(event.get("data", False))
-            self.pub_bumper.publish(msg)
-
-        elif topic == "sonar":
-            msg = Range()
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.header.frame_id = f"sonar_{event.get('sensor', 'front')}"
-            msg.radiation_type = Range.ULTRASOUND
-            msg.field_of_view = 0.523
-            msg.min_range = 0.20
-            msg.max_range = 2.55
-            msg.range = float(event.get("data", 2.55))
-            self.pub_sonar.publish(msg)
-
     # ─────────────────────────────────────────────────────────────────────────
-    # Commandes ROS2 → naoqi_bridge HTTP
-    # ─────────────────────────────────────────────────────────────────────────
-
-    def _post(self, endpoint: str, payload: dict):
-        try:
-            resp = requests.post(f"{BRIDGE_URL}{endpoint}", json=payload, timeout=10)
-            if not resp.ok:
-                self.get_logger().error(
-                    f"Bridge {endpoint} error {resp.status_code}: {resp.text}"
-                )
-        except requests.RequestException as e:
-            self.get_logger().error(f"Bridge {endpoint} request failed: {e}")
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Audio reçu depuis nao_ws_bridge via /nao/audio → Whisper → speech topic
+    # Audio NAO → Whisper STT → topic speech
     # ─────────────────────────────────────────────────────────────────────────
 
     def _on_audio(self, msg: String):
-        """Reçoit un WAV encodé en base64 publié par nao_ws_bridge et lance
-        la transcription Whisper en arrière-plan."""
         if not WHISPER_URL:
             return
         threading.Thread(
@@ -193,32 +166,62 @@ class NAOqiDriverNode(Node):
         except Exception as e:
             self.get_logger().warn(f"_transcribe_and_publish error: {e}")
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Actuateurs /bodies/*/actuators/* → /nao/* (rosbridge → nao_ws_bridge)
+    # ─────────────────────────────────────────────────────────────────────────
+
     def _on_say(self, msg: String):
-        self._post("/say", {"text": msg.data})
+        self.pub_nao_speech.publish(msg)
 
     def _on_motion(self, msg: String):
-        try:
-            self._post("/motion", json.loads(msg.data))
-        except json.JSONDecodeError as e:
-            self.get_logger().error(f"motion JSON invalide: {e}")
+        self.pub_nao_motion.publish(msg)
 
     def _on_leds(self, msg: String):
-        try:
-            self._post("/leds", json.loads(msg.data))
-        except json.JSONDecodeError as e:
-            self.get_logger().error(f"leds JSON invalide: {e}")
+        self.pub_nao_leds.publish(self._normalize_leds(msg.data))
 
     def _on_posture(self, msg: String):
-        self._post("/posture", {"posture": msg.data})
+        self.pub_nao_gesture.publish(msg)
 
     def _on_move(self, msg: String):
         try:
-            self._post("/move", json.loads(msg.data))
+            data = json.loads(msg.data)
         except json.JSONDecodeError as e:
             self.get_logger().error(f"move JSON invalide: {e}")
+            return
+        twist = Twist()
+        twist.linear.x  = float(data.get("x",     0.0))
+        twist.linear.y  = float(data.get("y",     0.0))
+        twist.angular.z = float(data.get("theta", 0.0))
+        self.pub_nao_cmd_vel.publish(twist)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # cognitive_renderer /naoqi/* → mêmes canaux physiques /nao/*
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _on_naoqi_leds(self, msg: String):
+        self.pub_nao_leds.publish(self._normalize_leds(msg.data))
+
+    def _on_naoqi_motion(self, msg: String):
+        self.pub_nao_motion.publish(msg)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Helper
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _normalize_leds(self, raw: str) -> String:
+        """Renomme 'group' → 'name' dans le JSON LEDs pour nao_ws_bridge."""
+        try:
+            data = json.loads(raw)
+            if "group" in data and "name" not in data:
+                data["name"] = data.pop("group")
+            raw = json.dumps(data)
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        out = String()
+        out.data = raw
+        return out
 
     def destroy_node(self):
-        self._sse_running = False
         super().destroy_node()
 
 
