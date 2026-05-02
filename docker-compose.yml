@@ -230,6 +230,36 @@ services:
     networks:
       - ai-network
 
+  # ----------------------------------------------------------
+  # NAOQI BRIDGE — HTTP bridge Python 2.7 vers le SDK qi
+  #
+  # Fournit une API REST locale pour diagnostiquer et tester
+  # chaque capacité NAOqi (/say, /motion, /leds, /posture,
+  # /move, /battery, /events) sans avoir à publier sur le bus ROS2.
+  #
+  # En fonctionnement normal (outbound WS), le bridge tourne en
+  # mode mock (connected=false) — aucune connexion directe au NAO
+  # n'est requise côté VPS.  Le vrai chemin de commandes passe par
+  # rosbridge → nao_ws_bridge (embarqué sur le robot).
+  #
+  # Accès local uniquement : 127.0.0.1:8090 sur le host
+  # (accessible depuis naoqi-driver en network_mode: host via
+  # http://localhost:8090 et depuis ai-network via naoqi-bridge:8090)
+  # ----------------------------------------------------------
+  naoqi-bridge:
+    image: ${DOCKERHUB_USERNAME}/naoqi-bridge:latest
+    container_name: naoqi-bridge
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - /opt/ia/nao/naoqi-sdk:/opt/naoqi-sdk
+    environment:
+      - BRIDGE_PORT=8090
+      - RECONNECT_INTERVAL=15
+    networks:
+      - ai-network
+
   naoqi-driver:
     build: ./robotics/nao_brain/naoqi_driver
     image: ${DOCKERHUB_USERNAME}/naoqi-driver:latest
