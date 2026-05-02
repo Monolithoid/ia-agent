@@ -247,6 +247,7 @@ services:
   # http://localhost:8090 et depuis ai-network via naoqi-bridge:8090)
   # ----------------------------------------------------------
   naoqi-bridge:
+    build: ./robotics/nao_brain/naoqi_bridge
     image: ${DOCKERHUB_USERNAME}/naoqi-bridge:latest
     container_name: naoqi-bridge
     restart: unless-stopped
