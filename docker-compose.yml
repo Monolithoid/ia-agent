@@ -98,6 +98,7 @@ services:
       - DEFAULT_MODELS=qwen2.5:7b
       - ENABLE_SIGNUP=false
       - ENABLE_OAUTH_SIGNUP=true
+      - ENABLE_API_KEY=true
       - WEBUI_ADMIN_EMAIL=${WEBUI_ADMIN_EMAIL}
       - OAUTH_PROVIDER_NAME=Google
       - OPENID_PROVIDER_URL=https://accounts.google.com/.well-known/openid-configuration
