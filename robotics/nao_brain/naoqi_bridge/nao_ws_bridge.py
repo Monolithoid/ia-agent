@@ -248,6 +248,21 @@ def get_proxy(service):
         return None
 
 
+def _ws_log(direction, msg):
+    """Affiche sur stderr un résumé lisible d'un échange WebSocket."""
+    op    = msg.get("op", "?")
+    topic = msg.get("topic", "")
+    inner = msg.get("msg", msg.get("data", {}))
+    summary = json.dumps(inner, ensure_ascii=False)
+    # Tronquer les gros payloads (audio base64, etc.)
+    if len(summary) > 200:
+        summary = u"{}… [tronqué, {} octets]".format(summary[:200], len(summary))
+    ts = time.strftime("%H:%M:%S")
+    print(u"[WS {dir}] {ts}  op={op}  topic={topic}  {summary}".format(
+        dir=direction, ts=ts, op=op, topic=topic, summary=summary,
+    ).encode("utf-8", "replace"), file=sys.stderr)
+
+
 def _ensure_broker():
     global _BROKER
     if _BROKER is not None:
@@ -388,6 +403,15 @@ class NaoBridge(object):
     # Evenements WebSocket
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Envoi WebSocket avec logging
+    # ------------------------------------------------------------------
+
+    def _send(self, payload_dict):
+        _ws_log(u"→", payload_dict)
+        if self.ws and not self._stop.is_set():
+            self.ws.send(json.dumps(payload_dict))
+
     def _on_open(self, ws):
         print("[bridge] Connecte. Abonnement aux topics ...", file=sys.stderr)
         topics = [
@@ -400,10 +424,14 @@ class NaoBridge(object):
             ("/nao/shutdown",  "std_msgs/Empty"),
         ]
         for topic, msg_type in topics:
-            ws.send(json.dumps({"op": "subscribe", "topic": topic, "type": msg_type}))
+            sub_msg = {"op": "subscribe", "topic": topic, "type": msg_type}
+            _ws_log(u"→", sub_msg)
+            ws.send(json.dumps(sub_msg))
 
-        ws.send(json.dumps({"op": "advertise", "topic": "/nao/status", "type": "std_msgs/String"}))
-        ws.send(json.dumps({"op": "advertise", "topic": "/nao/audio",  "type": "std_msgs/String"}))
+        for topic in ("/nao/status", "/nao/audio"):
+            adv_msg = {"op": "advertise", "topic": topic, "type": "std_msgs/String"}
+            _ws_log(u"→", adv_msg)
+            ws.send(json.dumps(adv_msg))
         print("[bridge] Pret.", file=sys.stderr)
         threading.Thread(target=self._status_loop).start()
         if not self._wakeword_started:
@@ -415,6 +443,7 @@ class NaoBridge(object):
             msg = json.loads(raw)
         except ValueError:
             return
+        _ws_log(u"←", msg)
         if msg.get("op") != "publish":
             return
         topic = msg.get("topic", "")
@@ -656,15 +685,15 @@ class NaoBridge(object):
             if isinstance(encoded, bytes):
                 encoded = encoded.decode("ascii")
 
-            if self.ws and not self._stop.is_set():
-                self.ws.send(json.dumps({
+            if not self._stop.is_set():
+                duration = len(capture._pcm) / float(_AudioCapture._RATE)
+                print("[bridge] Audio VAD prêt ({} octets, {:.1f}s) — envoi ...".format(
+                    len(audio_bytes), duration), file=sys.stderr)
+                self._send({
                     "op":    "publish",
                     "topic": "/nao/audio",
                     "msg":   {"data": encoded},
-                }))
-                duration = len(capture._pcm) / float(_AudioCapture._RATE)
-                print("[bridge] Audio VAD publié ({} octets, {:.1f}s).".format(
-                    len(audio_bytes), duration), file=sys.stderr)
+                })
         except Exception as e:
             print("[bridge] _record_and_publish error: {}".format(e), file=sys.stderr)
             try:
@@ -690,11 +719,11 @@ class NaoBridge(object):
                         pass
             payload = json.dumps({"battery": level})
             try:
-                self.ws.send(json.dumps({
+                self._send({
                     "op": "publish",
                     "topic": "/nao/status",
                     "msg": {"data": payload},
-                }))
+                })
             except Exception:
                 break
             self._stop.wait(STATUS_INTERVAL)
