@@ -272,6 +272,7 @@ services:
     network_mode: host
     environment:
       - ROS_DOMAIN_ID=42
+      - ROS_LOCALHOST_ONLY=1
       - ROBOT_ID=${NAO_ROBOT_ID:-nao_01}
       - WHISPER_URL=http://localhost:9000
       - LISTEN_DURATION=${LISTEN_DURATION:-4.0}
@@ -288,6 +289,7 @@ services:
     network_mode: host
     environment:
       - ROS_DOMAIN_ID=42
+      - ROS_LOCALHOST_ONLY=1
     depends_on:
       naoqi-driver:
         condition: service_started
@@ -300,6 +302,7 @@ services:
     network_mode: host
     environment:
       - ROS_DOMAIN_ID=42
+      - ROS_LOCALHOST_ONLY=1
       - BRAIN_URL=http://localhost:11434
       - BRAIN_MODEL=${BRAIN_MODEL:-qwen2.5:7b}
       - BRAIN_API_KEY=${OLLAMA_API_KEYS}
@@ -339,6 +342,7 @@ services:
     network_mode: host
     environment:
       - ROS_DOMAIN_ID=42
+      - ROS_LOCALHOST_ONLY=1
 
   rosbridge-proxy:
     image: caddy:alpine
