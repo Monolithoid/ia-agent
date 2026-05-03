@@ -1,32 +1,26 @@
 """
 title: NAO Brain
 author: ia-agent
-version: 0.4.0
+version: 0.7.0
 description: >
-  Console cerveau — connecte Open WebUI directement au cerveau robotique
-  (body-gateway → Bitterbot → ROS 2 → NAO / drones / corps enregistrés).
+  Pipe cerveau — relaie chaque message WebUI vers body-gateway qui appelle
+  le LLM avec un prompt JSON structuré. La réponse contient :
+    • speech  : texte que NAO dit à voix haute ET affiché dans le chat
+    • actions : gestes, LEDs, déplacement dispatché sur le robot
 
-  Chaque message est injecté dans le pipeline cognitif de Bitterbot.
-  NAO réagit physiquement (parole, gestes, LEDs, déplacement) à chaque
-  réponse du cerveau. Le WebUI sert de console de sondage : ce que vous
-  tapez est traité comme une stimulation directe du cerveau.
+  Parcours 1 (texte) :
+    Utilisateur écrit → Pipe → body-gateway /chat → Ollama → JSON
+    → robot parle + agit → WebUI affiche "NAO : [speech] + Actions"
 
-  Exemples :
-    Comment tu vas ?
-    Dis bonjour et fais une révérence
-    Avance vers la fenêtre
-    Mets les LEDs en violet et assieds-toi
+  Parcours 2 (voix "Ok nao") :
+    NAO transcrit → body-gateway inférence → robot parle + agit
+    → body-gateway stocke dans voice-queue → notifie WebUI
+    → ce Pipe récupère le résultat pré-calculé via /voice-pop
+    → WebUI affiche transcription + réponse
 
   Installation dans Open WebUI :
-    Workspace → Tools → (+) → coller ce fichier → Enregistrer
-    Puis : Workspace → Models → qwen2.5:7b → activer NAO Brain
-    Et coller le system prompt indiqué ci-dessous.
-
-  System prompt recommandé pour qwen2.5:7b :
-    Tu es une interface de sondage direct vers le cerveau du robot NAO.
-    Pour CHAQUE message de l'utilisateur, sans exception, appelle
-    l'outil talk_to_nao en passant le message tel quel comme commande.
-    Ne réponds jamais toi-même — laisse toujours le cerveau répondre.
+    Workspace → Functions → (+) → coller ce fichier → Enregistrer
+    Puis sélectionner "NAO Brain" comme modèle dans le chat.
 
 required_open_webui_version: 0.3.0
 """
@@ -37,7 +31,7 @@ import requests
 from pydantic import BaseModel, Field
 
 
-class Tools:
+class Pipe:
     class Valves(BaseModel):
         body_gateway_url: str = Field(
             default="http://chat-relay:8095",
@@ -52,32 +46,73 @@ class Tools:
 
     def __init__(self):
         self.valves = self.Valves()
+        self.type = "pipe"
+        self.id = "nao_brain"
+        self.name = "NAO Brain"
 
-    def talk_to_nao(self, command: str) -> str:
-        """
-        Inject a message into the NAO robot brain (Bitterbot via body-gateway).
-        The brain processes the message, speaks the response through NAO's speakers,
-        and triggers physical reactions: gestures, LEDs, movement.
-        Always call this tool for every user message — the brain always responds.
-        :param command: The message to send to the robot brain.
-        :return: What NAO said and the actions it performed.
-        """
+    def pipe(self, body: dict, __user__: dict = {}) -> str:
+        messages = body.get("messages", [])
+        if not messages:
+            return "Aucun message."
+
+        user_message = messages[-1].get("content", "")
+        if not user_message:
+            return "Message vide."
+
+        # Parcours 2 — résultat pré-calculé par body-gateway (voix "Ok nao")
+        if body.get("nao_voice"):
+            return self._handle_voice(user_message)
+
+        # Parcours 1 — message texte WebUI
+        return self._call_gateway(user_message)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Parcours 2 — récupération du résultat pré-calculé (évite double inférence)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _handle_voice(self, transcription: str) -> str:
+        try:
+            r = requests.get(
+                f"{self.valves.body_gateway_url}/voice-pop",
+                timeout=5,
+            )
+            if r.ok:
+                data = r.json()
+                if data:
+                    return f"*🎤 « {transcription} »*\n\n" + self._format(data)
+        except Exception:
+            pass
+        # Fallback : traiter la transcription comme un message texte normal
+        return self._call_gateway(transcription)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Parcours 1 — appel body-gateway /chat → Ollama (JSON structuré)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _call_gateway(self, text: str) -> str:
         try:
             r = requests.post(
                 f"{self.valves.body_gateway_url}/chat",
-                json={"text": command, "robot_id": self.valves.robot_id},
-                timeout=30,
+                json={"text": text, "robot_id": self.valves.robot_id},
+                timeout=60,
             )
             r.raise_for_status()
             data = r.json()
         except requests.exceptions.ConnectionError:
             return (
                 "❌ body-gateway inaccessible — "
-                "le stack robotique (`docker compose --profile robotics up`) est-il démarré ?"
+                "le stack robotique (`docker compose up -d`) est-il démarré ?"
             )
         except Exception as e:
             return f"❌ Erreur : {e}"
 
+        return self._format(data)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Formatage de la réponse body-gateway
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _format(self, data: dict) -> str:
         speech = data.get("speech", "")
         emotion = data.get("emotion", "neutral")
         thoughts = data.get("thoughts", "")

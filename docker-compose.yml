@@ -98,6 +98,7 @@ services:
       - DEFAULT_MODELS=qwen2.5:7b
       - ENABLE_SIGNUP=false
       - ENABLE_OAUTH_SIGNUP=true
+      - ENABLE_API_KEY=true
       - WEBUI_ADMIN_EMAIL=${WEBUI_ADMIN_EMAIL}
       - OAUTH_PROVIDER_NAME=Google
       - OPENID_PROVIDER_URL=https://accounts.google.com/.well-known/openid-configuration
@@ -309,6 +310,10 @@ services:
       - DREAM_TICK_INTERVAL=${DREAM_TICK_INTERVAL:-300}
       - CHAT_PORT=8095
       - WAKE_WORD=${WAKE_WORD:-ok nao}
+      - WEBUI_URL=${WEBUI_URL:-http://localhost:3000}
+      - WEBUI_API_KEY=${WEBUI_API_KEY:-}
+      - WEBUI_PIPE_MODEL=${WEBUI_PIPE_MODEL:-nao_brain}
+      - WEBUI_VOICE_CHAT_ID=${WEBUI_VOICE_CHAT_ID:-}
     depends_on:
       naoqi-driver:
         condition: service_started
