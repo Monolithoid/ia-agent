@@ -119,8 +119,7 @@ services:
   # Accès via tunnel SSH : ssh -L 5678:localhost:5678 $VPS_USER@${DOMAIN}
   # ----------------------------------------------------------
   n8n:
-    build: ./core/n8n
-    image: ${DOCKERHUB_USERNAME}/n8n:latest
+    image: n8nio/n8n:latest
     container_name: n8n
     restart: unless-stopped
     volumes:
