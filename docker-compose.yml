@@ -333,6 +333,7 @@ services:
   #                           → host-gateway:9090 (ros2-bridge)
   # ----------------------------------------------------------
   ros2-bridge:
+    build: ./robotics/nao_brain/ros2_bridge
     image: ${DOCKERHUB_USERNAME}/ros2-bridge:latest
     container_name: ros2-bridge
     restart: unless-stopped
