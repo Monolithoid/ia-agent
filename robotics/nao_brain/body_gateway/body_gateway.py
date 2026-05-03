@@ -31,8 +31,13 @@ Variables d'environnement :
   DREAMING_BATTERY_THRESHOLD défaut 80.0
   DREAM_TICK_INTERVAL        secondes entre ticks oniriques, défaut 300
   PROXIMITY_THRESHOLD        mètres pour détecter un humain, défaut 1.5
+  WEBUI_URL                  URL Open WebUI (ex: http://localhost:3000)
+  WEBUI_API_KEY              clé API Open WebUI (générée dans Profil → API Keys)
+  WEBUI_PIPE_MODEL           ID du Pipe NAO Brain dans Open WebUI, défaut "nao_brain"
+  WEBUI_VOICE_CHAT_ID        ID du chat "NAO Voice" dédié (optionnel)
 """
 
+import collections
 import datetime
 import json
 import os
@@ -62,6 +67,11 @@ DREAM_TICK_INTERVAL = int(os.environ.get("DREAM_TICK_INTERVAL", "300"))
 PROXIMITY_THRESHOLD = float(os.environ.get("PROXIMITY_THRESHOLD", "1.5"))
 CHAT_PORT = int(os.environ.get("CHAT_PORT", "8095"))
 WAKE_WORD = os.environ.get("WAKE_WORD", "ok nao").lower()
+
+WEBUI_URL           = os.environ.get("WEBUI_URL", "")
+WEBUI_API_KEY       = os.environ.get("WEBUI_API_KEY", "")
+WEBUI_PIPE_MODEL    = os.environ.get("WEBUI_PIPE_MODEL", "nao_brain")
+WEBUI_VOICE_CHAT_ID = os.environ.get("WEBUI_VOICE_CHAT_ID", "")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Prompts système injectés lors des appels à Bitterbot
@@ -131,6 +141,10 @@ class BodyGatewayNode(Node):
         self._infer_lock = threading.Lock()  # single-flight vers Bitterbot
         self._running = True
 
+        # File des interactions vocales en attente d'affichage dans WebUI
+        self._voice_queue: collections.deque = collections.deque(maxlen=20)
+        self._voice_queue_lock = threading.Lock()
+
         # Publishers cognitifs (pour CognitiveRenderer)
         self.pub_cognitive = self.create_publisher(String, "/cognitive_state", 10)
         self.pub_emotion = self.create_publisher(String, "/emotion_state", 10)
@@ -161,6 +175,12 @@ class BodyGatewayNode(Node):
         self.get_logger().info(
             f"body_gateway démarré — corps : {', '.join(BODY_REGISTRY)}"
         )
+        if WEBUI_URL and WEBUI_API_KEY:
+            self.get_logger().info(f"Notification WebUI activée → {WEBUI_URL}")
+        else:
+            self.get_logger().info(
+                "Notification WebUI désactivée (WEBUI_URL / WEBUI_API_KEY non définis)"
+            )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Enregistrement dynamique d'un corps
@@ -230,20 +250,33 @@ class BodyGatewayNode(Node):
         if not text:
             return
         self._state = "AWAKE"
-        self._trigger_inference(body_id, text)
+        self._trigger_voice_inference(body_id, text)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Pipeline d'inférence principal
-    # ─────────────────────────────────────────────────────────────────────────
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Endpoint HTTP — canal d'entrée WebUI chat
+    # Pipeline d'inférence principal — canal HTTP (WebUI chat)
     # ─────────────────────────────────────────────────────────────────────────
 
     def _start_chat_server(self):
         node = self
 
         class _ChatHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/voice-pop":
+                    self._handle_voice_pop()
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def _handle_voice_pop(self):
+                with node._voice_queue_lock:
+                    item = node._voice_queue.popleft() if node._voice_queue else {}
+                payload = json.dumps(item).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
             def do_POST(self):
                 if self.path != "/chat":
                     self.send_response(404)
@@ -281,7 +314,7 @@ class BodyGatewayNode(Node):
         server = HTTPServer(("0.0.0.0", CHAT_PORT), _ChatHandler)
         t = threading.Thread(target=server.serve_forever, daemon=True)
         t.start()
-        self.get_logger().info(f"Chat HTTP endpoint démarré → :{CHAT_PORT}/chat")
+        self.get_logger().info(f"Chat HTTP endpoint démarré → :{CHAT_PORT}/chat  :{CHAT_PORT}/voice-pop")
 
     def _infer_sync(self, body_id: str, user_input: str) -> dict:
         """Inférence synchrone pour le canal HTTP (WebUI chat). Retourne la réponse."""
@@ -340,7 +373,109 @@ class BodyGatewayNode(Node):
             self._publish_cognitive("listening")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Pipeline d'inférence principal
+    # Pipeline d'inférence voix (parcours 2 : "Ok nao" → WebUI)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _trigger_voice_inference(self, body_id: str, user_input: str):
+        """Lance l'inférence vocale en arrière-plan avec notification WebUI."""
+        self._publish_cognitive("thinking")
+        threading.Thread(
+            target=self._infer_voice,
+            args=(body_id, user_input),
+            daemon=True,
+        ).start()
+
+    def _infer_voice(self, body_id: str, user_input: str):
+        """Inférence déclenchée par la parole (wake word). Stocke le résultat et notifie WebUI."""
+        if not self._infer_lock.acquire(blocking=False):
+            self.get_logger().warn("Inférence déjà en cours — événement voix ignoré")
+            return
+
+        try:
+            system_prompt = _AWAKE_SYSTEM.format(body_ids=", ".join(BODY_REGISTRY))
+            response = requests.post(
+                f"{BRAIN_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {BRAIN_API_KEY}"},
+                json={
+                    "model": BRAIN_MODEL,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user",   "content": f"[{body_id}] {user_input}"},
+                    ],
+                    "stream": False,
+                    "temperature": 0.7,
+                },
+                timeout=20,
+            )
+            response.raise_for_status()
+
+            raw = response.json()["choices"][0]["message"]["content"]
+            parsed = self._parse_json(raw)
+
+            self._publish_emotion(parsed.get("emotion", "neutral"))
+            self._publish_cognitive("responding")
+            self._dispatch_actions(parsed.get("actions", []))
+
+            speech_text = " ".join(
+                a.get("text", "")
+                for a in parsed.get("actions", [])
+                if a.get("type") == "speech"
+            )
+            result = {
+                "thoughts": parsed.get("thoughts", ""),
+                "emotion":  parsed.get("emotion", "neutral"),
+                "speech":   speech_text,
+                "actions":  parsed.get("actions", []),
+            }
+
+            # Stocker dans la file avant de notifier WebUI
+            with self._voice_queue_lock:
+                self._voice_queue.append(result)
+
+            self.get_logger().info(f"[{body_id}] Voix → file ({len(self._voice_queue)}) : {user_input!r}")
+
+            # Notifier Open WebUI si configuré
+            if WEBUI_URL and WEBUI_API_KEY:
+                self._notify_webui(user_input)
+
+        except requests.RequestException as e:
+            self.get_logger().error(f"Voice API error: {e}")
+            self._fallback(body_id)
+        except Exception as e:
+            self.get_logger().error(f"Voice infer error: {e}")
+            if not self._infer_lock.locked():
+                self._fallback(body_id)
+        finally:
+            self._infer_lock.release()
+            self._publish_cognitive("listening")
+
+    def _notify_webui(self, transcription: str):
+        """
+        Injecte l'interaction vocale dans Open WebUI via l'API chat/completions.
+        Le Pipe NAO Brain récupère la réponse pré-calculée depuis /voice-pop
+        et l'affiche dans le chat "NAO Voice" (WEBUI_VOICE_CHAT_ID).
+        """
+        payload: dict = {
+            "model": WEBUI_PIPE_MODEL,
+            "messages": [{"role": "user", "content": transcription}],
+            "nao_voice": True,
+            "stream": False,
+        }
+        if WEBUI_VOICE_CHAT_ID:
+            payload["chat_id"] = WEBUI_VOICE_CHAT_ID
+
+        try:
+            requests.post(
+                f"{WEBUI_URL}/api/chat/completions",
+                headers={"Authorization": f"Bearer {WEBUI_API_KEY}"},
+                json=payload,
+                timeout=30,
+            )
+        except Exception as e:
+            self.get_logger().warn(f"_notify_webui error: {e}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Pipeline d'inférence principal (non-voix : sonar, bumper, rêve)
     # ─────────────────────────────────────────────────────────────────────────
 
     def _trigger_inference(self, body_id: str, user_input: str):
