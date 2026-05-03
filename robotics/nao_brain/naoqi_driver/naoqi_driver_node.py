@@ -176,15 +176,19 @@ class NAOqiDriverNode(Node):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _on_say(self, msg: String):
+        self.get_logger().info(f"[{ROBOT_ID}] → /nao/speech : {msg.data[:80]!r}")
         self.pub_nao_speech.publish(msg)
 
     def _on_motion(self, msg: String):
+        self.get_logger().info(f"[{ROBOT_ID}] → /nao/motion : {msg.data[:80]!r}")
         self.pub_nao_motion.publish(msg)
 
     def _on_leds(self, msg: String):
+        self.get_logger().info(f"[{ROBOT_ID}] → /nao/leds")
         self.pub_nao_leds.publish(self._normalize_leds(msg.data))
 
     def _on_posture(self, msg: String):
+        self.get_logger().info(f"[{ROBOT_ID}] → /nao/gesture : {msg.data!r}")
         self.pub_nao_gesture.publish(msg)
 
     def _on_move(self, msg: String):
