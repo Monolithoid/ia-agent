@@ -34,6 +34,7 @@ Variables d'environnement :
   BRAIN_URL                  défaut http://localhost:11434
   BRAIN_MODEL                défaut qwen2.5:7b
   BRAIN_API_KEY              clé API Ollama
+  BRAIN_TIMEOUT              timeout requêtes Ollama en secondes, défaut 60
   BODY_REGISTRY              corps séparés par virgules, défaut "nao_01"
   DREAMING_HOUR_START/END    défaut 2 / 6
   DREAMING_BATTERY_THRESHOLD défaut 80.0
@@ -77,8 +78,9 @@ DREAMING_HOUR_END          = int(os.environ.get("DREAMING_HOUR_END",          "6
 DREAMING_BATTERY_THRESHOLD = float(os.environ.get("DREAMING_BATTERY_THRESHOLD","80.0"))
 DREAM_TICK_INTERVAL        = int(os.environ.get("DREAM_TICK_INTERVAL",        "300"))
 PROXIMITY_THRESHOLD        = float(os.environ.get("PROXIMITY_THRESHOLD",      "1.5"))
-CHAT_PORT  = int(os.environ.get("CHAT_PORT",  "8095"))
-WAKE_WORD  = os.environ.get("WAKE_WORD",  "ok nao").lower()
+CHAT_PORT     = int(os.environ.get("CHAT_PORT",     "8095"))
+WAKE_WORD     = os.environ.get("WAKE_WORD",     "ok nao").lower()
+BRAIN_TIMEOUT = int(os.environ.get("BRAIN_TIMEOUT", "60"))
 
 WEBUI_URL           = os.environ.get("WEBUI_URL",           "")
 WEBUI_API_KEY       = os.environ.get("WEBUI_API_KEY",       "")
@@ -292,7 +294,7 @@ class BodyGatewayNode(Node):
                     "stream": False,
                     "temperature": 0.7,
                 },
-                timeout=20,
+                timeout=BRAIN_TIMEOUT,
             )
             response.raise_for_status()
 
@@ -479,7 +481,7 @@ class BodyGatewayNode(Node):
                     "stream": False,
                     "temperature": 0.7,
                 },
-                timeout=20,
+                timeout=BRAIN_TIMEOUT,
             )
             response.raise_for_status()
 
@@ -547,7 +549,7 @@ class BodyGatewayNode(Node):
                     "stream": False,
                     "temperature": 0.5 if is_dream else 0.7,
                 },
-                timeout=20,
+                timeout=BRAIN_TIMEOUT,
             )
             response.raise_for_status()
 

@@ -119,7 +119,8 @@ services:
   # Accès via tunnel SSH : ssh -L 5678:localhost:5678 $VPS_USER@${DOMAIN}
   # ----------------------------------------------------------
   n8n:
-    image: n8nio/n8n:latest
+    build: ./core/n8n
+    image: ${DOCKERHUB_USERNAME}/n8n:latest
     container_name: n8n
     restart: unless-stopped
     volumes:
@@ -308,6 +309,7 @@ services:
       - DREAMING_HOUR_END=${DREAMING_HOUR_END:-6}
       - DREAMING_BATTERY_THRESHOLD=${DREAMING_BATTERY_THRESHOLD:-80.0}
       - DREAM_TICK_INTERVAL=${DREAM_TICK_INTERVAL:-300}
+      - BRAIN_TIMEOUT=${BRAIN_TIMEOUT:-60}
       - CHAT_PORT=8095
       - WAKE_WORD=${WAKE_WORD:-ok nao}
       - WEBUI_URL=${WEBUI_URL:-http://localhost:3000}
@@ -343,9 +345,19 @@ services:
     image: caddy:alpine
     container_name: rosbridge-proxy
     restart: unless-stopped
-    command: caddy reverse-proxy --from :80 --to host-gateway:9090
-    extra_hosts:
-      - "host-gateway:host-gateway"
+    command:
+      - sh
+      - -c
+      - |-
+          hex=$$(awk 'NR>1 && $$2=="00000000" {print $$3; exit}' /proc/net/route)
+          if [ -z "$$hex" ]; then
+            echo "[rosbridge-proxy] ERREUR : aucune route par défaut dans /proc/net/route" >&2
+            exit 1
+          fi
+          gw=$$(printf '%d.%d.%d.%d' \
+            "0x$${hex:6:2}" "0x$${hex:4:2}" "0x$${hex:2:2}" "0x$${hex:0:2}")
+          echo "[rosbridge-proxy] gateway hôte détecté : $$gw"
+          exec caddy reverse-proxy --from :80 --to "$$gw:9090"
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.rosbridge.rule=Host(`rosbridge.${DOMAIN}`)"
