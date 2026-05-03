@@ -1,36 +1,37 @@
 """
-title: NAO TTS
+title: NAO Brain
 author: ia-agent
-version: 0.6.0
+version: 0.7.0
 description: >
-  Filtre de sortie — envoie chaque réponse LLM à NAO pour qu'il la dise
-  à haute voix via ALTextToSpeech.
+  Pipe cerveau — relaie chaque message WebUI vers body-gateway qui appelle
+  le LLM avec un prompt JSON structuré. La réponse contient :
+    • speech  : texte que NAO dit à voix haute ET affiché dans le chat
+    • actions : gestes, LEDs, déplacement dispatché sur le robot
 
-  Parcours 1 (texte WebUI) :
-    L'utilisateur écrit dans le chat → le LLM génère une réponse naturelle
-    (affichée normalement dans WebUI) → ce filtre l'attrape → body-gateway
-    /say → ROS2 /nao/speech → rosbridge → NAO dit la réponse à voix haute.
+  Parcours 1 (texte) :
+    Utilisateur écrit → Pipe → body-gateway /chat → Ollama → JSON
+    → robot parle + agit → WebUI affiche "NAO : [speech] + Actions"
 
   Parcours 2 (voix "Ok nao") :
-    Le robot transcrit la parole → body-gateway injecte le texte dans WebUI
-    → le LLM génère la réponse → ce même filtre envoie le TTS à NAO.
-    La transcription et la réponse apparaissent dans le chat NAO Voice.
+    NAO transcrit → body-gateway inférence → robot parle + agit
+    → body-gateway stocke dans voice-queue → notifie WebUI
+    → ce Pipe récupère le résultat pré-calculé via /voice-pop
+    → WebUI affiche transcription + réponse
 
   Installation dans Open WebUI :
     Workspace → Functions → (+) → coller ce fichier → Enregistrer
-    Puis activer le filtre sur le(s) modèle(s) souhaités :
-    Workspace → Models → <modèle> → Filters → NAO TTS → On
+    Puis sélectionner "NAO Brain" comme modèle dans le chat.
 
 required_open_webui_version: 0.3.0
 """
 
-import re
+import json
 
 import requests
 from pydantic import BaseModel, Field
 
 
-class Filter:
+class Pipe:
     class Valves(BaseModel):
         body_gateway_url: str = Field(
             default="http://chat-relay:8095",
@@ -45,61 +46,96 @@ class Filter:
 
     def __init__(self):
         self.valves = self.Valves()
+        self.type = "pipe"
+        self.id = "nao_brain"
+        self.name = "NAO Brain"
 
-    def outlet(self, body: dict, __user__: dict = {}) -> dict:
-        """Intercepte la réponse LLM et la transmet à NAO pour TTS."""
-        text = self._extract_response(body.get("messages", []))
-        text = self._strip_markdown(text)
-        if text:
-            try:
-                requests.post(
-                    f"{self.valves.body_gateway_url}/say",
-                    json={"text": text, "robot_id": self.valves.robot_id},
-                    timeout=5,
+    def pipe(self, body: dict, __user__: dict = {}) -> str:
+        messages = body.get("messages", [])
+        if not messages:
+            return "Aucun message."
+
+        user_message = messages[-1].get("content", "")
+        if not user_message:
+            return "Message vide."
+
+        # Parcours 2 — résultat pré-calculé par body-gateway (voix "Ok nao")
+        if body.get("nao_voice"):
+            return self._handle_voice(user_message)
+
+        # Parcours 1 — message texte WebUI
+        return self._call_gateway(user_message)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Parcours 2 — récupération du résultat pré-calculé (évite double inférence)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _handle_voice(self, transcription: str) -> str:
+        try:
+            r = requests.get(
+                f"{self.valves.body_gateway_url}/voice-pop",
+                timeout=5,
+            )
+            if r.ok:
+                data = r.json()
+                if data:
+                    return f"*🎤 « {transcription} »*\n\n" + self._format(data)
+        except Exception:
+            pass
+        # Fallback : traiter la transcription comme un message texte normal
+        return self._call_gateway(transcription)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Parcours 1 — appel body-gateway /chat → Ollama (JSON structuré)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _call_gateway(self, text: str) -> str:
+        try:
+            r = requests.post(
+                f"{self.valves.body_gateway_url}/chat",
+                json={"text": text, "robot_id": self.valves.robot_id},
+                timeout=60,
+            )
+            r.raise_for_status()
+            data = r.json()
+        except requests.exceptions.ConnectionError:
+            return (
+                "❌ body-gateway inaccessible — "
+                "le stack robotique (`docker compose up -d`) est-il démarré ?"
+            )
+        except Exception as e:
+            return f"❌ Erreur : {e}"
+
+        return self._format(data)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Formatage de la réponse body-gateway
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _format(self, data: dict) -> str:
+        speech = data.get("speech", "")
+        emotion = data.get("emotion", "neutral")
+        thoughts = data.get("thoughts", "")
+        actions = data.get("actions", [])
+
+        lines = []
+
+        if speech:
+            lines.append(f"**NAO :** {speech}")
+
+        non_speech = [a for a in actions if a.get("type") != "speech"]
+        if non_speech:
+            icons = {"motion": "🤸", "leds": "💡", "move": "🚶", "look": "👀"}
+            parts = []
+            for a in non_speech:
+                icon = icons.get(a.get("type", ""), "•")
+                detail = {k: v for k, v in a.items() if k not in ("type", "body")}
+                parts.append(
+                    f"{icon} `{a.get('type')}` {json.dumps(detail, ensure_ascii=False)}"
                 )
-            except requests.exceptions.ConnectionError:
-                pass  # body-gateway indisponible — TTS ignoré silencieusement
-            except Exception:
-                pass
-        return body
+            lines.append("\n*Actions :*\n" + "\n".join(parts))
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Helpers
-    # ─────────────────────────────────────────────────────────────────────────
+        if thoughts:
+            lines.append(f"\n*({emotion}) {thoughts}*")
 
-    def _extract_response(self, messages: list) -> str:
-        """Retourne le contenu texte du dernier message assistant."""
-        for msg in reversed(messages):
-            if msg.get("role") == "assistant":
-                content = msg.get("content", "")
-                if isinstance(content, list):
-                    return "".join(
-                        block.get("text", "")
-                        for block in content
-                        if isinstance(block, dict) and block.get("type") == "text"
-                    )
-                return content or ""
-        return ""
-
-    def _strip_markdown(self, text: str) -> str:
-        """Retire le formatage Markdown pour un TTS lisible."""
-        if not text:
-            return ""
-        # Blocs de code
-        text = re.sub(r"```[\s\S]*?```", "", text)
-        text = re.sub(r"`[^`\n]+`", "", text)
-        # Gras / italique
-        text = re.sub(r"\*{1,3}([^*\n]+)\*{1,3}", r"\1", text)
-        text = re.sub(r"_{1,3}([^_\n]+)_{1,3}", r"\1", text)
-        # Titres
-        text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
-        # Liens et images
-        text = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1", text)
-        text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
-        # Listes
-        text = re.sub(r"^[ \t]*[-*+]\s+", "", text, flags=re.MULTILINE)
-        text = re.sub(r"^[ \t]*\d+\.\s+", "", text, flags=re.MULTILINE)
-        # Sauts de ligne multiples → espace
-        text = re.sub(r"\n+", " ", text)
-        text = re.sub(r"\s{2,}", " ", text)
-        return text.strip()
+        return "\n".join(lines) if lines else "Action exécutée."

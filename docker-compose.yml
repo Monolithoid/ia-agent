@@ -311,9 +311,8 @@ services:
       - WAKE_WORD=${WAKE_WORD:-ok nao}
       - WEBUI_URL=${WEBUI_URL:-http://localhost:3000}
       - WEBUI_API_KEY=${WEBUI_API_KEY:-}
-      - WEBUI_MODEL=${WEBUI_MODEL:-qwen2.5:7b}
+      - WEBUI_PIPE_MODEL=${WEBUI_PIPE_MODEL:-nao_brain}
       - WEBUI_VOICE_CHAT_ID=${WEBUI_VOICE_CHAT_ID:-}
-      - NAO_VOICE_SYSTEM_PROMPT=${NAO_VOICE_SYSTEM_PROMPT:-}
     depends_on:
       naoqi-driver:
         condition: service_started
