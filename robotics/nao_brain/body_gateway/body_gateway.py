@@ -34,7 +34,7 @@ Variables d'environnement :
   BRAIN_URL                  défaut http://localhost:11434
   BRAIN_MODEL                défaut qwen2.5:7b
   BRAIN_API_KEY              clé API Ollama
-  BRAIN_TIMEOUT              timeout requêtes Ollama en secondes, défaut 60
+  BRAIN_TIMEOUT              timeout requêtes Ollama en secondes, défaut 120
   BODY_REGISTRY              corps séparés par virgules, défaut "nao_01"
   DREAMING_HOUR_START/END    défaut 2 / 6
   DREAMING_BATTERY_THRESHOLD défaut 80.0
@@ -80,7 +80,7 @@ DREAM_TICK_INTERVAL        = int(os.environ.get("DREAM_TICK_INTERVAL",        "3
 PROXIMITY_THRESHOLD        = float(os.environ.get("PROXIMITY_THRESHOLD",      "1.5"))
 CHAT_PORT     = int(os.environ.get("CHAT_PORT",     "8095"))
 WAKE_WORD     = os.environ.get("WAKE_WORD",     "ok nao").lower()
-BRAIN_TIMEOUT = int(os.environ.get("BRAIN_TIMEOUT", "60"))
+BRAIN_TIMEOUT = int(os.environ.get("BRAIN_TIMEOUT", "120"))
 
 WEBUI_URL           = os.environ.get("WEBUI_URL",           "")
 WEBUI_API_KEY       = os.environ.get("WEBUI_API_KEY",       "")
@@ -295,7 +295,7 @@ class BodyGatewayNode(Node):
                     "temperature": 0.7,
                     "options": {"think": False},
                 },
-                timeout=BRAIN_TIMEOUT,
+                timeout=(10, BRAIN_TIMEOUT),
             )
             response.raise_for_status()
 
@@ -442,11 +442,14 @@ class BodyGatewayNode(Node):
 
             def _json(self, code: int, data: dict):
                 payload = json.dumps(data).encode()
-                self.send_response(code)
-                self.send_header("Content-Type",   "application/json")
-                self.send_header("Content-Length", str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
+                try:
+                    self.send_response(code)
+                    self.send_header("Content-Type",   "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
 
             def log_message(self, fmt, *args):
                 pass
@@ -483,7 +486,7 @@ class BodyGatewayNode(Node):
                     "temperature": 0.7,
                     "options": {"think": False},
                 },
-                timeout=BRAIN_TIMEOUT,
+                timeout=(10, BRAIN_TIMEOUT),
             )
             response.raise_for_status()
 
@@ -552,7 +555,7 @@ class BodyGatewayNode(Node):
                     "temperature": 0.5 if is_dream else 0.7,
                     "options": {"think": False},
                 },
-                timeout=BRAIN_TIMEOUT,
+                timeout=(10, BRAIN_TIMEOUT),
             )
             response.raise_for_status()
 
