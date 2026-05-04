@@ -43,3 +43,7 @@ Le script :
 - Le VPS n'a pas besoin de connaître l'IP de NAO — c'est NAO qui se connecte.
 - Si NAO est hors réseau, les commandes s'accumulent dans la file rosbridge et sont livrées à la reconnexion (selon la config QoS).
 - Extensible aux drones : même pattern, script différent côté drone.
+
+---
+
+← [Toutes les décisions](../../README.md#décisions-darchitecture-adr) · [Robot NAO](../nao.md)

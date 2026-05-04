@@ -56,3 +56,7 @@ L'authentification utilise `BRAIN_API_KEY` (même valeur que `OLLAMA_API_KEYS`).
   définitivement.
 - La variable `BITTERBOT_GATEWAY_TOKEN` n'est plus nécessaire en production
   mais est conservée dans les commentaires pour faciliter la réactivation.
+
+---
+
+← [Toutes les décisions](../../README.md#décisions-darchitecture-adr) · [Stack IA](../ia-stack.md) · [Test de la chaîne](../test-chain.md)

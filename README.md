@@ -6,10 +6,21 @@ Stack IA auto-hébergée sur VPS Ubuntu, déployée via Docker Compose et géré
 
 | Section | Description |
 |---|---|
-| [Coolify & VPS](docs/coolify-vps.md) | Prérequis VPS, déploiement Coolify, CI/CD, cloud sync |
+| [Architecture](docs/architecture.md) | Vision, infrastructure, réseaux Docker |
+| [Récapitulatif des containers](docs/containers-overview.md) | Tableau synthétique de tous les containers, entrées/sorties, formats |
 | [Stack IA](docs/ia-stack.md) | Ollama, Open WebUI, n8n, ChromaDB, Bitterbot |
 | [Bridge IA / ROS 2 / NAO](docs/bridge-ia-ros2-nao.md) | nao-gateway, ros2-bridge, topics ROS 2, API |
 | [Robot NAO](docs/nao.md) | Bridge embarqué sur le robot, déploiement, autostart |
+| [Test de la chaîne](docs/test-chain.md) | Diagnostic maillon par maillon WebUI → NAO |
+| [Coolify & VPS](docs/coolify-vps.md) | Prérequis VPS, déploiement Coolify, CI/CD, cloud sync |
+
+### Décisions d'architecture (ADR)
+
+| ADR | Décision |
+|---|---|
+| [ADR 001](docs/decisions/001-ros2-over-ros1.md) | ROS 2 plutôt que ROS 1 |
+| [ADR 002](docs/decisions/002-nao-websocket-bridge.md) | Bridge WebSocket embarqué sur NAO (sans VPN ni Raspberry Pi) |
+| [ADR 003](docs/decisions/003-ollama-direct-sans-bitterbot.md) | Ollama direct sans Bitterbot pour body-gateway |
 
 ---
 

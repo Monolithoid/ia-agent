@@ -24,3 +24,7 @@ Utiliser **ROS 2 Jazzy Jalisco**.
 
 - Le bridge NAO utilise `rosbridge_suite` pour traduire WebSocket JSON ↔ topics ROS 2, ce qui évite d'avoir NAOqi comme dépendance directe dans les containers VPS.
 - Aucune compatibilité ROS 1 requise ; pas de `ros1_bridge` dans la stack.
+
+---
+
+← [Toutes les décisions](../../README.md#décisions-darchitecture-adr) · [Architecture](../architecture.md)
