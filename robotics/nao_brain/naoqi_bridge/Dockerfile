@@ -21,7 +21,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONPATH=/opt/naoqi-sdk/lib/python2.7/site-packages \
     BRIDGE_PORT=8090
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i 's|http://archive.ubuntu.com|http://old-releases.ubuntu.com|g; \
+             s|http://security.ubuntu.com|http://old-releases.ubuntu.com|g' \
+        /etc/apt/sources.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         python2.7 \
         python2-dev \
