@@ -248,7 +248,6 @@ services:
   # http://localhost:8090 et depuis ai-network via naoqi-bridge:8090)
   # ----------------------------------------------------------
   naoqi-bridge:
-    build: ./robotics/nao_brain/naoqi_bridge
     image: ${DOCKERHUB_USERNAME}/naoqi-bridge:latest
     container_name: naoqi-bridge
     restart: unless-stopped
@@ -265,7 +264,6 @@ services:
       - robotics-net
 
   naoqi-driver:
-    build: ./robotics/nao_brain/naoqi_driver
     image: ${DOCKERHUB_USERNAME}/naoqi-driver:latest
     container_name: naoqi-driver
     restart: unless-stopped
@@ -282,7 +280,6 @@ services:
         condition: service_started
 
   cognitive-renderer:
-    build: ./robotics/nao_brain/cognitive_renderer
     image: ${DOCKERHUB_USERNAME}/cognitive-renderer:latest
     container_name: cognitive-renderer
     restart: unless-stopped
@@ -295,7 +292,6 @@ services:
         condition: service_started
 
   body-gateway:
-    build: ./robotics/nao_brain/body_gateway
     image: ${DOCKERHUB_USERNAME}/body-gateway:latest
     container_name: body-gateway
     restart: unless-stopped
