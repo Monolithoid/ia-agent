@@ -29,6 +29,15 @@ ia-agent/
 └── docker-compose.yml    → composition complète
 ```
 
+## Documentation liée
+
+- [Récapitulatif des containers](containers-overview.md) — tableau détaillé des échanges entre containers
+- [Stack IA](ia-stack.md) — configuration de chaque service IA
+- [Bridge IA / ROS 2 / NAO](bridge-ia-ros2-nao.md) — couche robotique
+- [ADR 001](decisions/001-ros2-over-ros1.md) · [ADR 002](decisions/002-nao-websocket-bridge.md) · [ADR 003](decisions/003-ollama-direct-sans-bitterbot.md)
+
+---
+
 ## Services Docker
 
 | Container        | Rôle                          | Port       | Accès              |
