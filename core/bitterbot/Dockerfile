@@ -9,7 +9,7 @@
 #   - COPY patches          (pas de patchedDependencies → mkdir vide suffit)
 #   - RUN pnpm ui:build     (script absent du package.json)
 
-FROM node:22-bookworm
+FROM node:22-slim
 
 # Install Bun (required for build scripts)
 RUN curl -fsSL https://bun.sh/install | bash
