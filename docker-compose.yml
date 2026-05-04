@@ -95,7 +95,7 @@ services:
       - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
       - CHROMA_HTTP_HOST=chromadb
       - CHROMA_HTTP_PORT=8000
-      - DEFAULT_MODELS=qwen2.5:7b
+      - DEFAULT_MODELS=${DEFAULT_MODELS:-qwen3:1.7b}
       - ENABLE_SIGNUP=false
       - ENABLE_OAUTH_SIGNUP=true
       - ENABLE_API_KEY=true
@@ -304,7 +304,7 @@ services:
       - ROS_DOMAIN_ID=42
       - ROS_LOCALHOST_ONLY=1
       - BRAIN_URL=http://localhost:11434
-      - BRAIN_MODEL=${BRAIN_MODEL:-qwen2.5:7b}
+      - BRAIN_MODEL=${BRAIN_MODEL:-qwen3:1.7b}
       - BRAIN_API_KEY=${OLLAMA_API_KEYS}
       - BODY_REGISTRY=${NAO_ROBOT_ID:-nao_01}
       - DREAMING_HOUR_START=${DREAMING_HOUR_START:-2}
