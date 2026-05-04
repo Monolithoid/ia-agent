@@ -34,7 +34,7 @@ Variables d'environnement :
   BRAIN_URL                  défaut http://localhost:11434
   BRAIN_MODEL                défaut qwen2.5:7b
   BRAIN_API_KEY              clé API Ollama
-  BRAIN_TIMEOUT              timeout requêtes Ollama en secondes, défaut 60
+  BRAIN_TIMEOUT              timeout requêtes Ollama en secondes, défaut 120
   BODY_REGISTRY              corps séparés par virgules, défaut "nao_01"
   DREAMING_HOUR_START/END    défaut 2 / 6
   DREAMING_BATTERY_THRESHOLD défaut 80.0
@@ -80,7 +80,7 @@ DREAM_TICK_INTERVAL        = int(os.environ.get("DREAM_TICK_INTERVAL",        "3
 PROXIMITY_THRESHOLD        = float(os.environ.get("PROXIMITY_THRESHOLD",      "1.5"))
 CHAT_PORT     = int(os.environ.get("CHAT_PORT",     "8095"))
 WAKE_WORD     = os.environ.get("WAKE_WORD",     "ok nao").lower()
-BRAIN_TIMEOUT = int(os.environ.get("BRAIN_TIMEOUT", "60"))
+BRAIN_TIMEOUT = int(os.environ.get("BRAIN_TIMEOUT", "120"))
 
 WEBUI_URL           = os.environ.get("WEBUI_URL",           "")
 WEBUI_API_KEY       = os.environ.get("WEBUI_API_KEY",       "")
@@ -282,24 +282,13 @@ class BodyGatewayNode(Node):
 
         try:
             system_prompt = _AWAKE_SYSTEM.format(body_ids=", ".join(BODY_REGISTRY))
-            response = requests.post(
-                f"{BRAIN_URL}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {BRAIN_API_KEY}"},
-                json={
-                    "model": BRAIN_MODEL,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user",   "content": f"[{body_id}] {user_input}"},
-                    ],
-                    "stream": False,
-                    "temperature": 0.7,
-                    "options": {"think": False},
-                },
-                timeout=BRAIN_TIMEOUT,
+            raw = self._ollama_chat(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": f"[{body_id}] {user_input}"},
+                ],
+                temperature=0.7,
             )
-            response.raise_for_status()
-
-            raw    = response.json()["choices"][0]["message"]["content"]
             parsed = self._parse_json(raw)
 
             self._publish_emotion(parsed.get("emotion", "neutral"))
@@ -442,11 +431,14 @@ class BodyGatewayNode(Node):
 
             def _json(self, code: int, data: dict):
                 payload = json.dumps(data).encode()
-                self.send_response(code)
-                self.send_header("Content-Type",   "application/json")
-                self.send_header("Content-Length", str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
+                try:
+                    self.send_response(code)
+                    self.send_header("Content-Type",   "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
 
             def log_message(self, fmt, *args):
                 pass
@@ -456,6 +448,43 @@ class BodyGatewayNode(Node):
         self.get_logger().info(
             f"HTTP démarré → :{CHAT_PORT}/chat  :{CHAT_PORT}/say  :{CHAT_PORT}/voice-pop"
         )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Appel Ollama avec streaming (évite les timeouts sur génération longue)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _ollama_chat(self, messages: list, temperature: float) -> str:
+        """
+        Stream l'API Ollama et accumule le contenu complet.
+        timeout=(10, BRAIN_TIMEOUT) : 10 s pour établir la connexion,
+        BRAIN_TIMEOUT s max entre deux chunks — protège contre un stall total
+        sans couper une génération active.
+        """
+        response = requests.post(
+            f"{BRAIN_URL}/v1/chat/completions",
+            headers={"Authorization": f"Bearer {BRAIN_API_KEY}"},
+            json={
+                "model":       BRAIN_MODEL,
+                "messages":    messages,
+                "stream":      True,
+                "temperature": temperature,
+                "options":     {"think": False},
+            },
+            timeout=(10, BRAIN_TIMEOUT),
+            stream=True,
+        )
+        response.raise_for_status()
+        chunks = []
+        for line in response.iter_lines():
+            if not line or not line.startswith(b"data: "):
+                continue
+            data = line[6:]
+            if data == b"[DONE]":
+                break
+            delta = json.loads(data)["choices"][0]["delta"].get("content", "")
+            if delta:
+                chunks.append(delta)
+        return "".join(chunks)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Inférence synchrone (Parcours 1 — canal /chat)
@@ -470,24 +499,13 @@ class BodyGatewayNode(Node):
 
         try:
             system_prompt = _AWAKE_SYSTEM.format(body_ids=", ".join(BODY_REGISTRY))
-            response = requests.post(
-                f"{BRAIN_URL}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {BRAIN_API_KEY}"},
-                json={
-                    "model": BRAIN_MODEL,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user",   "content": f"[{body_id}] {user_input}"},
-                    ],
-                    "stream": False,
-                    "temperature": 0.7,
-                    "options": {"think": False},
-                },
-                timeout=BRAIN_TIMEOUT,
+            raw = self._ollama_chat(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": f"[{body_id}] {user_input}"},
+                ],
+                temperature=0.7,
             )
-            response.raise_for_status()
-
-            raw    = response.json()["choices"][0]["message"]["content"]
             parsed = self._parse_json(raw)
 
             self._publish_emotion(parsed.get("emotion", "neutral"))
@@ -539,24 +557,13 @@ class BodyGatewayNode(Node):
                 _DREAM_SYSTEM if is_dream else _AWAKE_SYSTEM
             ).format(body_ids=", ".join(BODY_REGISTRY))
 
-            response = requests.post(
-                f"{BRAIN_URL}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {BRAIN_API_KEY}"},
-                json={
-                    "model": BRAIN_MODEL,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user",   "content": f"[{body_id}] {user_input}"},
-                    ],
-                    "stream": False,
-                    "temperature": 0.5 if is_dream else 0.7,
-                    "options": {"think": False},
-                },
-                timeout=BRAIN_TIMEOUT,
+            raw = self._ollama_chat(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": f"[{body_id}] {user_input}"},
+                ],
+                temperature=0.5 if is_dream else 0.7,
             )
-            response.raise_for_status()
-
-            raw    = response.json()["choices"][0]["message"]["content"]
             parsed = self._parse_json(raw)
 
             if not is_dream:

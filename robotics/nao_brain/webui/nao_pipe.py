@@ -94,7 +94,7 @@ class Pipe:
             r = requests.post(
                 f"{self.valves.body_gateway_url}/chat",
                 json={"text": text, "robot_id": self.valves.robot_id},
-                timeout=60,
+                timeout=(10, None),
             )
             r.raise_for_status()
             data = r.json()
