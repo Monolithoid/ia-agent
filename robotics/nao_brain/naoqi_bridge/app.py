@@ -1,5 +1,4 @@
-#!/usr/bin/env python2
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python3
 """
 naoqi_bridge — Python 2.7 HTTP bridge between the VPS and body stack.
 
@@ -24,13 +23,11 @@ Environment variables:
                          default 90
 """
 
-from __future__ import print_function
-
 import base64
 import hashlib
 import json
 import os
-import Queue
+import queue
 import struct
 import sys
 import threading
@@ -119,9 +116,7 @@ class _WS(object):
             raise IOError("WS handshake failed: {}".format(resp.split(b"\r\n")[0]))
 
     def send(self, text):
-        if isinstance(text, unicode):
-            text = text.encode("utf-8")
-        payload = bytearray(text)
+        payload = bytearray(text.encode("utf-8"))
         n = len(payload)
         mask_key = bytearray(os.urandom(4))
         hdr = bytearray([0x81])
@@ -311,7 +306,7 @@ def _broadcast(event):
         for q in list(_event_queues):
             try:
                 q.put_nowait(data)
-            except Queue.Full:
+            except queue.Full:
                 pass
 
 
@@ -342,19 +337,19 @@ def say():
 
     if _tts:
         try:
-            _tts.say(text.encode("utf-8"))
+            _tts.say(text)
         except Exception as e:
             _disconnect()
             return jsonify({"error": str(e)}), 500
     elif _is_nao_connected():
         if not _rosbridge_publish(
             "/nao/speech", "std_msgs/String",
-            {"data": text.encode("utf-8") if isinstance(text, unicode) else text},
+            {"data": text},
         ):
             return jsonify({"error": "rosbridge unreachable"}), 503
     else:
         sys.stderr.write("[MOCK] say: {}\n".format(
-            text.encode("utf-8") if isinstance(text, unicode) else text))
+            text))
 
     return jsonify({"ok": True})
 
@@ -494,7 +489,7 @@ def battery():
 
 @app.route("/events")
 def events():
-    q = Queue.Queue(maxsize=64)
+    q = queue.Queue(maxsize=64)
     with _event_queues_lock:
         _event_queues.append(q)
 
@@ -504,7 +499,7 @@ def events():
                 try:
                     data = q.get(timeout=15)
                     yield "data: {}\n\n".format(data)
-                except Queue.Empty:
+                except queue.Empty:
                     yield ": keepalive\n\n"
         finally:
             with _event_queues_lock:
