@@ -95,7 +95,7 @@ services:
       - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
       - CHROMA_HTTP_HOST=chromadb
       - CHROMA_HTTP_PORT=8000
-      - DEFAULT_MODELS=${DEFAULT_MODELS:-qwen3:1.7b}
+      - DEFAULT_MODELS=${DEFAULT_MODELS:-nao_brain}
       - ENABLE_SIGNUP=false
       - ENABLE_OAUTH_SIGNUP=true
       - ENABLE_API_KEY=true
