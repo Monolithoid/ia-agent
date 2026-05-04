@@ -293,6 +293,7 @@ class BodyGatewayNode(Node):
                     ],
                     "stream": False,
                     "temperature": 0.7,
+                    "options": {"think": False},
                 },
                 timeout=BRAIN_TIMEOUT,
             )
@@ -480,6 +481,7 @@ class BodyGatewayNode(Node):
                     ],
                     "stream": False,
                     "temperature": 0.7,
+                    "options": {"think": False},
                 },
                 timeout=BRAIN_TIMEOUT,
             )
@@ -548,6 +550,7 @@ class BodyGatewayNode(Node):
                     ],
                     "stream": False,
                     "temperature": 0.5 if is_dream else 0.7,
+                    "options": {"think": False},
                 },
                 timeout=BRAIN_TIMEOUT,
             )
@@ -576,16 +579,19 @@ class BodyGatewayNode(Node):
                 self._publish_cognitive("listening")
 
     def _parse_json(self, raw: str) -> dict:
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            pass
-        m = re.search(r"\{.*\}", raw, re.DOTALL)
-        if m:
+        # Strip <think>...</think> blocks emitted by reasoning models (Qwen3, DeepSeek-R1…)
+        cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        for candidate in (cleaned, raw):
             try:
-                return json.loads(m.group())
+                return json.loads(candidate)
             except json.JSONDecodeError:
                 pass
+            m = re.search(r"\{.*\}", candidate, re.DOTALL)
+            if m:
+                try:
+                    return json.loads(m.group())
+                except json.JSONDecodeError:
+                    pass
         self.get_logger().warn("JSON parse failed — réponse ignorée")
         return {"actions": []}
 
