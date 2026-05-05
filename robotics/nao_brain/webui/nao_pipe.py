@@ -55,7 +55,26 @@ class Pipe:
         if not messages:
             return "Aucun message."
 
-        user_message = messages[-1].get("content", "")
+        # Prend le dernier message utilisateur (Open WebUI peut ajouter un
+        # assistant vide en fin de tableau lors de l'appel du pipe)
+        user_msg = next(
+            (m for m in reversed(messages) if m.get("role") == "user"),
+            None,
+        )
+        if not user_msg:
+            return "Aucun message utilisateur."
+
+        content = user_msg.get("content", "")
+        # Open WebUI ≥ 0.4 peut envoyer le contenu comme liste de blocs
+        if isinstance(content, list):
+            user_message = " ".join(
+                part.get("text", "")
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            )
+        else:
+            user_message = content
+
         if not user_message:
             return "Message vide."
 

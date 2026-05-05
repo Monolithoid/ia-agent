@@ -388,7 +388,8 @@ class BodyGatewayNode(Node):
                 if body is None:
                     return
 
-                text     = body.get("text", "").strip()
+                raw_text = body.get("text", "")
+                text = str(raw_text).strip() if raw_text else ""
                 robot_id = body.get("robot_id", BODY_REGISTRY[0])
 
                 if not text:
