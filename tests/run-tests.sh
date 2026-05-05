@@ -4,19 +4,13 @@
 # Usage :
 #   bash tests/run-tests.sh                          # liste les suites disponibles
 #   bash tests/run-tests.sh <suite> [<suite> ...]    # lance les suites indiquées
-#   bash tests/run-tests.sh all                      # lance toutes les suites
-#
-# Suites disponibles :
-#   chain        test-chain.sh          — maillons WebUI → Ollama → naoqi-bridge
-#   capabilities test-nao-capabilities.sh — capacités NAOqi (mock par défaut)
-#   capabilities:nao                   — capacités NAOqi avec NAO physique (--nao)
-#   diag         diag-nao-connection.sh — diagnostic de connexion NAO
+#   bash tests/run-tests.sh all                      # lance toutes les suites (sans --nao)
 #
 # Exemples :
 #   bash tests/run-tests.sh chain
-#   bash tests/run-tests.sh capabilities
-#   bash tests/run-tests.sh capabilities:nao
-#   bash tests/run-tests.sh chain capabilities
+#   bash tests/run-tests.sh nao:say nao:leds
+#   bash tests/run-tests.sh nao:move --nao
+#   bash tests/run-tests.sh nao:posture nao:motion nao:move --nao
 #   bash tests/run-tests.sh all
 
 set -uo pipefail
@@ -38,48 +32,57 @@ _usage() {
     echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "  ${CYAN}Usage :${NC}"
-    echo -e "    bash tests/run-tests.sh <suite> [<suite> ...]"
+    echo -e "    bash tests/run-tests.sh <suite> [<suite> ...] [--nao]"
     echo -e "    bash tests/run-tests.sh all"
     echo ""
-    echo -e "  ${CYAN}Suites disponibles :${NC}"
+    echo -e "  ${CYAN}Options :${NC}"
+    echo -e "    ${GREEN}--nao${NC}   Active les tests NAO physique pour les suites nao:*"
+    echo ""
+    echo -e "  ${CYAN}Suites — infrastructure :${NC}"
     echo ""
     echo -e "    ${GREEN}chain${NC}"
-    echo -e "        Teste chaque maillon de la chaîne WebUI → Ollama → naoqi-bridge"
-    echo -e "        (NAO peut être éteint — mock mode automatique)"
-    echo ""
-    echo -e "    ${GREEN}capabilities${NC}"
-    echo -e "        Teste toutes les capacités NAOqi via naoqi-bridge (mock mode)"
-    echo -e "        /health, /battery, /say, /leds, /posture, /motion, /move, /events"
-    echo ""
-    echo -e "    ${GREEN}capabilities:nao${NC}"
-    echo -e "        Idem capabilities mais avec NAO physique allumé (--nao)"
-    echo -e "        Requiert NAO connecté et naoqi-bridge en mode réel"
+    echo -e "        Maillons WebUI → Ollama → naoqi-bridge (NAO peut être éteint)"
     echo ""
     echo -e "    ${GREEN}diag${NC}"
     echo -e "        Diagnostic de connexion NAO (réseau, qi SDK, port 9559)"
     echo ""
-    echo -e "    ${GREEN}all${NC}"
-    echo -e "        Lance : chain + capabilities + diag"
-    echo -e "        (pas capabilities:nao — requiert NAO allumé)"
+    echo -e "  ${CYAN}Suites — capacités NAOqi (mock par défaut, --nao pour physique) :${NC}"
+    echo ""
+    echo -e "    ${GREEN}nao:health${NC}       /health — état de connexion bridge"
+    echo -e "    ${GREEN}nao:battery${NC}      /battery — niveau de batterie"
+    echo -e "    ${GREEN}nao:say${NC}          /say — synthèse vocale (ALTextToSpeech)"
+    echo -e "    ${GREEN}nao:leds${NC}         /leds — contrôle LEDs (ALLeds.fadeRGB)"
+    echo -e "    ${GREEN}nao:posture${NC}      /posture — postures (Stand, Crouch, Sit…)"
+    echo -e "    ${GREEN}nao:motion${NC}       /motion — articulations tête (HeadYaw, HeadPitch)"
+    echo -e "    ${GREEN}nao:move${NC}         /move + /move/stop — déplacement locomotion"
+    echo -e "    ${GREEN}nao:events${NC}       /events — flux SSE (bumper, sonar, batterie)"
+    echo -e "    ${GREEN}nao:robustness${NC}   cas d'erreur et endpoints invalides"
+    echo -e "    ${GREEN}nao:all${NC}          toutes les sections nao:* ci-dessus"
+    echo ""
+    echo -e "  ${CYAN}Raccourcis :${NC}"
+    echo ""
+    echo -e "    ${GREEN}all${NC}   chain + nao:all + diag  (sans --nao)"
     echo ""
     echo -e "  ${CYAN}Exemples :${NC}"
     echo -e "    bash tests/run-tests.sh chain"
-    echo -e "    bash tests/run-tests.sh capabilities"
-    echo -e "    bash tests/run-tests.sh capabilities:nao"
-    echo -e "    bash tests/run-tests.sh chain capabilities"
+    echo -e "    bash tests/run-tests.sh nao:say nao:leds"
+    echo -e "    bash tests/run-tests.sh nao:move --nao"
+    echo -e "    bash tests/run-tests.sh nao:posture nao:motion nao:move --nao"
     echo -e "    bash tests/run-tests.sh all"
     echo ""
 }
 
-# ─── Exécution d'une suite ────────────────────────────────────────────────────
-TOTAL_PASS=0
-TOTAL_FAIL=0
+# ─── Gestion des suites ───────────────────────────────────────────────────────
 SUITES_RUN=()
 SUITES_FAILED=()
+PHYSICAL=0
+
+# Sections NAO individuelles disponibles
+NAO_SECTIONS=(health battery say leds posture motion move events robustness)
 
 _run_suite() {
     local suite="$1"
-    local script args label
+    local script args label nao_section
 
     case "$suite" in
         chain)
@@ -87,20 +90,22 @@ _run_suite() {
             args=()
             label="chain — maillons WebUI → NAO"
             ;;
-        capabilities)
-            script="$SCRIPT_DIR/test-nao-capabilities.sh"
-            args=()
-            label="capabilities — capacités NAOqi (mock)"
-            ;;
-        capabilities:nao)
-            script="$SCRIPT_DIR/test-nao-capabilities.sh"
-            args=(--nao)
-            label="capabilities:nao — capacités NAOqi (NAO physique)"
-            ;;
         diag)
             script="$SCRIPT_DIR/diag-nao-connection.sh"
             args=()
             label="diag — diagnostic connexion NAO"
+            ;;
+        nao:all)
+            # Expansé en amont — ne devrait pas arriver ici
+            for s in "${NAO_SECTIONS[@]}"; do _run_suite "nao:$s"; done
+            return
+            ;;
+        nao:health|nao:battery|nao:say|nao:leds|nao:posture|nao:motion|nao:move|nao:events|nao:robustness)
+            nao_section="${suite#nao:}"
+            script="$SCRIPT_DIR/test-nao-capabilities.sh"
+            args=("$nao_section")
+            [ "$PHYSICAL" -eq 1 ] && args=(--nao "$nao_section")
+            label="$suite$([ "$PHYSICAL" -eq 1 ] && echo ' (--nao)' || echo ' (mock)')"
             ;;
         *)
             echo -e "${RED}Suite inconnue : '$suite'${NC}" >&2
@@ -130,31 +135,45 @@ if [ $# -eq 0 ]; then
     exit 0
 fi
 
-# Résolution de "all"
-REQUESTED=()
+# Parsing : sépare --nao des noms de suites
+RAW_SUITES=()
 for arg in "$@"; do
-    if [ "$arg" = "all" ]; then
-        REQUESTED+=(chain capabilities diag)
-    else
-        REQUESTED+=("$arg")
-    fi
+    case "$arg" in
+        --nao) PHYSICAL=1 ;;
+        *)     RAW_SUITES+=("$arg") ;;
+    esac
+done
+
+# Expansion de "all" et "nao:all"
+EXPANDED=()
+for arg in "${RAW_SUITES[@]}"; do
+    case "$arg" in
+        all)
+            EXPANDED+=(chain)
+            for s in "${NAO_SECTIONS[@]}"; do EXPANDED+=("nao:$s"); done
+            EXPANDED+=(diag)
+            ;;
+        nao:all)
+            for s in "${NAO_SECTIONS[@]}"; do EXPANDED+=("nao:$s"); done
+            ;;
+        *)
+            EXPANDED+=("$arg")
+            ;;
+    esac
 done
 
 # Dédoublonnage (ordre conservé)
 SEEN=()
 DEDUPED=()
-for s in "${REQUESTED[@]}"; do
+for s in "${EXPANDED[@]}"; do
     already=0
-    for seen in "${SEEN[@]:-}"; do
-        [ "$seen" = "$s" ] && already=1 && break
-    done
+    for seen in "${SEEN[@]:-}"; do [ "$seen" = "$s" ] && already=1 && break; done
     if [ "$already" -eq 0 ]; then
-        DEDUPED+=("$s")
-        SEEN+=("$s")
+        DEDUPED+=("$s"); SEEN+=("$s")
     fi
 done
 
-# Lancement des suites
+# Lancement
 for suite in "${DEDUPED[@]}"; do
     _run_suite "$suite"
 done
