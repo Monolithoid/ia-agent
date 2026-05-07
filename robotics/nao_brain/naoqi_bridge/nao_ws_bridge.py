@@ -558,6 +558,7 @@ class NaoBridge(object):
         proxy = get_proxy("ALTextToSpeech")
         if proxy:
             try:
+                proxy.setLanguage("French")
                 proxy.say(text.encode("utf-8") if isinstance(text, unicode) else text)
             except Exception as e:
                 print("[bridge] say error: {}".format(e), file=sys.stderr)
