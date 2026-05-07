@@ -47,6 +47,7 @@ ROBOT_ID = os.environ.get("ROBOT_ID", "nao_01")
 WHISPER_URL = os.environ.get("WHISPER_URL", "")
 LISTEN_DURATION = float(os.environ.get("LISTEN_DURATION", "4.0"))
 NAO_STATUS_TIMEOUT = float(os.environ.get("NAO_STATUS_TIMEOUT", "90.0"))
+TTS_VOICE = os.environ.get("TTS_VOICE", "fr-FR-DeniseNeural")
 
 
 class NAOqiDriverNode(Node):
@@ -66,8 +67,9 @@ class NAOqiDriverNode(Node):
         self.pub_connected = self.create_publisher(Bool,  f"{ns}/connected",       10)
 
         # ── Publishers : commandes → NAO (via rosbridge → nao_ws_bridge) ──────
-        self.pub_nao_speech  = self.create_publisher(String, "/nao/speech",  10)
-        self.pub_nao_cmd_vel = self.create_publisher(Twist,  "/nao/cmd_vel", 10)
+        self.pub_nao_speech    = self.create_publisher(String, "/nao/speech",    10)
+        self.pub_nao_audio_out = self.create_publisher(String, "/nao/audio_out", 10)
+        self.pub_nao_cmd_vel   = self.create_publisher(Twist,  "/nao/cmd_vel",   10)
         self.pub_nao_gesture = self.create_publisher(String, "/nao/gesture", 10)
         self.pub_nao_leds    = self.create_publisher(String, "/nao/leds",    10)
         self.pub_nao_motion  = self.create_publisher(String, "/nao/motion",  10)
@@ -184,8 +186,46 @@ class NAOqiDriverNode(Node):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _on_say(self, msg: String):
-        self.get_logger().info(f"[{ROBOT_ID}] → /nao/speech : {msg.data[:80]!r}")
-        self.pub_nao_speech.publish(msg)
+        text = msg.data
+        self.get_logger().info(f"[{ROBOT_ID}] → TTS : {text[:80]!r}")
+        if TTS_VOICE:
+            threading.Thread(target=self._tts_and_publish, args=(text,), daemon=True).start()
+        else:
+            self.pub_nao_speech.publish(msg)
+
+    def _tts_and_publish(self, text: str):
+        import asyncio
+        import io
+        try:
+            import edge_tts
+        except ImportError:
+            self.get_logger().warn("edge-tts non installé — fallback texte NAOqi")
+            out = String()
+            out.data = text
+            self.pub_nao_speech.publish(out)
+            return
+        try:
+            async def _gen():
+                communicate = edge_tts.Communicate(text, TTS_VOICE)
+                buf = io.BytesIO()
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        buf.write(chunk["data"])
+                return buf.getvalue()
+
+            loop = asyncio.new_event_loop()
+            audio_mp3 = loop.run_until_complete(_gen())
+            loop.close()
+            b64 = base64.b64encode(audio_mp3).decode()
+            out = String()
+            out.data = b64
+            self.pub_nao_audio_out.publish(out)
+            self.get_logger().info(f"TTS audio envoyé ({len(audio_mp3)} octets MP3)")
+        except Exception as e:
+            self.get_logger().warn(f"edge-tts erreur: {e} — fallback texte NAOqi")
+            out = String()
+            out.data = text
+            self.pub_nao_speech.publish(out)
 
     def _on_motion(self, msg: String):
         self.get_logger().info(f"[{ROBOT_ID}] → /nao/motion : {msg.data[:80]!r}")

@@ -276,6 +276,7 @@ services:
       - WHISPER_URL=http://localhost:9000
       - LISTEN_DURATION=${LISTEN_DURATION:-4.0}
       - NAO_STATUS_TIMEOUT=${NAO_STATUS_TIMEOUT:-90}
+      - TTS_VOICE=${TTS_VOICE:-fr-FR-DeniseNeural}
     depends_on:
       whisper-asr:
         condition: service_started

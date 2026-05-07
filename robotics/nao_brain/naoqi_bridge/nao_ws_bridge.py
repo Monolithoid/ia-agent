@@ -58,12 +58,13 @@ STATUS_INTERVAL = 30
 
 # Mapping module → (topic, msg_type)
 _MODULE_TOPICS = {
-    "speech":   ("/nao/speech",   "std_msgs/String"),
-    "gesture":  ("/nao/gesture",  "std_msgs/String"),
-    "led":      ("/nao/leds",     "std_msgs/String"),
-    "motion":   ("/nao/motion",   "std_msgs/String"),
-    "move":     ("/nao/cmd_vel",  "geometry_msgs/Twist"),
-    "stop":     ("/nao/stop",     "std_msgs/Empty"),
+    "speech":   ("/nao/speech",     "std_msgs/String"),
+    "gesture":  ("/nao/gesture",    "std_msgs/String"),
+    "led":      ("/nao/leds",       "std_msgs/String"),
+    "motion":   ("/nao/motion",     "std_msgs/String"),
+    "move":     ("/nao/cmd_vel",    "geometry_msgs/Twist"),
+    "stop":     ("/nao/stop",       "std_msgs/Empty"),
+    "audio_out": ("/nao/audio_out", "std_msgs/String"),
 }
 # Topics toujours actifs (contrôle du bridge lui-même)
 _SYSTEM_TOPICS = [
@@ -504,7 +505,11 @@ class NaoBridge(object):
     # ------------------------------------------------------------------
 
     def _dispatch(self, topic, data):
-        if topic == "/nao/speech" and "speech" in self._modules:
+        if topic == "/nao/audio_out" and "audio_out" in self._modules:
+            b64 = data.get("data", "")
+            if b64:
+                threading.Thread(target=self._play_audio, args=(b64,)).start()
+        elif topic == "/nao/speech" and "speech" in self._modules:
             text = data.get("data", "")
             if text:
                 self._say(text)
@@ -562,6 +567,30 @@ class NaoBridge(object):
                 proxy.say(text.encode("utf-8") if isinstance(text, unicode) else text)
             except Exception as e:
                 print("[bridge] say error: {}".format(e), file=sys.stderr)
+
+    def _play_audio(self, b64_data):
+        """Joue un MP3 base64 reçu du VPS via ALAudioPlayer (contourne le TTS NAOqi)."""
+        import os
+        import tempfile
+        if not HAS_NAOQI:
+            print("[MOCK] play_audio: {} octets base64".format(len(b64_data)), file=sys.stderr)
+            return
+        try:
+            audio_bytes = base64.b64decode(b64_data)
+            fd, path = tempfile.mkstemp(suffix=".mp3", prefix="nao_tts_")
+            try:
+                os.write(fd, audio_bytes)
+                os.close(fd)
+                proxy = get_proxy("ALAudioPlayer")
+                if proxy:
+                    proxy.playFile(str(path))
+            finally:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+        except Exception as e:
+            print("[bridge] play_audio error: {}".format(e), file=sys.stderr)
 
     def _move(self, x, y, theta):
         if not HAS_NAOQI:
