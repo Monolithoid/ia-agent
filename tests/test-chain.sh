@@ -270,6 +270,39 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+# MAILLON 8 — Pipe WebUI → body-gateway (__ping__ sans Ollama)
+# ─────────────────────────────────────────────────────────────────────────────
+_head 8 "Pipe Open WebUI → body-gateway (message __ping__)"
+
+echo -e "  ${BLUE}→${NC} Envoie __ping__ via /api/chat/completions — vérifie que le pipe atteint body-gateway"
+
+# Lecture des variables d'environnement (les mêmes que body-gateway utilise)
+_WEBUI_URL="${WEBUI_URL:-http://localhost:3000}"
+_WEBUI_KEY="${WEBUI_API_KEY:-}"
+_PIPE_MODEL="${WEBUI_PIPE_MODEL:-nao_brain}"
+
+if [ -z "$_WEBUI_KEY" ]; then
+    _skip "WEBUI_API_KEY non défini — test pipe ignoré (définir la variable d'env pour l'activer)"
+else
+    # Test 1 : body-gateway /ping accessible directement depuis le host
+    _check "body-gateway GET /ping répond ok=true (host:8095)" \
+        "curl -sf --max-time 5 http://localhost:8095/ping | python3 -c \
+         \"import json,sys; d=json.load(sys.stdin); assert d.get('ok') == True, d; print(d)\""
+
+    # Test 2 : le pipe répond via l'API WebUI avec __ping__
+    _check "Pipe $_PIPE_MODEL : __ping__ → body-gateway joignable" \
+        "resp=\$(curl -sf --max-time 15 -X POST '$_WEBUI_URL/api/chat/completions' \
+             -H 'Authorization: Bearer $_WEBUI_KEY' \
+             -H 'Content-Type: application/json' \
+             -d '{\"model\":\"$_PIPE_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"__ping__\"}],\"stream\":false}') \
+         && echo \"\$resp\" | python3 -c \
+             \"import json,sys; d=json.load(sys.stdin); \
+               content=d['choices'][0]['message']['content']; \
+               assert 'body-gateway joignable' in content or 'opérationnel' in content, repr(content); \
+               print(content)\""
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAILLON 7 — n8n accessible (bonus — n8n n'est pas dans la chaîne directe)
 # ─────────────────────────────────────────────────────────────────────────────
 _head 7 "n8n (bonus — workflow orchestration, hors chaîne directe)"

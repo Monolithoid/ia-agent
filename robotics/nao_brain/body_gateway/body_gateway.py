@@ -362,7 +362,9 @@ class BodyGatewayNode(Node):
         class _Handler(BaseHTTPRequestHandler):
 
             def do_GET(self):
-                if self.path == "/voice-pop":
+                if self.path == "/ping":
+                    self._json(200, {"ok": True, "service": "body-gateway"})
+                elif self.path == "/voice-pop":
                     self._voice_pop()
                 else:
                     self.send_response(404)
@@ -447,7 +449,7 @@ class BodyGatewayNode(Node):
         server = HTTPServer(("0.0.0.0", CHAT_PORT), _Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.get_logger().info(
-            f"HTTP démarré → :{CHAT_PORT}/chat  :{CHAT_PORT}/say  :{CHAT_PORT}/voice-pop"
+            f"HTTP démarré → :{CHAT_PORT}/ping  :{CHAT_PORT}/chat  :{CHAT_PORT}/say  :{CHAT_PORT}/voice-pop"
         )
 
     # ─────────────────────────────────────────────────────────────────────────
