@@ -42,6 +42,8 @@ _usage() {
     echo ""
     echo -e "    ${GREEN}chain${NC}"
     echo -e "        Maillons WebUI → Ollama → naoqi-bridge (NAO peut être éteint)"
+    echo -e "        Inclut le maillon 8 : pipe __ping__ via l'API Open WebUI"
+    echo -e "        (nécessite WEBUI_API_KEY défini dans l'environnement)"
     echo ""
     echo -e "    ${GREEN}diag${NC}"
     echo -e "        Diagnostic de connexion NAO (réseau, qi SDK, port 9559)"

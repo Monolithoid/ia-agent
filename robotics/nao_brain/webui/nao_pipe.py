@@ -78,12 +78,37 @@ class Pipe:
         if not user_message:
             return "Message vide."
 
+        # Ping de connectivité — message réservé aux tests (pas d'inférence Ollama)
+        if user_message.strip() == "__ping__":
+            return self._ping()
+
         # Parcours 2 — résultat pré-calculé par body-gateway (voix "Ok nao")
         if body.get("nao_voice"):
             return self._handle_voice(user_message)
 
         # Parcours 1 — message texte WebUI
         return self._call_gateway(user_message)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Ping — vérification de la connectivité pipe → body-gateway (sans Ollama)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _ping(self) -> str:
+        try:
+            r = requests.get(
+                f"{self.valves.body_gateway_url}/ping",
+                timeout=5,
+            )
+            if r.ok and r.json().get("ok"):
+                return "✅ body-gateway joignable — pipe opérationnel."
+            return f"⚠️ body-gateway a répondu {r.status_code}."
+        except requests.exceptions.ConnectionError:
+            return (
+                "❌ body-gateway inaccessible — "
+                "le stack robotique (`docker compose up -d`) est-il démarré ?"
+            )
+        except Exception as e:
+            return f"❌ Erreur ping : {e}"
 
     # ─────────────────────────────────────────────────────────────────────────
     # Parcours 2 — récupération du résultat pré-calculé (évite double inférence)
