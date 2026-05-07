@@ -7,7 +7,20 @@ Etablit une connexion WebSocket SORTANTE vers rosbridge sur le VPS,
 s'abonne aux topics de commande et publie le statut du robot.
 
 Usage :
-    python /home/nao/nao_ws_bridge.py --vps ws://IP_VPS:9090
+    python /home/nao/nao_ws_bridge.py --vps ws://IP_VPS:9090 [options]
+
+Options de filtrage des modules :
+    --modules led,speech,gesture   Active uniquement les modules listés.
+                                   Modules disponibles : led, speech, gesture,
+                                   motion, move, stop (defaut: tous actifs).
+    --no-audio-capture             Desactive le wake word et la capture VAD.
+
+Exemples :
+    # LED + parole uniquement, sans capture audio :
+    python nao_ws_bridge.py --vps ws://IP:9090 --modules led,speech --no-audio-capture
+
+    # Tout actif (comportement par defaut) :
+    python nao_ws_bridge.py --vps ws://IP:9090
 
 Dependances :
     Aucune dependance externe — client WebSocket pur Python 2.7 integre.
@@ -42,6 +55,21 @@ NAO_IP = "127.0.0.1"
 NAO_PORT = 9559
 RECONNECT_DELAY = 5
 STATUS_INTERVAL = 30
+
+# Mapping module → (topic, msg_type)
+_MODULE_TOPICS = {
+    "speech":   ("/nao/speech",   "std_msgs/String"),
+    "gesture":  ("/nao/gesture",  "std_msgs/String"),
+    "led":      ("/nao/leds",     "std_msgs/String"),
+    "motion":   ("/nao/motion",   "std_msgs/String"),
+    "move":     ("/nao/cmd_vel",  "geometry_msgs/Twist"),
+    "stop":     ("/nao/stop",     "std_msgs/Empty"),
+}
+# Topics toujours actifs (contrôle du bridge lui-même)
+_SYSTEM_TOPICS = [
+    ("/nao/shutdown", "std_msgs/Empty"),
+]
+ALL_MODULES = frozenset(_MODULE_TOPICS.keys())
 
 _BROKER      = None  # ALBroker local (doit rester vivant pour les callbacks)
 _CAPTURE_REF = None  # empêche le GC de l'instance _AudioCapture courante
@@ -340,8 +368,14 @@ class _AudioCapture(ALModule):
 
 class NaoBridge(object):
 
-    def __init__(self, vps_url):
+    def __init__(self, vps_url, modules=None, audio_capture=True):
+        """
+        modules       : ensemble de noms de modules à activer (None = tous).
+        audio_capture : active le wake word et la capture VAD si True.
+        """
         self.vps_url = vps_url
+        self._modules = ALL_MODULES if modules is None else frozenset(modules)
+        self._audio_capture_enabled = audio_capture
         self.ws = None
         self._stop = threading.Event()
         self._busy_until = 0.0       # timestamp jusqu'auquel le wake word est ignoré
@@ -413,28 +447,37 @@ class NaoBridge(object):
             self.ws.send(json.dumps(payload_dict))
 
     def _on_open(self, ws):
-        print("[bridge] Connecte. Abonnement aux topics ...", file=sys.stderr)
-        topics = [
-            ("/nao/speech",    "std_msgs/String"),
-            ("/nao/cmd_vel",   "geometry_msgs/Twist"),
-            ("/nao/gesture",   "std_msgs/String"),
-            ("/nao/leds",      "std_msgs/String"),
-            ("/nao/stop",      "std_msgs/Empty"),
-            ("/nao/motion",    "std_msgs/String"),
-            ("/nao/shutdown",  "std_msgs/Empty"),
-        ]
-        for topic, msg_type in topics:
+        active = sorted(self._modules)
+        print("[bridge] Connecte. Modules actifs : {}. Capture audio : {}.".format(
+            ", ".join(active) if active else "aucun",
+            "oui" if self._audio_capture_enabled else "non",
+        ), file=sys.stderr)
+
+        # Topics filtrés selon les modules activés
+        for mod, (topic, msg_type) in _MODULE_TOPICS.items():
+            if mod in self._modules:
+                sub_msg = {"op": "subscribe", "topic": topic, "type": msg_type}
+                _ws_log(u"→", sub_msg)
+                ws.send(json.dumps(sub_msg))
+
+        # Topics système toujours souscrits
+        for topic, msg_type in _SYSTEM_TOPICS:
             sub_msg = {"op": "subscribe", "topic": topic, "type": msg_type}
             _ws_log(u"→", sub_msg)
             ws.send(json.dumps(sub_msg))
 
-        for topic in ("/nao/status", "/nao/audio"):
+        # Topics publiés par le bridge
+        advertised = ["/nao/status"]
+        if self._audio_capture_enabled:
+            advertised.append("/nao/audio")
+        for topic in advertised:
             adv_msg = {"op": "advertise", "topic": topic, "type": "std_msgs/String"}
             _ws_log(u"→", adv_msg)
             ws.send(json.dumps(adv_msg))
+
         print("[bridge] Pret.", file=sys.stderr)
         threading.Thread(target=self._status_loop).start()
-        if not self._wakeword_started:
+        if self._audio_capture_enabled and not self._wakeword_started:
             self._wakeword_started = True
             threading.Thread(target=self._wakeword_loop).start()
 
@@ -461,11 +504,11 @@ class NaoBridge(object):
     # ------------------------------------------------------------------
 
     def _dispatch(self, topic, data):
-        if topic == "/nao/speech":
+        if topic == "/nao/speech" and "speech" in self._modules:
             text = data.get("data", "")
             if text:
                 self._say(text)
-        elif topic == "/nao/cmd_vel":
+        elif topic == "/nao/cmd_vel" and "move" in self._modules:
             linear = data.get("linear", {})
             angular = data.get("angular", {})
             self._move(
@@ -473,10 +516,10 @@ class NaoBridge(object):
                 float(linear.get("y", 0.0)),
                 float(angular.get("z", 0.0)),
             )
-        elif topic == "/nao/gesture":
+        elif topic == "/nao/gesture" and "gesture" in self._modules:
             posture = data.get("data", "Stand")
             self._posture(posture)
-        elif topic == "/nao/leds":
+        elif topic == "/nao/leds" and "led" in self._modules:
             try:
                 payload = json.loads(data.get("data", "{}"))
             except ValueError:
@@ -487,12 +530,13 @@ class NaoBridge(object):
                 float(payload.get("g", 0.0)),
                 float(payload.get("b", 0.0)),
             )
-        elif topic == "/nao/stop":
+        elif topic == "/nao/stop" and "stop" in self._modules:
             self._stop_move()
         elif topic == "/nao/shutdown":
+            # Toujours traité, quel que soit le filtrage des modules
             print("[bridge] Commande /nao/shutdown reçue — arrêt propre.", file=sys.stderr)
             threading.Thread(target=self.stop).start()
-        elif topic == "/nao/motion":
+        elif topic == "/nao/motion" and "motion" in self._modules:
             try:
                 payload = json.loads(data.get("data", "{}"))
             except ValueError:
@@ -730,16 +774,64 @@ class NaoBridge(object):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="NAO WebSocket bridge")
-    parser.add_argument("--vps", required=True, help="URL rosbridge (ex: ws://IP_VPS:9090)")
-    parser.add_argument("--nao-ip", default="127.0.0.1", help="IP du NAO (defaut: 127.0.0.1)")
-    parser.add_argument("--nao-port", type=int, default=9559)
+    parser = argparse.ArgumentParser(
+        description="NAO WebSocket bridge",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Modules disponibles : {}\n\n"
+            "Exemples :\n"
+            "  Tout actif (defaut) :\n"
+            "    python nao_ws_bridge.py --vps ws://IP:9090\n\n"
+            "  LED + parole seulement, sans capture audio :\n"
+            "    python nao_ws_bridge.py --vps ws://IP:9090 --modules led,speech --no-audio-capture\n\n"
+            "  Gestes + LED uniquement :\n"
+            "    python nao_ws_bridge.py --vps ws://IP:9090 --modules gesture,led"
+        ).format(",".join(sorted(ALL_MODULES)))
+    )
+    parser.add_argument("--vps", required=True,
+                        help="URL rosbridge (ex: ws://IP_VPS:9090)")
+    parser.add_argument("--nao-ip", default="127.0.0.1",
+                        help="IP du NAO (defaut: 127.0.0.1)")
+    parser.add_argument("--nao-port", type=int, default=9559,
+                        help="Port NAOqi (defaut: 9559)")
+    parser.add_argument(
+        "--modules",
+        default=None,
+        metavar="MOD1,MOD2,...",
+        help=(
+            "Liste de modules a activer, separee par des virgules. "
+            "Valeurs possibles : {}. "
+            "Par defaut tous les modules sont actifs."
+        ).format(", ".join(sorted(ALL_MODULES)))
+    )
+    parser.add_argument(
+        "--no-audio-capture",
+        dest="audio_capture",
+        action="store_false",
+        default=True,
+        help="Desactive le wake word et la capture VAD (actifs par defaut)."
+    )
     args = parser.parse_args()
 
     NAO_IP = args.nao_ip
     NAO_PORT = args.nao_port
 
-    bridge = NaoBridge(args.vps)
+    # Valider et parser les modules demandés
+    if args.modules is not None:
+        requested = set(m.strip().lower() for m in args.modules.split(",") if m.strip())
+        unknown = requested - ALL_MODULES
+        if unknown:
+            parser.error(
+                "Module(s) inconnu(s) : {}. Modules valides : {}".format(
+                    ", ".join(sorted(unknown)),
+                    ", ".join(sorted(ALL_MODULES)),
+                )
+            )
+        active_modules = requested
+    else:
+        active_modules = None  # tous
+
+    bridge = NaoBridge(args.vps, modules=active_modules, audio_capture=args.audio_capture)
     try:
         bridge.run()
     except KeyboardInterrupt:
