@@ -4,7 +4,7 @@ CognitiveRenderer — ROS2 Humble node translating cognitive/emotional states
 into continuous NAO physical expression (LEDs + head motion).
 
 NAO is ALWAYS alive: animations run continuously even during the 3-8 s Qwen3
-inference window. The node runs an internal animation loop at 3 Hz.
+inference window. The node runs an internal animation loop at 0.5 Hz.
 
 Subscribed topics:
   /cognitive_state   std_msgs/String  (thinking|responding|listening|dreaming|
@@ -48,7 +48,7 @@ _EMOTION_TO_STATE = {
     "neutral":   "idle",
 }
 
-_ANIM_PERIOD = 0.33  # seconds per animation tick (~3 Hz)
+_ANIM_PERIOD = 2.0  # seconds per animation tick (~0.5 Hz) — keeps NAO LED bus from saturating
 
 
 class CognitiveRendererNode(Node):
@@ -128,7 +128,7 @@ class CognitiveRendererNode(Node):
 
         msg = String()
         msg.data = json.dumps({"group": "AllLeds", "r": round(r, 3),
-                                "g": round(g, 3), "b": round(b, 3), "duration": 0.3})
+                                "g": round(g, 3), "b": round(b, 3), "duration": 1.8})
         self.pub_leds.publish(msg)
 
     def _render_head(self, head_mode: str):
