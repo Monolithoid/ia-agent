@@ -271,6 +271,7 @@ services:
     environment:
       - ROS_DOMAIN_ID=42
       - ROS_LOCALHOST_ONLY=1
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       - ROBOT_ID=${NAO_ROBOT_ID:-nao_01}
       - WHISPER_URL=http://localhost:9000
       - LISTEN_DURATION=${LISTEN_DURATION:-4.0}
@@ -287,6 +288,7 @@ services:
     environment:
       - ROS_DOMAIN_ID=42
       - ROS_LOCALHOST_ONLY=1
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
     depends_on:
       naoqi-driver:
         condition: service_started
@@ -299,6 +301,7 @@ services:
     environment:
       - ROS_DOMAIN_ID=42
       - ROS_LOCALHOST_ONLY=1
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       - BRAIN_URL=http://localhost:11434
       - BRAIN_MODEL=${BRAIN_MODEL:-qwen3:1.7b}
       - BRAIN_API_KEY=${OLLAMA_API_KEYS}
@@ -339,6 +342,7 @@ services:
     environment:
       - ROS_DOMAIN_ID=42
       - ROS_LOCALHOST_ONLY=1
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 
   rosbridge-proxy:
     image: caddy:alpine
