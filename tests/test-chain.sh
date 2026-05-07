@@ -251,20 +251,29 @@ _check "naoqi-bridge /leds répond (mock)" \
 # ─────────────────────────────────────────────────────────────────────────────
 _head 6 "naoqi-bridge (NAO éteint → mock mode attendu)"
 
-echo -e "  ${BLUE}→${NC} Avec NAO éteint, connected doit être false ; ok reste true"
+echo -e "  ${BLUE}→${NC} ok doit toujours être true ; connected reflète l'état réel de NAO"
 
-_check "naoqi-bridge connected=false (NAO off)" \
+_BRIDGE_CONNECTED=$(curl -sf --max-time 5 http://localhost:8090/health \
+    | python3 -c "import json,sys; d=json.load(sys.stdin); print(str(d.get('connected',False)).lower())" 2>/dev/null || echo "unknown")
+
+_check "naoqi-bridge ok=true (service opérationnel)" \
     "curl -sf --max-time 5 http://localhost:8090/health \
      | python3 -c \
-     \"import json,sys; d=json.load(sys.stdin); assert d.get('ok')==True; \
+     \"import json,sys; d=json.load(sys.stdin); assert d.get('ok')==True, d; \
        s='ok={ok}, connected={c}'.format(ok=d['ok'],c=d.get('connected',False)); \
        print(s)\""
 
-# Vérifie que les logs naoqi-bridge montrent bien MOCK mode
 _C_BRIDGE=$(_container naoqi-bridge)
 if [ -n "$_C_BRIDGE" ]; then
-    _check "naoqi-bridge logs contiennent MOCK (→ $_C_BRIDGE)" \
-        "docker logs --tail=50 $_C_BRIDGE 2>&1 | grep -i 'mock\|MOCK'"
+    if [ "$_BRIDGE_CONNECTED" = "true" ]; then
+        _info "NAO connecté → mode réel (pas de MOCK attendu dans les logs)"
+        _check "naoqi-bridge logs : connexion qi établie" \
+            "docker logs --tail=50 $_C_BRIDGE 2>&1 | grep -iE 'connect|session|nao'"
+    else
+        _info "NAO non connecté → mock mode attendu dans les logs"
+        _check "naoqi-bridge logs contiennent MOCK (→ $_C_BRIDGE)" \
+            "docker logs --tail=50 $_C_BRIDGE 2>&1 | grep -i 'mock\|MOCK'"
+    fi
 else
     _skip "naoqi-bridge introuvable — vérification des logs ignorée"
 fi

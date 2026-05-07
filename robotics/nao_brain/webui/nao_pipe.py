@@ -19,7 +19,7 @@ description: >
     → WebUI affiche transcription + réponse
 
   Installation dans Open WebUI :
-    Workspace → Functions → (+) → coller ce fichier → Enregistrer
+    Settings → Admin Settings → Functions → (+) → coller ce fichier → Enregistrer
     Puis sélectionner "NAO Brain" comme modèle dans le chat.
 
 required_open_webui_version: 0.3.0

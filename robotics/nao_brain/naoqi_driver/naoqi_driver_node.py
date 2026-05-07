@@ -39,6 +39,7 @@ import requests
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import Range
 from std_msgs.msg import Bool, Float32, String
 
@@ -83,7 +84,14 @@ class NAOqiDriverNode(Node):
         self.create_subscription(String, "/naoqi/motion", self._on_naoqi_motion, 10)
 
         # ── Subscriber statut NAO : batterie + heartbeat connexion ─────────────
-        self.create_subscription(String, "/nao/status", self._on_nao_status, 10)
+        # rosbridge publie /nao/status en TRANSIENT_LOCAL — le subscriber doit
+        # utiliser la même durabilité pour recevoir les messages.
+        _transient_qos = QoSProfile(
+            depth=10,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(String, "/nao/status", self._on_nao_status, _transient_qos)
 
         # ── Subscriber audio NAO → transcription Whisper ──────────────────────
         self.create_subscription(String, "/nao/audio", self._on_audio, 10)
