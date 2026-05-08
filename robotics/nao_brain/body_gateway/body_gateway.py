@@ -99,6 +99,7 @@ Réponds UNIQUEMENT en JSON strict — aucun texte en dehors du JSON :
 {{
   "thoughts": "raisonnement interne (1-2 phrases)",
   "emotion": "curious|neutral|excited|uncertain",
+  "energy": "very-low|low|medium|high|very-high",
   "actions": [
     {{"body": "nao_01", "type": "speech",  "text": "ce que tu dis à voix haute"}},
     {{"body": "nao_01", "type": "motion",  "name": "wave|bow|sit|stand"}},
@@ -107,6 +108,8 @@ Réponds UNIQUEMENT en JSON strict — aucun texte en dehors du JSON :
     {{"body": "nao_01", "type": "look",    "yaw": 0.0}}
   ]
 }}
+Le champ "energy" reflète ton niveau d'énergie physique :
+  very-low = épuisé, somnolent — very-high = hyperactif, électrisé.
 Inclure toujours au moins une action "speech". Les autres actions sont optionnelles.\
 """
 
@@ -160,6 +163,7 @@ class BodyGatewayNode(Node):
 
         self.pub_cognitive = self.create_publisher(String, "/cognitive_state", 10)
         self.pub_emotion   = self.create_publisher(String, "/emotion_state",   10)
+        self.pub_energy    = self.create_publisher(String, "/energy_state",    10)
 
         self._pub_say:     dict[str, object] = {}
         self._pub_motion:  dict[str, object] = {}
@@ -290,6 +294,7 @@ class BodyGatewayNode(Node):
             parsed = self._parse_json(raw)
 
             self._publish_emotion(parsed.get("emotion", "neutral"))
+            self._publish_energy(parsed.get("energy", "medium"))
             self._publish_cognitive("responding")
             self._dispatch_actions(parsed.get("actions", []))
 
@@ -510,6 +515,7 @@ class BodyGatewayNode(Node):
             parsed = self._parse_json(raw)
 
             self._publish_emotion(parsed.get("emotion", "neutral"))
+            self._publish_energy(parsed.get("energy", "medium"))
             self._publish_cognitive("responding")
             self._dispatch_actions(parsed.get("actions", []))
 
@@ -727,6 +733,15 @@ class BodyGatewayNode(Node):
         msg = String()
         msg.data = emotion
         self.pub_emotion.publish(msg)
+
+    def _publish_energy(self, energy: str):
+        _valid = {"very-low", "low", "medium", "high", "very-high"}
+        level = energy.lower().strip() if energy else "medium"
+        if level not in _valid:
+            level = "medium"
+        msg = String()
+        msg.data = level
+        self.pub_energy.publish(msg)
 
     def destroy_node(self):
         self._running = False
