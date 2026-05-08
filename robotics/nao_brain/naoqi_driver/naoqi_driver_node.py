@@ -85,6 +85,11 @@ class NAOqiDriverNode(Node):
         self.create_subscription(String, "/naoqi/leds",   self._on_naoqi_leds,   10)
         self.create_subscription(String, "/naoqi/motion", self._on_naoqi_motion, 10)
 
+        # ── Subscriber capacités robot : négociation méthode TTS ─────────────
+        self.create_subscription(String, "/nao/capabilities", self._on_capabilities, 10)
+        # Méthode TTS par défaut avant réception des capacités du robot
+        self._tts_method = "mp3" if TTS_VOICE else "text"
+
         # ── Subscriber statut NAO : batterie + heartbeat connexion ─────────────
         # rosbridge publie /nao/status en TRANSIENT_LOCAL — le subscriber doit
         # utiliser la même durabilité pour recevoir les messages.
@@ -185,10 +190,22 @@ class NAOqiDriverNode(Node):
     # Actuateurs /bodies/*/actuators/* → /nao/* (rosbridge → nao_ws_bridge)
     # ─────────────────────────────────────────────────────────────────────────
 
+    def _on_capabilities(self, msg: String):
+        try:
+            cap = json.loads(msg.data)
+            method = cap.get("tts_method")
+            if method in ("mp3", "text"):
+                self._tts_method = method
+                self.get_logger().info(f"[{ROBOT_ID}] TTS method négocié : {method}")
+        except json.JSONDecodeError:
+            pass
+
     def _on_say(self, msg: String):
         text = msg.data
-        self.get_logger().info(f"[{ROBOT_ID}] → TTS : {text[:80]!r}")
-        if TTS_VOICE:
+        self.get_logger().info(
+            f"[{ROBOT_ID}] → TTS ({self._tts_method}) : {text[:80]!r}"
+        )
+        if self._tts_method == "mp3" and TTS_VOICE:
             threading.Thread(target=self._tts_and_publish, args=(text,), daemon=True).start()
         else:
             self.pub_nao_speech.publish(msg)

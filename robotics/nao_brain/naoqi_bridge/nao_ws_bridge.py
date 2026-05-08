@@ -369,20 +369,28 @@ class _AudioCapture(ALModule):
 
 class NaoBridge(object):
 
-    def __init__(self, vps_url, modules=None, audio_capture=True):
+    def __init__(self, vps_url, modules=None, audio_capture=True, tts_method="auto"):
         """
         modules       : ensemble de noms de modules à activer (None = tous).
         audio_capture : active le wake word et la capture VAD si True.
+        tts_method    : "mp3" | "text" | "auto" (défaut).
+                        "auto" → mp3 si NAOqi disponible, sinon text.
         """
         self.vps_url = vps_url
         self._modules = ALL_MODULES if modules is None else frozenset(modules)
         self._audio_capture_enabled = audio_capture
+        self._tts_method_override = tts_method
         self.ws = None
         self._stop = threading.Event()
         self._busy_until = 0.0       # timestamp jusqu'auquel le wake word est ignoré
         self._wakeword_started = False  # évite de relancer le thread à chaque reconnexion
         self._asr = None             # proxy ASR conservé pour unsubscribe à l'arrêt
         self._audio_capture = None   # module _AudioCapture en cours d'enregistrement
+
+    def _get_tts_method(self):
+        if self._tts_method_override != "auto":
+            return self._tts_method_override
+        return "mp3" if HAS_NAOQI else "text"
 
     # ------------------------------------------------------------------
     # Connexion / reconnexion
@@ -468,13 +476,22 @@ class NaoBridge(object):
             ws.send(json.dumps(sub_msg))
 
         # Topics publiés par le bridge
-        advertised = ["/nao/status"]
+        advertised = ["/nao/status", "/nao/capabilities"]
         if self._audio_capture_enabled:
             advertised.append("/nao/audio")
         for topic in advertised:
             adv_msg = {"op": "advertise", "topic": topic, "type": "std_msgs/String"}
             _ws_log(u"→", adv_msg)
             ws.send(json.dumps(adv_msg))
+
+        # Annonce des capacités TTS dès la connexion
+        tts_method = self._get_tts_method()
+        cap_payload = json.dumps({"tts_method": tts_method})
+        cap_msg = {"op": "publish", "topic": "/nao/capabilities",
+                   "msg": {"data": cap_payload}}
+        _ws_log(u"→", cap_msg)
+        ws.send(json.dumps(cap_msg))
+        print("[bridge] Capacites TTS annoncees : {}".format(tts_method), file=sys.stderr)
 
         print("[bridge] Pret.", file=sys.stderr)
         threading.Thread(target=self._status_loop).start()
@@ -841,6 +858,18 @@ if __name__ == "__main__":
         default=True,
         help="Desactive le wake word et la capture VAD (actifs par defaut)."
     )
+    parser.add_argument(
+        "--tts-method",
+        dest="tts_method",
+        choices=["auto", "mp3", "text"],
+        default="auto",
+        help=(
+            "Methode TTS annoncee au VPS. "
+            "'mp3' : le VPS genere l'audio (edge-tts) et l'envoie sur /nao/audio_out. "
+            "'text' : le VPS envoie le texte brut sur /nao/speech (TTS local NAOqi). "
+            "'auto' (defaut) : mp3 si NAOqi disponible, sinon text."
+        )
+    )
     args = parser.parse_args()
 
     NAO_IP = args.nao_ip
@@ -861,7 +890,8 @@ if __name__ == "__main__":
     else:
         active_modules = None  # tous
 
-    bridge = NaoBridge(args.vps, modules=active_modules, audio_capture=args.audio_capture)
+    bridge = NaoBridge(args.vps, modules=active_modules, audio_capture=args.audio_capture,
+                       tts_method=args.tts_method)
     try:
         bridge.run()
     except KeyboardInterrupt:
