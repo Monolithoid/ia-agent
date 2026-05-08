@@ -99,6 +99,7 @@ Réponds UNIQUEMENT en JSON strict — aucun texte en dehors du JSON :
 {{
   "thoughts": "raisonnement interne (1-2 phrases)",
   "emotion": "curious|neutral|excited|uncertain",
+  "energy": "very-low|low|medium|high|very-high",
   "actions": [
     {{"body": "nao_01", "type": "speech",  "text": "ce que tu dis à voix haute"}},
     {{"body": "nao_01", "type": "motion",  "name": "wave|bow|sit|stand"}},
@@ -107,6 +108,8 @@ Réponds UNIQUEMENT en JSON strict — aucun texte en dehors du JSON :
     {{"body": "nao_01", "type": "look",    "yaw": 0.0}}
   ]
 }}
+Le champ "energy" reflète ton niveau d'énergie physique :
+  very-low = épuisé, somnolent — very-high = hyperactif, électrisé.
 Inclure toujours au moins une action "speech". Les autres actions sont optionnelles.\
 """
 
@@ -123,6 +126,43 @@ Réponds UNIQUEMENT en JSON strict :
 # ─────────────────────────────────────────────────────────────────────────────
 # LED colour map and motion presets
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Generic sensor label registry
+# Each entry: sensor_key → {label, unit, thresholds [(min_value, label), ...]}
+# "motor_temp" is special: its value is a dict {group → °C}, handled separately.
+# Thresholds are evaluated as: first entry whose value >= threshold wins.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SENSOR_REGISTRY: dict = {
+    "battery": {
+        "label": "Batterie", "unit": "%",
+        "thresholds": [(50, "ok"), (20, "moyen"), (10, "faible"), (0, "critique")],
+    },
+    "motor_temp": {
+        "label": "Moteurs", "unit": "°C",
+        "thresholds": [(78, "critique"), (72, "très_chaud"), (65, "chaud"), (0, "normal")],
+    },
+    "ambient_light": {
+        "label": "Lumière", "unit": "lux",
+        "thresholds": [(2000, "éblouissant"), (500, "lumineux"), (100, "tamisé"),
+                       (10,   "sombre"),      (0,   "obscur")],
+    },
+    "sound_level": {
+        "label": "Son", "unit": "dB",
+        "thresholds": [(80, "très_bruyant"), (65, "bruyant"), (45, "normal"),
+                       (20, "calme"),        (0,  "silencieux")],
+    },
+}
+
+def _sensor_label(sensor_key: str, value: float) -> str:
+    """Return the human-readable label for a given sensor value."""
+    spec = _SENSOR_REGISTRY.get(sensor_key, {})
+    for threshold, lbl in sorted(spec.get("thresholds", []), reverse=True):
+        if value >= threshold:
+            return lbl
+    return ""
+
 
 _COLORS = {
     "blue":   (0.00, 0.00, 1.00),
@@ -151,6 +191,7 @@ class BodyGatewayNode(Node):
 
         self._state = "IDLE"
         self._batteries: dict[str, float] = {b: 100.0 for b in BODY_REGISTRY}
+        self._sensor_state: dict[str, dict] = {}   # body_id → latest sensor state JSON
         self._infer_lock = threading.Lock()
         self._running = True
 
@@ -160,6 +201,7 @@ class BodyGatewayNode(Node):
 
         self.pub_cognitive = self.create_publisher(String, "/cognitive_state", 10)
         self.pub_emotion   = self.create_publisher(String, "/emotion_state",   10)
+        self.pub_energy    = self.create_publisher(String, "/energy_state",    10)
 
         self._pub_say:     dict[str, object] = {}
         self._pub_motion:  dict[str, object] = {}
@@ -221,6 +263,10 @@ class BodyGatewayNode(Node):
             Bool, f"{ns}/connected",
             lambda msg, bid=body_id: self._on_body_connected(bid, msg), 10
         )
+        self.create_subscription(
+            String, f"{ns}/sensors/state",
+            lambda msg, bid=body_id: self._on_sensor_state(bid, msg), 10
+        )
         self.get_logger().info(f"Corps enregistré : {body_id}")
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -229,6 +275,58 @@ class BodyGatewayNode(Node):
 
     def _on_battery(self, body_id: str, msg: Float32):
         self._batteries[body_id] = msg.data
+
+    def _on_sensor_state(self, body_id: str, msg: String):
+        try:
+            self._sensor_state[body_id] = json.loads(msg.data)
+        except json.JSONDecodeError:
+            pass
+
+    def _build_context(self, body_id: str) -> str:
+        """One-liner injected before the user message so the LLM sees hardware state.
+
+        Format: raw value first (for numerical reasoning), label in parens (as hint).
+        Driven by _SENSOR_REGISTRY — adding a new sensor requires no change here.
+        """
+        parts = []
+        state = self._sensor_state.get(body_id, {})
+
+        # Motor temperatures: dict {group → °C} rendered as a grouped block
+        motor_temp = state.get("motor_temp")
+        if motor_temp:
+            spec = _SENSOR_REGISTRY["motor_temp"]
+            items = ", ".join(
+                f"{grp}={t}{spec['unit']}({_sensor_label('motor_temp', t)})"
+                for grp, t in sorted(motor_temp.items())
+            )
+            parts.append(f"[{spec['label']}: {items}]")
+
+        # Scalar sensors: render each present key from the registry (except motor_temp/battery)
+        for key in ("ambient_light", "sound_level"):
+            val = state.get(key)
+            if val is not None:
+                spec = _SENSOR_REGISTRY[key]
+                parts.append(
+                    f"[{spec['label']}: {val}{spec['unit']}({_sensor_label(key, val)})]"
+                )
+
+        # Battery kept separate (Float32 topic, used also for dreaming threshold)
+        battery = self._batteries.get(body_id, -1)
+        if battery >= 0:
+            pct = int(battery)
+            parts.append(
+                f"[{_SENSOR_REGISTRY['battery']['label']}: "
+                f"{pct}{_SENSOR_REGISTRY['battery']['unit']}"
+                f"({_sensor_label('battery', pct)})]"
+            )
+
+        return " ".join(parts)
+
+    def _user_content(self, body_id: str, user_input: str) -> str:
+        ctx = self._build_context(body_id)
+        if ctx:
+            return f"{ctx}\n[{body_id}] {user_input}"
+        return f"[{body_id}] {user_input}"
 
     def _on_body_connected(self, body_id: str, msg: Bool):
         prev = self._body_connected.get(body_id, False)
@@ -283,13 +381,14 @@ class BodyGatewayNode(Node):
             raw = self._ollama_chat(
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": f"[{body_id}] {user_input}"},
+                    {"role": "user",   "content": self._user_content(body_id, user_input)},
                 ],
                 temperature=0.7,
             )
             parsed = self._parse_json(raw)
 
             self._publish_emotion(parsed.get("emotion", "neutral"))
+            self._publish_energy(parsed.get("energy", "medium"))
             self._publish_cognitive("responding")
             self._dispatch_actions(parsed.get("actions", []))
 
@@ -503,13 +602,14 @@ class BodyGatewayNode(Node):
             raw = self._ollama_chat(
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": f"[{body_id}] {user_input}"},
+                    {"role": "user",   "content": self._user_content(body_id, user_input)},
                 ],
                 temperature=0.7,
             )
             parsed = self._parse_json(raw)
 
             self._publish_emotion(parsed.get("emotion", "neutral"))
+            self._publish_energy(parsed.get("energy", "medium"))
             self._publish_cognitive("responding")
             self._dispatch_actions(parsed.get("actions", []))
 
@@ -561,7 +661,7 @@ class BodyGatewayNode(Node):
             raw = self._ollama_chat(
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": f"[{body_id}] {user_input}"},
+                    {"role": "user",   "content": self._user_content(body_id, user_input)},
                 ],
                 temperature=0.5 if is_dream else 0.7,
             )
@@ -727,6 +827,15 @@ class BodyGatewayNode(Node):
         msg = String()
         msg.data = emotion
         self.pub_emotion.publish(msg)
+
+    def _publish_energy(self, energy: str):
+        _valid = {"very-low", "low", "medium", "high", "very-high"}
+        level = energy.lower().strip() if energy else "medium"
+        if level not in _valid:
+            level = "medium"
+        msg = String()
+        msg.data = level
+        self.pub_energy.publish(msg)
 
     def destroy_node(self):
         self._running = False

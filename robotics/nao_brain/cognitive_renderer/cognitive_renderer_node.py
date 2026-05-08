@@ -91,6 +91,17 @@ _EMOTION_TO_STATE = {
 
 _ANIM_PERIOD = 60.0  # seconds per animation tick (1/min) — keeps NAO LED bus from saturating
 
+# Energy level → stiffness per group (head / larm / rarm — legs never activated)
+# Values mirror human muscle tone: somnolent → relaxed, hyperactif → fully tensed.
+_ENERGY_STIFFNESS = {
+    #              head  larm  rarm
+    "very-low":  (0.10, 0.00, 0.00),  # somnolent — tête qui pique, bras inertes
+    "low":       (0.50, 0.00, 0.00),  # fatigué   — tête tenue, bras mous
+    "medium":    (1.00, 0.40, 0.40),  # présent   — bras légèrement actifs
+    "high":      (1.00, 0.80, 0.80),  # engagé    — bras bien actifs
+    "very-high": (1.00, 1.00, 1.00),  # électrisé — pleine rigidité
+}
+
 
 class CognitiveRendererNode(Node):
 
@@ -106,10 +117,12 @@ class CognitiveRendererNode(Node):
         self.create_subscription(String, "/cognitive_state", self._on_cognitive, 10)
         self.create_subscription(String, "/dream_state", self._on_dream, 10)
         self.create_subscription(String, "/emotion_state", self._on_emotion, 10)
+        self.create_subscription(String, "/energy_state", self._on_energy, 10)
 
         # ── Publishers ─────────────────────────────────────────────────────────
-        self.pub_leds = self.create_publisher(String, "/naoqi/leds", 10)
-        self.pub_motion = self.create_publisher(String, "/naoqi/motion", 10)
+        self.pub_leds      = self.create_publisher(String, "/naoqi/leds",      10)
+        self.pub_motion    = self.create_publisher(String, "/naoqi/motion",    10)
+        self.pub_stiffness = self.create_publisher(String, "/naoqi/stiffness", 10)
 
         # ── Animation loop (runs in background thread) ─────────────────────────
         self._anim_thread = threading.Thread(target=self._animation_loop, daemon=True)
@@ -141,6 +154,26 @@ class CognitiveRendererNode(Node):
                 # Emotion overrides only when robot is in neutral idle state
                 if self._state == "idle":
                     self._state = mapped
+
+    def _on_energy(self, msg: String):
+        level = msg.data.lower().strip()
+        stiffness = _ENERGY_STIFFNESS.get(level)
+        if stiffness is None:
+            return
+        head_v, larm_v, rarm_v = stiffness
+        payload = json.dumps({
+            "groups": [
+                {"name": "head", "value": head_v},
+                {"name": "larm", "value": larm_v},
+                {"name": "rarm", "value": rarm_v},
+            ]
+        })
+        out = String()
+        out.data = payload
+        self.pub_stiffness.publish(out)
+        self.get_logger().info(
+            f"Energy → {level} : head={head_v} larm={larm_v} rarm={rarm_v}"
+        )
 
     # ──────────────────────────────────────────────────────────────────────────
     # Animation loop

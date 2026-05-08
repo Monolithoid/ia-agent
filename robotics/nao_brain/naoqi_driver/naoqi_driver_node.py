@@ -15,11 +15,13 @@ Command flow (brain → NAO):
   /bodies/{id}/actuators/leds    → /nao/leds     (std_msgs/String JSON)
   /bodies/{id}/actuators/posture → /nao/gesture  (std_msgs/String)
   /bodies/{id}/actuators/move    → /nao/cmd_vel  (geometry_msgs/Twist)
-  /naoqi/leds                    → /nao/leds     (from cognitive_renderer)
-  /naoqi/motion                  → /nao/motion   (from cognitive_renderer)
+  /naoqi/leds                    → /nao/leds      (from cognitive_renderer)
+  /naoqi/motion                  → /nao/motion    (from cognitive_renderer)
+  /naoqi/stiffness               → /nao/stiffness (from cognitive_renderer via energy_state)
 
 Sensor flow (NAO → brain):
-  /nao/status  → /bodies/{id}/sensors/battery  (battery level + connection heartbeat)
+  /nao/status  → /bodies/{id}/sensors/battery     (Float32 — for logic: dreaming threshold)
+               → /bodies/{id}/sensors/state      (JSON — all other sensor readings for LLM)
   /nao/audio   → Whisper STT → /bodies/{id}/sensors/speech
 
 Environment variables:
@@ -61,19 +63,21 @@ class NAOqiDriverNode(Node):
         self._connected = False
 
         # ── Publishers: NAO sensors → ROS 2 ──────────────────────────────────
-        self.pub_speech  = self.create_publisher(String,  f"{ns}/sensors/speech",  10)
-        self.pub_battery = self.create_publisher(Float32, f"{ns}/sensors/battery", 10)
-        self.pub_bumper  = self.create_publisher(Bool,    f"{ns}/sensors/bumper",  10)
-        self.pub_sonar   = self.create_publisher(Range,   f"{ns}/sensors/sonar",   10)
-        self.pub_connected = self.create_publisher(Bool,  f"{ns}/connected",       10)
+        self.pub_speech       = self.create_publisher(String,  f"{ns}/sensors/speech",  10)
+        self.pub_battery      = self.create_publisher(Float32, f"{ns}/sensors/battery", 10)
+        self.pub_sensor_state = self.create_publisher(String,  f"{ns}/sensors/state",   10)
+        self.pub_bumper       = self.create_publisher(Bool,    f"{ns}/sensors/bumper",  10)
+        self.pub_sonar        = self.create_publisher(Range,   f"{ns}/sensors/sonar",   10)
+        self.pub_connected    = self.create_publisher(Bool,    f"{ns}/connected",       10)
 
         # ── Publishers: commands → NAO (via rosbridge → nao_ws_bridge) ───────
-        self.pub_nao_speech    = self.create_publisher(String, "/nao/speech",    10)
-        self.pub_nao_audio_out = self.create_publisher(String, "/nao/audio_out", 10)
-        self.pub_nao_cmd_vel   = self.create_publisher(Twist,  "/nao/cmd_vel",   10)
-        self.pub_nao_gesture = self.create_publisher(String, "/nao/gesture", 10)
-        self.pub_nao_leds    = self.create_publisher(String, "/nao/leds",    10)
-        self.pub_nao_motion  = self.create_publisher(String, "/nao/motion",  10)
+        self.pub_nao_speech     = self.create_publisher(String, "/nao/speech",     10)
+        self.pub_nao_audio_out  = self.create_publisher(String, "/nao/audio_out",  10)
+        self.pub_nao_cmd_vel    = self.create_publisher(Twist,  "/nao/cmd_vel",    10)
+        self.pub_nao_gesture    = self.create_publisher(String, "/nao/gesture",    10)
+        self.pub_nao_leds       = self.create_publisher(String, "/nao/leds",       10)
+        self.pub_nao_motion     = self.create_publisher(String, "/nao/motion",     10)
+        self.pub_nao_stiffness  = self.create_publisher(String, "/nao/stiffness",  10)
 
         # ── Subscribers: actuator commands from body_gateway ─────────────────
         self.create_subscription(String, f"{ns}/actuators/say",     self._on_say,     10)
@@ -83,8 +87,9 @@ class NAOqiDriverNode(Node):
         self.create_subscription(String, f"{ns}/actuators/move",    self._on_move,    10)
 
         # ── Subscribers: cognitive_renderer → same physical channels ─────────
-        self.create_subscription(String, "/naoqi/leds",   self._on_naoqi_leds,   10)
-        self.create_subscription(String, "/naoqi/motion", self._on_naoqi_motion, 10)
+        self.create_subscription(String, "/naoqi/leds",      self._on_naoqi_leds,      10)
+        self.create_subscription(String, "/naoqi/motion",    self._on_naoqi_motion,    10)
+        self.create_subscription(String, "/naoqi/stiffness", self._on_naoqi_stiffness, 10)
 
         # ── Subscriber: TTS capability negotiation ────────────────────────────
         self.create_subscription(String, "/nao/capabilities", self._on_capabilities, 10)
@@ -120,10 +125,24 @@ class NAOqiDriverNode(Node):
         self._last_status_time = time.time()
         try:
             data = json.loads(msg.data)
+
+            # Battery as Float32 — kept separate for logic (dreaming threshold etc.)
             level = float(data.get("battery", -1))
             bat = Float32()
             bat.data = level
             self.pub_battery.publish(bat)
+
+            # All other sensor readings consolidated into one JSON topic for the LLM
+            state: dict = {}
+            if data.get("motor_temp"):
+                state["motor_temp"] = data["motor_temp"]
+            if data.get("environment"):
+                state.update(data["environment"])
+            if state:
+                out = String()
+                out.data = json.dumps(state)
+                self.pub_sensor_state.publish(out)
+
         except (json.JSONDecodeError, ValueError):
             pass
         if not self._connected:
@@ -278,6 +297,27 @@ class NAOqiDriverNode(Node):
 
     def _on_naoqi_motion(self, msg: String):
         self.pub_nao_motion.publish(msg)
+
+    def _on_naoqi_stiffness(self, msg: String):
+        """Forward stiffness commands from cognitive_renderer to the bridge.
+
+        Input format (cognitive_renderer):
+          {"groups": [{"name": "head", "value": 1.0}, ...]}
+        Output format (nao_ws_bridge /nao/stiffness):
+          published one message per group: {"groups": ["head"], "value": 1.0}
+        """
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        for entry in data.get("groups", []):
+            name  = entry.get("name")
+            value = entry.get("value")
+            if name is None or value is None:
+                continue
+            out = String()
+            out.data = json.dumps({"groups": [name], "value": float(value)})
+            self.pub_nao_stiffness.publish(out)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Helper
