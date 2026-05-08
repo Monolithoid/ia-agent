@@ -1,49 +1,49 @@
 #!/usr/bin/env python3
 """
-body_gateway — Pont ROS2 entre le LLM (Ollama) et les corps physiques.
+body_gateway — ROS 2 bridge between the LLM (Ollama) and physical robot bodies.
 
-Pour chaque message (WebUI ou voix) le LLM génère un JSON structuré :
+For each message (WebUI text or voice), the LLM generates a structured JSON:
   {
     "thoughts": "...",
     "emotion":  "...",
     "actions":  [
-      {"body": "nao_01", "type": "speech", "text": "..."},   ← TTS + affiché dans WebUI
-      {"body": "nao_01", "type": "leds",   "color": "blue"}, ← dispatché au robot
+      {"body": "nao_01", "type": "speech", "text": "..."},    ← spoken aloud + displayed in WebUI
+      {"body": "nao_01", "type": "leds",   "color": "blue"},  ← dispatched to robot
       ...
     ]
   }
 
-Le texte "speech" est dit à voix haute ET renvoyé au Pipe WebUI.
-Les autres actions (gestes, LEDs, déplacement) sont dispatchées via ROS2.
+The "speech" text is both spoken aloud and returned to the WebUI Pipe.
+Other actions (gestures, LEDs, movement) are dispatched via ROS 2.
 
-Flux awake (WebUI ou parole) :
-  1. Publie /cognitive_state = "thinking"
-  2. Appelle Ollama avec system prompt JSON
-  3. Parse → dispatch actions (TTS + physique)
-  4. Publie /cognitive_state = "listening"
+Awake flow (WebUI text or voice):
+  1. Publish /cognitive_state = "thinking"
+  2. Call Ollama with structured JSON system prompt
+  3. Parse response → dispatch actions (TTS + physical)
+  4. Publish /cognitive_state = "listening"
 
-Flux voix (Parcours 2) :
-  body-gateway fait lui-même l'inférence → dispatch → stocke dans
-  voice_queue → notifie WebUI (POST /api/chat/completions, nao_voice=True)
-  → le Pipe récupère le résultat pré-calculé via GET /voice-pop.
+Voice flow (Path 2 — wake word):
+  body-gateway runs inference → dispatch → store in voice_queue
+  → notify WebUI (POST /api/chat/completions, nao_voice=True)
+  → Pipe retrieves pre-computed result via GET /voice-pop (avoids double inference).
 
-Flux dream (02h-06h + batterie ≥ seuil) :
-  Ticks oniriques → micro-actions douces (tête, LEDs, murmure).
+Dream flow (02:00-06:00 + battery ≥ threshold):
+  Periodic dream ticks → soft micro-actions (head, LEDs, whisper).
 
-Variables d'environnement :
-  BRAIN_URL                  défaut http://localhost:11434
-  BRAIN_MODEL                défaut qwen2.5:7b
-  BRAIN_API_KEY              clé API Ollama
-  BRAIN_TIMEOUT              timeout requêtes Ollama en secondes, défaut 120
-  BODY_REGISTRY              corps séparés par virgules, défaut "nao_01"
-  DREAMING_HOUR_START/END    défaut 2 / 6
-  DREAMING_BATTERY_THRESHOLD défaut 80.0
-  DREAM_TICK_INTERVAL        secondes, défaut 300
-  PROXIMITY_THRESHOLD        mètres, défaut 1.5
-  WEBUI_URL                  URL Open WebUI (ex: http://localhost:3000)
-  WEBUI_API_KEY              clé API Open WebUI
-  WEBUI_PIPE_MODEL           ID du Pipe NAO Brain, défaut "nao_brain"
-  WEBUI_VOICE_CHAT_ID        ID du chat "NAO Voice" (optionnel)
+Environment variables:
+  BRAIN_URL                  default http://localhost:11434
+  BRAIN_MODEL                default qwen2.5:7b
+  BRAIN_API_KEY              Ollama API key
+  BRAIN_TIMEOUT              Ollama request timeout in seconds, default 120
+  BODY_REGISTRY              comma-separated body IDs, default "nao_01"
+  DREAMING_HOUR_START/END    default 2 / 6
+  DREAMING_BATTERY_THRESHOLD default 80.0
+  DREAM_TICK_INTERVAL        seconds between dream ticks, default 300
+  PROXIMITY_THRESHOLD        sonar distance in metres to trigger AWAKE, default 1.5
+  WEBUI_URL                  Open WebUI URL (e.g. http://localhost:3000)
+  WEBUI_API_KEY              Open WebUI API key
+  WEBUI_PIPE_MODEL           NAO Brain Pipe model ID, default "nao_brain"
+  WEBUI_VOICE_CHAT_ID        voice chat ID in Open WebUI (optional)
 """
 
 import collections
@@ -88,7 +88,7 @@ WEBUI_PIPE_MODEL    = os.environ.get("WEBUI_PIPE_MODEL",    "nao_brain")
 WEBUI_VOICE_CHAT_ID = os.environ.get("WEBUI_VOICE_CHAT_ID", "")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Prompts système
+# System prompts
 # ─────────────────────────────────────────────────────────────────────────────
 
 _AWAKE_SYSTEM = """\
@@ -121,7 +121,7 @@ Réponds UNIQUEMENT en JSON strict :
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Couleurs et presets mouvement
+# LED colour map and motion presets
 # ─────────────────────────────────────────────────────────────────────────────
 
 _COLORS = {
@@ -141,7 +141,7 @@ _MOTION_PRESETS = {
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Nœud ROS2
+# ROS 2 node
 # ─────────────────────────────────────────────────────────────────────────────
 
 class BodyGatewayNode(Node):
@@ -154,7 +154,7 @@ class BodyGatewayNode(Node):
         self._infer_lock = threading.Lock()
         self._running = True
 
-        # File des résultats d'inférence vocale en attente d'affichage WebUI
+        # Queue of voice inference results waiting to be fetched by the WebUI Pipe
         self._voice_queue: collections.deque = collections.deque(maxlen=20)
         self._voice_queue_lock = threading.Lock()
 
@@ -190,7 +190,7 @@ class BodyGatewayNode(Node):
             )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Enregistrement des corps
+    # Body registration — create publishers/subscribers for each robot body
     # ─────────────────────────────────────────────────────────────────────────
 
     def _register_body(self, body_id: str):
@@ -224,7 +224,7 @@ class BodyGatewayNode(Node):
         self.get_logger().info(f"Corps enregistré : {body_id}")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Callbacks capteurs
+    # Sensor callbacks
     # ─────────────────────────────────────────────────────────────────────────
 
     def _on_battery(self, body_id: str, msg: Float32):
@@ -248,10 +248,10 @@ class BodyGatewayNode(Node):
             self._trigger_inference(body_id, f"[bumper] Contact physique sur {body_id}.")
 
     def _on_speech(self, body_id: str, msg: String):
-        """
-        Parcours 2 — transcription reçue après détection du wake word.
-        Inférence Ollama → dispatch actions (TTS + physique) → stockage
-        dans voice_queue → notification WebUI si configuré.
+        """Path 2 — transcription received after wake word detection.
+
+        Runs Ollama inference → dispatches actions (TTS + physical)
+        → stores result in voice_queue → notifies WebUI if configured.
         """
         text = msg.data.strip()
         if not text:
@@ -264,15 +264,13 @@ class BodyGatewayNode(Node):
         ).start()
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Inférence vocale (Parcours 2)
+    # Voice inference (Path 2 — wake word)
     # ─────────────────────────────────────────────────────────────────────────
 
     def _infer_voice(self, body_id: str, user_input: str):
-        """
-        Appelle Ollama, dispatche toutes les actions (TTS + physique),
-        stocke le résultat dans voice_queue et notifie WebUI.
-        Le Pipe récupère ce résultat pré-calculé via GET /voice-pop
-        pour éviter une double inférence.
+        """Call Ollama, dispatch all actions (TTS + physical), store result in
+        voice_queue and notify the WebUI.  The Pipe retrieves this pre-computed
+        result via GET /voice-pop to avoid a second inference call.
         """
         self._publish_cognitive("thinking")
 
@@ -328,10 +326,10 @@ class BodyGatewayNode(Node):
             self._publish_cognitive("listening")
 
     def _notify_webui(self, transcription: str):
-        """
-        Déclenche le Pipe NAO Brain dans Open WebUI avec le flag nao_voice=True.
-        Le Pipe appelle GET /voice-pop pour récupérer le résultat sans
-        re-lancer une inférence Ollama.
+        """Trigger the NAO Brain Pipe in Open WebUI with nao_voice=True.
+
+        The Pipe will call GET /voice-pop to retrieve the pre-computed result
+        instead of re-running Ollama inference.
         """
         payload: dict = {
             "model":     WEBUI_PIPE_MODEL,
@@ -353,7 +351,7 @@ class BodyGatewayNode(Node):
             self.get_logger().warn(f"_notify_webui error: {e}")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Serveur HTTP — /chat (Parcours 1) + /voice-pop (Parcours 2) + /say
+    # HTTP server — /chat (Path 1) + /voice-pop (Path 2) + /say + /ping
     # ─────────────────────────────────────────────────────────────────────────
 
     def _start_http_server(self):
@@ -385,7 +383,7 @@ class BodyGatewayNode(Node):
                     self.end_headers()
 
             def _handle_chat(self):
-                """Parcours 1 : inférence complète Ollama → JSON → dispatch → retour."""
+                """Path 1: full Ollama inference → JSON parse → dispatch → return result."""
                 body = self._read_json()
                 if body is None:
                     return
@@ -402,7 +400,7 @@ class BodyGatewayNode(Node):
                 self._json(200, result)
 
             def _handle_say(self):
-                """TTS direct : publie le texte sur ROS2 sans passer par Ollama."""
+                """Direct TTS: publish text on ROS 2 without going through Ollama."""
                 body = self._read_json()
                 if body is None:
                     return
@@ -453,15 +451,15 @@ class BodyGatewayNode(Node):
         )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Appel Ollama avec streaming (évite les timeouts sur génération longue)
+    # Ollama streaming call (avoids timeouts on long generations)
     # ─────────────────────────────────────────────────────────────────────────
 
     def _ollama_chat(self, messages: list, temperature: float) -> str:
-        """
-        Stream l'API Ollama et accumule le contenu complet.
-        timeout=(10, BRAIN_TIMEOUT) : 10 s pour établir la connexion,
-        BRAIN_TIMEOUT s max entre deux chunks — protège contre un stall total
-        sans couper une génération active.
+        """Stream the Ollama API and accumulate the full response.
+
+        timeout=(10, BRAIN_TIMEOUT): 10 s to establish the connection,
+        BRAIN_TIMEOUT s maximum between two chunks — guards against a total
+        stall without cutting an active generation mid-stream.
         """
         response = requests.post(
             f"{BRAIN_URL}/v1/chat/completions",
@@ -490,7 +488,7 @@ class BodyGatewayNode(Node):
         return "".join(chunks)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Inférence synchrone (Parcours 1 — canal /chat)
+    # Synchronous inference (Path 1 — /chat endpoint)
     # ─────────────────────────────────────────────────────────────────────────
 
     def _infer_sync(self, body_id: str, user_input: str) -> dict:
@@ -539,7 +537,7 @@ class BodyGatewayNode(Node):
             self._publish_cognitive("listening")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Inférence asynchrone (sonar, bumper, rêve)
+    # Asynchronous inference (sonar proximity, bumper touch, dream ticks)
     # ─────────────────────────────────────────────────────────────────────────
 
     def _trigger_inference(self, body_id: str, user_input: str):
@@ -589,7 +587,7 @@ class BodyGatewayNode(Node):
                 self._publish_cognitive("listening")
 
     def _parse_json(self, raw: str) -> dict:
-        # Strip <think>...</think> blocks emitted by reasoning models (Qwen3, DeepSeek-R1…)
+        # Strip <think>...</think> blocks emitted by reasoning models (Qwen3, DeepSeek-R1, etc.)
         cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         for candidate in (cleaned, raw):
             try:
@@ -606,7 +604,7 @@ class BodyGatewayNode(Node):
         return {"actions": []}
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Dispatch des actions vers les corps
+    # Dispatch actions to robot bodies via ROS 2
     # ─────────────────────────────────────────────────────────────────────────
 
     def _dispatch_actions(self, actions: list):
@@ -685,7 +683,7 @@ class BodyGatewayNode(Node):
         time.sleep(2.0)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Machine à états et boucle onirique
+    # State machine and dream loop
     # ─────────────────────────────────────────────────────────────────────────
 
     def _check_state(self):
@@ -717,7 +715,7 @@ class BodyGatewayNode(Node):
             )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Helpers
+    # ROS 2 publish helpers
     # ─────────────────────────────────────────────────────────────────────────
 
     def _publish_cognitive(self, state: str):

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-naoqi_bridge — Python 2.7 HTTP bridge between the VPS and body stack.
+naoqi_bridge — Flask HTTP bridge between the VPS and the body stack.
 
 Exposes:
   POST /say              {"text": "..."}
@@ -42,7 +42,7 @@ NAO_STATUS_TIMEOUT = float(os.environ.get("NAO_STATUS_TIMEOUT", "90"))
 
 app = Flask(__name__)
 
-# ── NAOqi direct-connection proxies (legacy mode, unused in robot_initiated_ws) ─
+# ── Legacy direct NAOqi proxies (unused in robot-initiated WebSocket mode) ────
 _conn_lock = threading.Lock()
 _session  = None
 _tts      = None
@@ -53,9 +53,9 @@ _battery  = None
 _memory   = None
 _sonar    = None
 
-# ── Rosbridge-based connection state ──────────────────────────────────────────
-# Updated by the rosbridge monitor thread that watches /nao/status heartbeats.
-_last_nao_status_time = 0.0   # epoch of last received /nao/status message
+# ── Rosbridge connection state ────────────────────────────────────────────────
+# Updated by the rosbridge monitor thread watching /nao/status heartbeats.
+_last_nao_status_time = 0.0   # epoch timestamp of the last received /nao/status
 _status_lock = threading.Lock()
 
 # ── SSE event bus ─────────────────────────────────────────────────────────────
@@ -396,7 +396,7 @@ def leds():
             _disconnect()
             return jsonify({"error": str(e)}), 500
     elif _is_nao_connected():
-        # nao_ws_bridge expects "name" not "group"
+        # nao_ws_bridge.py expects "name" key, not "group"
         if not _rosbridge_publish(
             "/nao/leds", "std_msgs/String",
             {"data": json.dumps({"name": group, "r": r, "g": g, "b": b, "duration": duration})},

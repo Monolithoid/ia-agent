@@ -1,32 +1,33 @@
 #!/usr/bin/env python3
 """
-naoqi_driver2 — Nœud ROS2 Humble pour un corps NAO.
+naoqi_driver2 — ROS 2 node for a single NAO body.
 
-Relaie les topics /bodies/{ROBOT_ID}/actuators/* et /naoqi/* vers les topics
-/nao/* que nao_ws_bridge.py (embarqué sur NAO) écoute via rosbridge.
+Bridges /bodies/{ROBOT_ID}/actuators/* and /naoqi/* to the /nao/* topics
+that nao_ws_bridge.py (embedded on the robot) subscribes to via rosbridge.
 
-NAO initie la connexion WebSocket sortante vers rosbridge (VPS) — aucune
-adresse IP ni port du robot n'est requis côté VPS.  La présence de messages
-sur /nao/status signale que le robot est connecté.
+The NAO initiates an outbound WebSocket connection to rosbridge (VPS) — no
+robot IP or open port is required on the VPS side.  Presence of /nao/status
+messages indicates the robot is connected.
 
-Flux commandes (cerveau → NAO) :
+Command flow (brain → NAO):
   /bodies/{id}/actuators/say     → /nao/speech   (std_msgs/String)
   /bodies/{id}/actuators/motion  → /nao/motion   (std_msgs/String JSON)
   /bodies/{id}/actuators/leds    → /nao/leds     (std_msgs/String JSON)
   /bodies/{id}/actuators/posture → /nao/gesture  (std_msgs/String)
   /bodies/{id}/actuators/move    → /nao/cmd_vel  (geometry_msgs/Twist)
-  /naoqi/leds                    → /nao/leds     (depuis cognitive_renderer)
-  /naoqi/motion                  → /nao/motion   (depuis cognitive_renderer)
+  /naoqi/leds                    → /nao/leds     (from cognitive_renderer)
+  /naoqi/motion                  → /nao/motion   (from cognitive_renderer)
 
-Flux capteurs (NAO → cerveau) :
-  /nao/status  → /bodies/{id}/sensors/battery  (batterie + heartbeat connexion)
+Sensor flow (NAO → brain):
+  /nao/status  → /bodies/{id}/sensors/battery  (battery level + connection heartbeat)
   /nao/audio   → Whisper STT → /bodies/{id}/sensors/speech
 
-Variables d'environnement :
-  ROBOT_ID          identifiant de ce corps, défaut "nao_01"
-  WHISPER_URL       URL du service Whisper ASR, vide = désactivé
-  LISTEN_DURATION   durée d'enregistrement audio en secondes, défaut 4.0
-  NAO_STATUS_TIMEOUT secondes sans /nao/status avant de marquer déconnecté, défaut 90
+Environment variables:
+  ROBOT_ID           body identifier, default "nao_01"
+  WHISPER_URL        Whisper ASR service URL, empty = disabled
+  LISTEN_DURATION    audio recording duration in seconds, default 4.0
+  NAO_STATUS_TIMEOUT seconds without /nao/status before marking disconnected, default 90
+  TTS_VOICE          edge-tts voice name, default "fr-FR-DeniseNeural"
 """
 
 import base64
@@ -59,14 +60,14 @@ class NAOqiDriverNode(Node):
         self._last_status_time = 0.0
         self._connected = False
 
-        # ── Publishers : capteurs NAO → ROS2 ──────────────────────────────────
+        # ── Publishers: NAO sensors → ROS 2 ──────────────────────────────────
         self.pub_speech  = self.create_publisher(String,  f"{ns}/sensors/speech",  10)
         self.pub_battery = self.create_publisher(Float32, f"{ns}/sensors/battery", 10)
         self.pub_bumper  = self.create_publisher(Bool,    f"{ns}/sensors/bumper",  10)
         self.pub_sonar   = self.create_publisher(Range,   f"{ns}/sensors/sonar",   10)
         self.pub_connected = self.create_publisher(Bool,  f"{ns}/connected",       10)
 
-        # ── Publishers : commandes → NAO (via rosbridge → nao_ws_bridge) ──────
+        # ── Publishers: commands → NAO (via rosbridge → nao_ws_bridge) ───────
         self.pub_nao_speech    = self.create_publisher(String, "/nao/speech",    10)
         self.pub_nao_audio_out = self.create_publisher(String, "/nao/audio_out", 10)
         self.pub_nao_cmd_vel   = self.create_publisher(Twist,  "/nao/cmd_vel",   10)
@@ -74,25 +75,25 @@ class NAOqiDriverNode(Node):
         self.pub_nao_leds    = self.create_publisher(String, "/nao/leds",    10)
         self.pub_nao_motion  = self.create_publisher(String, "/nao/motion",  10)
 
-        # ── Subscribers : commandes /bodies/*/actuators/* ─────────────────────
+        # ── Subscribers: actuator commands from body_gateway ─────────────────
         self.create_subscription(String, f"{ns}/actuators/say",     self._on_say,     10)
         self.create_subscription(String, f"{ns}/actuators/motion",  self._on_motion,  10)
         self.create_subscription(String, f"{ns}/actuators/leds",    self._on_leds,    10)
         self.create_subscription(String, f"{ns}/actuators/posture", self._on_posture, 10)
         self.create_subscription(String, f"{ns}/actuators/move",    self._on_move,    10)
 
-        # ── Subscribers : cognitive_renderer → même canaux physiques ──────────
+        # ── Subscribers: cognitive_renderer → same physical channels ─────────
         self.create_subscription(String, "/naoqi/leds",   self._on_naoqi_leds,   10)
         self.create_subscription(String, "/naoqi/motion", self._on_naoqi_motion, 10)
 
-        # ── Subscriber capacités robot : négociation méthode TTS ─────────────
+        # ── Subscriber: TTS capability negotiation ────────────────────────────
         self.create_subscription(String, "/nao/capabilities", self._on_capabilities, 10)
-        # Méthode TTS par défaut avant réception des capacités du robot
+        # Default TTS method before the robot announces its capabilities
         self._tts_method = "mp3" if TTS_VOICE else "text"
 
-        # ── Subscriber statut NAO : batterie + heartbeat connexion ─────────────
-        # rosbridge publie /nao/status en TRANSIENT_LOCAL — le subscriber doit
-        # utiliser la même durabilité pour recevoir les messages.
+        # ── Subscriber: NAO status heartbeat (battery + connection state) ─────
+        # rosbridge forwards /nao/status as TRANSIENT_LOCAL — the subscriber
+        # must use matching durability to receive messages after reconnect.
         _transient_qos = QoSProfile(
             depth=10,
             reliability=QoSReliabilityPolicy.RELIABLE,
@@ -100,10 +101,10 @@ class NAOqiDriverNode(Node):
         )
         self.create_subscription(String, "/nao/status", self._on_nao_status, _transient_qos)
 
-        # ── Subscriber audio NAO → transcription Whisper ──────────────────────
+        # ── Subscriber: NAO audio → Whisper STT ──────────────────────────────
         self.create_subscription(String, "/nao/audio", self._on_audio, 10)
 
-        # ── Timer heartbeat : détecte déconnexion NAO toutes les 15 s ─────────
+        # ── Timer: detect NAO disconnection every 15 s ────────────────────────
         self.create_timer(15.0, self._check_connection)
 
         self.get_logger().info(
@@ -112,7 +113,7 @@ class NAOqiDriverNode(Node):
         )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # NAO → statut batterie + état connexion
+    # NAO → battery status + connection state
     # ─────────────────────────────────────────────────────────────────────────
 
     def _on_nao_status(self, msg: String):
@@ -142,8 +143,8 @@ class NAOqiDriverNode(Node):
                     f"[{ROBOT_ID}] Pas de /nao/status depuis {elapsed:.0f}s — déconnecté"
                 )
         elif self._connected:
-            # Republication périodique : body_gateway reçoit l'état dans les 15 s
-            # après son (re)démarrage, même si naoqi_driver n'a pas changé d'état.
+            # Periodic re-publish so body_gateway receives the state within 15 s
+            # after its own (re)start even when naoqi_driver has not changed state.
             self._publish_connected(True)
 
     def _publish_connected(self, state: bool):
@@ -152,7 +153,7 @@ class NAOqiDriverNode(Node):
         self.pub_connected.publish(msg)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Audio NAO → Whisper STT → topic speech
+    # NAO audio → Whisper STT → /bodies/{id}/sensors/speech
     # ─────────────────────────────────────────────────────────────────────────
 
     def _on_audio(self, msg: String):
@@ -187,7 +188,7 @@ class NAOqiDriverNode(Node):
             self.get_logger().warn(f"_transcribe_and_publish error: {e}")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Actuateurs /bodies/*/actuators/* → /nao/* (rosbridge → nao_ws_bridge)
+    # Actuators /bodies/*/actuators/* → /nao/* (rosbridge → nao_ws_bridge)
     # ─────────────────────────────────────────────────────────────────────────
 
     def _on_capabilities(self, msg: String):
@@ -269,7 +270,7 @@ class NAOqiDriverNode(Node):
         self.pub_nao_cmd_vel.publish(twist)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # cognitive_renderer /naoqi/* → mêmes canaux physiques /nao/*
+    # cognitive_renderer /naoqi/* → same physical /nao/* channels
     # ─────────────────────────────────────────────────────────────────────────
 
     def _on_naoqi_leds(self, msg: String):
@@ -283,7 +284,7 @@ class NAOqiDriverNode(Node):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _normalize_leds(self, raw: str) -> String:
-        """Renomme 'group' → 'name' dans le JSON LEDs pour nao_ws_bridge."""
+        """Rename 'group' → 'name' in the LED JSON payload expected by nao_ws_bridge."""
         try:
             data = json.loads(raw)
             if "group" in data and "name" not in data:
