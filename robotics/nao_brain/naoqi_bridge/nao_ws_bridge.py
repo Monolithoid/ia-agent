@@ -304,26 +304,32 @@ def _provision(config_path):
 
     # -- Langues -------------------------------------------------------
     # Les paquets .pkg sont copiés dans /tmp (seul espace disponible).
-    # On les installe via ALPackageManager avant de sélectionner la langue.
+    # Installation via qicli (PackageManager sans préfixe AL, toujours
+    # disponible sur NAO OS).
     lang_cfg = config.get("language", {})
     if lang_cfg:
         import glob as _glob
-        pkg_manager = get_proxy("ALPackageManager")
+        import subprocess as _subprocess
         pkgs = sorted(_glob.glob("/tmp/*.pkg"))
         if pkgs:
-            if not pkg_manager:
-                print("[provision] ALPackageManager indisponible — paquets ignorés.", file=sys.stderr)
-                ok = False
-            else:
-                for pkg_path in pkgs:
-                    try:
-                        pkg_manager.install(pkg_path)
+            for pkg_path in pkgs:
+                try:
+                    ret = _subprocess.call(
+                        ["qicli", "call", "PackageManager.install", pkg_path]
+                    )
+                    if ret == 0:
                         print("[provision] Paquet installé : {}.".format(
                             os.path.basename(pkg_path)), file=sys.stderr)
-                    except Exception as e:
-                        print("[provision] Erreur installation {} : {}.".format(
-                            os.path.basename(pkg_path), e), file=sys.stderr)
+                    else:
+                        print("[provision] Erreur installation {} (code {}).".format(
+                            os.path.basename(pkg_path), ret), file=sys.stderr)
                         ok = False
+                except OSError:
+                    print("[provision] qicli introuvable — paquets ignorés.", file=sys.stderr)
+                    ok = False
+                    break
+        else:
+            print("[provision] Aucun paquet .pkg trouvé dans /tmp.", file=sys.stderr)
         else:
             print("[provision] Aucun paquet .pkg trouvé dans /tmp.", file=sys.stderr)
 
