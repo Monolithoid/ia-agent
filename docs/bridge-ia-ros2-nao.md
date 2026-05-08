@@ -1,24 +1,28 @@
 # Bridge IA / ROS 2 / NAO
 
-Couche de traduction entre la stack IA (n8n, Bitterbot) et le robot NAO, via ROS 2 Jazzy et le protocole rosbridge WebSocket.
+Translation layer between the AI stack (Ollama, Open WebUI) and the NAO robot, via ROS 2 Jazzy and the rosbridge WebSocket protocol.
 
 ---
 
-## Architecture de la chaîne de commande
+## Command chain architecture
 
 ```
-n8n (workflow)
-  └─► POST http://nao-gateway:8001/nao/say
-      Header: X-API-Key: $GATEWAY_API_KEY
-        └─► nao-gateway (FastAPI, VPS)
-              └─► rosbridge WebSocket ws://ros2-bridge:9090
-                    └─► ros2-bridge (ROS 2 Jazzy, VPS)
-                          └─► Topic /nao/speech (std_msgs/String)
-                                └─► nao_ws_bridge.py (NAO, Python 2.7)
-                                      └─► ALTextToSpeech.say("Bonjour")
+Open WebUI (chat / voice)
+  └─► nao_pipe.py (Open WebUI Pipe)
+        └─► POST http://chat-relay:8095/chat   (Path 1 — text)
+        └─► GET  http://chat-relay:8095/voice-pop  (Path 2 — voice)
+              └─► body_gateway (ROS 2 node + HTTP server, host network)
+                    ├─► Ollama /v1/chat/completions  (LLM inference)
+                    ├─► /cognitive_state → cognitive_renderer (LED + head)
+                    └─► /bodies/{id}/actuators/*
+                          └─► naoqi_driver (ROS 2 node)
+                                └─► /nao/speech, /nao/leds, /nao/motion, ...
+                                      └─► ros2-bridge (rosbridge_suite, port 9090)
+                                            └─► nao_ws_bridge.py (NAO, Python 2.7)
+                                                  └─► NAOqi SDK → speaker, LEDs, motors
 ```
 
-Le robot NAO établit une **connexion WebSocket sécurisée sortante** vers `wss://$ROSBRIDGE_DOMAIN` (port 443). Traefik termine le TLS et transmet à `rosbridge-proxy` (Caddy), qui proxifie vers `ros2-bridge` sur le réseau hôte. Aucune connexion entrante vers le robot n'est nécessaire.
+The NAO robot establishes an **outbound WebSocket connection** to `ws://rosbridge.$ROSBRIDGE_DOMAIN` (port 9090 or proxied via Traefik on 443). No inbound connection to the robot is required.
 
 ---
 
@@ -26,125 +30,223 @@ Le robot NAO établit une **connexion WebSocket sécurisée sortante** vers `wss
 
 ### ros2-bridge
 
-**Image :** `$DOCKERHUB_USERNAME/ros2-bridge:latest` (buildée par GitHub Actions)  
-**Port :** 9090 (interne uniquement — accès via `rosbridge-proxy`)
+**Image:** `$DOCKERHUB_USERNAME/ros2-bridge:latest` (built by GitHub Actions)
+**Port:** 9090 (internal only — accessed via `rosbridge-proxy`)
 
-ROS 2 Jazzy Jalisco + `rosbridge_suite`. Expose un WebSocket JSON suivant le protocole rosbridge. Tourne en `network_mode: host` pour partager le domaine DDS 42 avec les autres nœuds ROS 2.
-
-**Réseau :** `network_mode: host`
+ROS 2 Jazzy + `rosbridge_suite`. Exposes a JSON WebSocket following the rosbridge protocol. Runs in `network_mode: host` to share DDS domain 42 with other ROS 2 nodes.
 
 ---
 
 ### rosbridge-proxy
 
-**Image :** `caddy:alpine`  
-**Rôle :** proxy WebSocket entre Traefik (réseau Docker) et `ros2-bridge` (réseau hôte)
+**Image:** `caddy:alpine`
+**Role:** WebSocket proxy between Traefik (Docker network) and `ros2-bridge` (host network)
 
 ```
-wss://$ROSBRIDGE_DOMAIN  →  Traefik :443 (TLS)  →  rosbridge-proxy :80 (Caddy)  →  host:9090 (ros2-bridge)
+wss://$ROSBRIDGE_DOMAIN → Traefik :443 (TLS) → rosbridge-proxy :80 (Caddy) → host:9090 (ros2-bridge)
 ```
 
-Caddy proxifie les connexions WebSocket vers `host-gateway:9090` (l'alias Docker vers le réseau hôte). Traefik gère le certificat TLS.
+Caddy proxies WebSocket connections to `host-gateway:9090`. Traefik handles the TLS certificate.
 
-**Réseau Docker :** `robotics-net`
+**Docker network:** `robotics-net`
 
 ---
 
-### nao-gateway
+### naoqi_driver
 
-**Image :** `$DOCKERHUB_USERNAME/nao-gateway:latest` (buildée par GitHub Actions)  
-**Port :** 8001 (lié à `127.0.0.1` — accès via SSH tunnel uniquement)  
-**Documentation interactive :**
+**Image:** built with the `robotics` profile
+**Role:** ROS 2 bridge node — translates `/bodies/{ROBOT_ID}/actuators/*` commands into `/nao/*` topics that `nao_ws_bridge.py` subscribes to via rosbridge.
 
-```bash
-ssh -L 8001:localhost:8001 $VPS_USER@$DOMAIN
-# ouvrir http://localhost:8001/docs
-```
+Also handles:
+- TTS method negotiation (mp3 via edge-tts vs. native NAOqi text)
+- Whisper ASR transcription of `/nao/audio` → `/bodies/{id}/sensors/speech`
+- Connection heartbeat monitoring (`/nao/status` timeout = 90 s)
 
-FastAPI qui expose des endpoints HTTP simples pour n8n et traduit les commandes en messages ROS 2 via rosbridge WebSocket.
+**Environment variables:**
 
 | Variable | Description |
 |---|---|
-| `ROSBRIDGE_URL` | Adresse interne de ros2-bridge (`ws://ros2-bridge:9090`) |
-| `GATEWAY_API_KEY` | Clé d'authentification pour le header `X-API-Key` |
-
-**Réseaux Docker :** `ai-network` + `robotics-net` (passerelle entre les deux)
+| `ROBOT_ID` | Body identifier, default `nao_01` |
+| `WHISPER_URL` | Whisper ASR service URL (empty = disabled) |
+| `TTS_VOICE` | edge-tts voice, default `fr-FR-DeniseNeural` |
+| `NAO_STATUS_TIMEOUT` | Seconds without heartbeat before marking disconnected, default 90 |
 
 ---
 
-## Topics ROS 2
+### cognitive_renderer
 
-| Topic | Type | Direction | Action NAO |
+**Role:** Translates cognitive/emotional state into continuous NAO physical expression (LEDs + head motion). Runs an animation loop at 1 tick/minute so the robot always appears alive, even during the 3-8 s Ollama inference window.
+
+**Subscribed topics:**
+
+| Topic | Type | Description |
+|---|---|---|
+| `/cognitive_state` | `std_msgs/String` | `thinking\|responding\|listening\|dreaming\|idle\|uncertain\|excited` |
+| `/dream_state` | `std_msgs/String` | Dream phase name from the dream engine |
+| `/emotion_state` | `std_msgs/String` | `curious\|neutral\|excited\|uncertain` |
+
+**Published topics** (forwarded to naoqi_driver):
+
+| Topic | Type | Description |
+|---|---|---|
+| `/naoqi/leds` | `std_msgs/String` (JSON) | `{group, r, g, b, duration}` |
+| `/naoqi/motion` | `std_msgs/String` (JSON) | `{joint, angle, speed}` |
+
+---
+
+### body_gateway
+
+**Role:** Central brain — orchestrates LLM inference and dispatches robot actions.
+
+**HTTP endpoints** (port 8095, `network_mode: host`):
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/ping` | GET | Connectivity check |
+| `/chat` | POST | Path 1: `{"text": "...", "robot_id": "nao_01"}` → Ollama → JSON actions |
+| `/say` | POST | Direct TTS without Ollama: `{"text": "...", "robot_id": "nao_01"}` |
+| `/voice-pop` | GET | Path 2: retrieve pre-computed voice result (avoids double inference) |
+
+**Environment variables:**
+
+| Variable | Description |
+|---|---|
+| `BRAIN_URL` | Ollama URL, default `http://localhost:11434` |
+| `BRAIN_MODEL` | LLM model, default `qwen2.5:7b` |
+| `BRAIN_API_KEY` | Ollama API key |
+| `BRAIN_TIMEOUT` | Ollama timeout in seconds, default 120 |
+| `BODY_REGISTRY` | Comma-separated body IDs, default `nao_01` |
+| `DREAMING_HOUR_START/END` | Dream window, default 2 / 6 |
+| `DREAMING_BATTERY_THRESHOLD` | Minimum battery % to dream, default 80.0 |
+| `WEBUI_URL` | Open WebUI URL for voice notifications |
+| `WEBUI_API_KEY` | Open WebUI API key |
+
+---
+
+### nao_pipe (Open WebUI Pipe)
+
+**File:** `robotics/nao_brain/webui/nao_pipe.py`
+**Installation:** Open WebUI → Settings → Admin Settings → Functions → (+) → paste file → Save. Then select "NAO Brain" as the chat model.
+
+**Valves (configurable in Open WebUI):**
+
+| Valve | Default | Description |
+|---|---|---|
+| `body_gateway_url` | `http://chat-relay:8095` | URL of the chat-relay Caddy proxy |
+| `robot_id` | `nao_01` | Target body ID |
+
+**Special messages:**
+- `__ping__` → connectivity check (no Ollama call)
+
+---
+
+## ROS 2 topics — complete reference
+
+### VPS → NAO (commands)
+
+| Topic | Type | Module | NAOqi action |
 |---|---|---|---|
-| `/nao/cmd_vel` | `geometry_msgs/Twist` | VPS → NAO | `ALMotion.moveToward()` |
-| `/nao/speech` | `std_msgs/String` | VPS → NAO | `ALTextToSpeech.say()` |
-| `/nao/gesture` | `std_msgs/String` | VPS → NAO | `ALRobotPosture.goToPosture()` |
-| `/nao/leds` | `std_msgs/String` (JSON) | VPS → NAO | `ALLeds.fadeRGB()` |
-| `/nao/stop` | `std_msgs/Empty` | VPS → NAO | `ALMotion.stopMove()` |
-| `/nao/status` | `std_msgs/String` (JSON) | NAO → VPS | Batterie + température CPU |
+| `/nao/speech` | `std_msgs/String` | `speech` | `ALTextToSpeech.say()` |
+| `/nao/audio_out` | `std_msgs/String` (base64 MP3) | `audio_out` | `ALAudioPlayer.playFile()` |
+| `/nao/cmd_vel` | `geometry_msgs/Twist` | `move` | `ALMotion.moveToward()` |
+| `/nao/gesture` | `std_msgs/String` | `gesture` | `ALRobotPosture.goToPosture()` |
+| `/nao/leds` | `std_msgs/String` (JSON) | `led` | `ALLeds.fadeRGB()` |
+| `/nao/motion` | `std_msgs/String` (JSON) | `motion` | `ALMotion.angleInterpolationWithSpeed()` |
+| `/nao/stop` | `std_msgs/Empty` | `stop` | `ALMotion.stopMove()` |
+| `/nao/shutdown` | `std_msgs/Empty` | *(system)* | Clean bridge shutdown |
+
+### NAO → VPS (telemetry)
+
+| Topic | Type | Content |
+|---|---|---|
+| `/nao/status` | `std_msgs/String` (JSON) | `{"battery": 85}` — heartbeat every 30 s |
+| `/nao/audio` | `std_msgs/String` (base64 WAV) | Captured speech after wake word |
+| `/nao/capabilities` | `std_msgs/String` (JSON) | `{"tts_method": "mp3"}` — on connect |
+
+### Internal ROS 2 topics
+
+| Topic | Publisher | Subscriber | Description |
+|---|---|---|---|
+| `/cognitive_state` | body_gateway | cognitive_renderer | Current brain state |
+| `/emotion_state` | body_gateway | cognitive_renderer | Emotional tone |
+| `/dream_state` | body_gateway | cognitive_renderer | Dream phase |
+| `/naoqi/leds` | cognitive_renderer | naoqi_driver | LED command |
+| `/naoqi/motion` | cognitive_renderer | naoqi_driver | Head joint command |
+| `/bodies/{id}/actuators/say` | body_gateway | naoqi_driver | TTS text |
+| `/bodies/{id}/actuators/leds` | body_gateway | naoqi_driver | LED color |
+| `/bodies/{id}/actuators/motion` | body_gateway | naoqi_driver | Joint motion |
+| `/bodies/{id}/actuators/posture` | body_gateway | naoqi_driver | Posture preset |
+| `/bodies/{id}/actuators/move` | body_gateway | naoqi_driver | Walking command |
+| `/bodies/{id}/sensors/speech` | naoqi_driver | body_gateway | STT transcription |
+| `/bodies/{id}/sensors/battery` | naoqi_driver | body_gateway | Battery level |
+| `/bodies/{id}/connected` | naoqi_driver | body_gateway | Connection state |
 
 ---
 
-## Appels depuis n8n
+## Voice interaction flows
 
-Utiliser le nœud **HTTP Request** avec :
-- **Method :** POST
-- **URL :** `http://nao-gateway:8001/nao/<action>`
-- **Header :** `X-API-Key: {{ $env.GATEWAY_API_KEY }}`
-- **Body :** JSON selon l'action
+### Path 1 — Text message (WebUI chat)
 
-Exemples de payloads :
+```
+User types in WebUI
+  → nao_pipe._call_gateway() POST /chat
+    → body_gateway._infer_sync()
+      → Ollama streaming inference
+      → _dispatch_actions(): speech + LEDs + gestures
+      → return {speech, thoughts, emotion, actions}
+  → nao_pipe._format() → displayed in WebUI chat
+```
 
-```json
-// POST /nao/say
-{ "text": "Bonjour, je suis prêt." }
+### Path 2 — Voice (wake word "ok nao")
 
-// POST /nao/move   (valeurs entre -1.0 et 1.0)
-{ "linear_x": 0.3, "angular_z": 0.1 }
-
-// POST /nao/gesture
-{ "posture": "Stand" }
-
-// POST /nao/leds
-{ "name": "FaceLeds", "r": 0.0, "g": 1.0, "b": 0.0 }
-
-// POST /nao/stop
-{}
+```
+Robot hears "ok nao"
+  → nao_ws_bridge._record_and_publish() (VAD capture)
+  → /nao/audio (base64 WAV)
+    → naoqi_driver._transcribe_and_publish() (Whisper)
+    → /bodies/{id}/sensors/speech
+      → body_gateway._infer_voice()
+        → Ollama inference + dispatch actions
+        → result stored in voice_queue
+        → _notify_webui() POST /api/chat/completions (nao_voice=True)
+          → nao_pipe._handle_voice() GET /voice-pop
+          → displayed in WebUI chat
 ```
 
 ---
 
-## Vérification
+## Deploy the robotics profile
 
-```bash
-# 1. Le gateway répond
-curl http://localhost:8001/health
-
-# 2. Tester say (NAO doit être connecté au rosbridge)
-curl -X POST http://localhost:8001/nao/say \
-  -H "X-API-Key: $GATEWAY_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"text": "Test de connexion"}'
-
-# 3. Logs du bridge et du gateway
-docker logs ros2-bridge -f
-docker logs nao-gateway -f
-```
-
----
-
-## Extensibilité
-
-L'architecture rosbridge est directement extensible à d'autres robots ou drones. PX4, DJI (ROS 2 SDK) et Parrot (Anafi SDK) ont tous des drivers ROS 2. Il suffit d'ajouter un nouveau bridge script côté robot et de nouveaux topics côté gateway.
-
----
-
-## Déployer le profil robotique
-
-Les services `ros2-bridge` et `nao-gateway` nécessitent le profil Docker Compose `robotics` :
+Services `ros2-bridge`, `naoqi_driver`, `cognitive_renderer`, and `body_gateway` require the `robotics` Docker Compose profile:
 
 ```bash
 docker compose --profile robotics up -d
 ```
 
-Coolify déclenche automatiquement le bon profil si configuré dans les options de la resource.
+Coolify automatically applies the correct profile when configured in the resource options.
+
+---
+
+## Verification
+
+```bash
+# 1. Check bridge connectivity
+bash tests/diag-nao-connection.sh
+
+# 2. Run full capability test suite
+bash tests/test-nao-capabilities.sh
+
+# 3. Direct TTS test (robot must speak)
+curl -X POST http://localhost:8095/say \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Connection test", "robot_id": "nao_01"}'
+
+# 4. Stream ROS 2 bridge logs
+docker logs ros2-bridge -f
+```
+
+---
+
+## Extensibility
+
+The rosbridge architecture is directly extensible to other robots or drones. PX4, DJI (ROS 2 SDK), and Parrot (Anafi SDK) all have ROS 2 drivers. Adding a new robot requires a new bridge script on the robot side, new topics, and a new entry in `BODY_REGISTRY`.

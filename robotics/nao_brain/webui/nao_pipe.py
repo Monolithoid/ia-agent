@@ -3,24 +3,24 @@ title: NAO Brain
 author: ia-agent
 version: 0.7.0
 description: >
-  Pipe cerveau — relaie chaque message WebUI vers body-gateway qui appelle
-  le LLM avec un prompt JSON structuré. La réponse contient :
-    • speech  : texte que NAO dit à voix haute ET affiché dans le chat
-    • actions : gestes, LEDs, déplacement dispatché sur le robot
+  Brain Pipe — relays each WebUI message to body-gateway, which calls
+  the LLM with a structured JSON prompt.  The response contains:
+    • speech  : text that NAO speaks aloud AND displays in the chat
+    • actions : gestures, LEDs, movement dispatched to the robot
 
-  Parcours 1 (texte) :
-    Utilisateur écrit → Pipe → body-gateway /chat → Ollama → JSON
-    → robot parle + agit → WebUI affiche "NAO : [speech] + Actions"
+  Path 1 (text input):
+    User types → Pipe → body-gateway /chat → Ollama → JSON
+    → robot speaks + acts → WebUI shows "NAO: [speech] + Actions"
 
-  Parcours 2 (voix "Ok nao") :
-    NAO transcrit → body-gateway inférence → robot parle + agit
-    → body-gateway stocke dans voice-queue → notifie WebUI
-    → ce Pipe récupère le résultat pré-calculé via /voice-pop
-    → WebUI affiche transcription + réponse
+  Path 2 (voice "Ok nao"):
+    NAO transcribes → body-gateway inference → robot speaks + acts
+    → body-gateway stores in voice-queue → notifies WebUI
+    → this Pipe retrieves pre-computed result via /voice-pop
+    → WebUI displays transcription + response
 
-  Installation dans Open WebUI :
-    Settings → Admin Settings → Functions → (+) → coller ce fichier → Enregistrer
-    Puis sélectionner "NAO Brain" comme modèle dans le chat.
+  Installation in Open WebUI:
+    Settings → Admin Settings → Functions → (+) → paste this file → Save
+    Then select "NAO Brain" as the model in the chat.
 
 required_open_webui_version: 0.3.0
 """
@@ -36,12 +36,12 @@ class Pipe:
         body_gateway_url: str = Field(
             default="http://chat-relay:8095",
             description=(
-                "URL du chat-relay (proxy Caddy sur ai-network → body-gateway:8095 sur l'hôte)."
+                "URL of chat-relay (Caddy proxy on ai-network → body-gateway:8095 on the host)."
             ),
         )
         robot_id: str = Field(
             default="nao_01",
-            description="Corps principal ciblé par défaut (doit être dans BODY_REGISTRY).",
+            description="Default target body (must be in BODY_REGISTRY).",
         )
 
     def __init__(self):
@@ -55,8 +55,8 @@ class Pipe:
         if not messages:
             return "Aucun message."
 
-        # Prend le dernier message utilisateur (Open WebUI peut ajouter un
-        # assistant vide en fin de tableau lors de l'appel du pipe)
+        # Take the last user message (Open WebUI may append an empty
+        # assistant entry at the end of the messages array when calling the pipe)
         user_msg = next(
             (m for m in reversed(messages) if m.get("role") == "user"),
             None,
@@ -65,7 +65,7 @@ class Pipe:
             return "Aucun message utilisateur."
 
         content = user_msg.get("content", "")
-        # Open WebUI ≥ 0.4 peut envoyer le contenu comme liste de blocs
+        # Open WebUI ≥ 0.4 may send content as a list of content blocks
         if isinstance(content, list):
             user_message = " ".join(
                 part.get("text", "")
@@ -78,19 +78,19 @@ class Pipe:
         if not user_message:
             return "Message vide."
 
-        # Ping de connectivité — message réservé aux tests (pas d'inférence Ollama)
+        # Reserved connectivity test message — no Ollama inference
         if user_message.strip() == "__ping__":
             return self._ping()
 
-        # Parcours 2 — résultat pré-calculé par body-gateway (voix "Ok nao")
+        # Path 2 — pre-computed result from body-gateway (voice "Ok nao")
         if body.get("nao_voice"):
             return self._handle_voice(user_message)
 
-        # Parcours 1 — message texte WebUI
+        # Path 1 — WebUI text message
         return self._call_gateway(user_message)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Ping — vérification de la connectivité pipe → body-gateway (sans Ollama)
+    # Ping — connectivity check pipe → body-gateway (no Ollama call)
     # ─────────────────────────────────────────────────────────────────────────
 
     def _ping(self) -> str:
@@ -111,7 +111,7 @@ class Pipe:
             return f"❌ Erreur ping : {e}"
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Parcours 2 — récupération du résultat pré-calculé (évite double inférence)
+    # Path 2 — retrieve pre-computed result (avoids double inference)
     # ─────────────────────────────────────────────────────────────────────────
 
     def _handle_voice(self, transcription: str) -> str:
@@ -126,11 +126,11 @@ class Pipe:
                     return f"*🎤 « {transcription} »*\n\n" + self._format(data)
         except Exception:
             pass
-        # Fallback : traiter la transcription comme un message texte normal
+        # Fallback: treat transcription as a regular text message
         return self._call_gateway(transcription)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Parcours 1 — appel body-gateway /chat → Ollama (JSON structuré)
+    # Path 1 — call body-gateway /chat → Ollama (structured JSON)
     # ─────────────────────────────────────────────────────────────────────────
 
     def _call_gateway(self, text: str) -> str:
@@ -153,7 +153,7 @@ class Pipe:
         return self._format(data)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Formatage de la réponse body-gateway
+    # Format body-gateway response for display in WebUI
     # ─────────────────────────────────────────────────────────────────────────
 
     def _format(self, data: dict) -> str:

@@ -1,215 +1,304 @@
 # Robot NAO
 
-Documentation du bridge embarqué sur le robot NAO et de son intégration avec la stack VPS.
+Documentation for the NAO robot bridge embedded on the robot and its integration with the VPS stack.
 
 ---
 
-## Principe de connexion
+## Connection principle
 
-Le NAO ne peut pas recevoir de connexions entrantes depuis internet (pare-feu réseau local, NAT). La solution retenue est un **script Python 2.7 embarqué sur le robot** qui établit une connexion WebSocket **sortante** vers le rosbridge du VPS.
+The NAO cannot receive inbound connections from the internet (local network firewall, NAT). The chosen solution is a **Python 2.7 script embedded on the robot** that establishes an **outbound** WebSocket connection to the rosbridge server on the VPS.
 
 ```
-NAO (réseau local)
-  └─► nao_ws_bridge.py (Python 2.7)
-        └─► WebSocket sortant ws://VPS_IP:9090
+NAO (local network)
+  └─► nao_ws_bridge.py (Python 2.7, no external dependencies)
+        └─► Outbound WebSocket ws://VPS_IP:9090
               └─► ros2-bridge (ROS 2 Jazzy, VPS)
+                    └─► naoqi_driver → cognitive_renderer → body_gateway
+                                                              └─► Ollama (LLM)
 ```
 
-Une fois connecté, le bridge s'abonne aux topics ROS 2 et exécute les commandes reçues via NAOqi (SDK natif du robot). Il publie aussi les données de statut (batterie, température) vers le VPS.
+Once connected the bridge subscribes to command topics and executes them via the native NAOqi SDK. It also publishes status (battery) and captured audio back to the VPS.
 
-> Voir [ADR 002](decisions/002-nao-websocket-bridge.md) pour les alternatives rejetées (VPN, Raspberry Pi intermédiaire).
+> See [ADR 002](decisions/002-nao-websocket-bridge.md) for rejected alternatives (VPN, Raspberry Pi relay).
 
 ---
 
-## Deux scripts, deux rôles
+## Scripts overview
 
-| Script | Tourne sur | Rôle |
+| Script | Runs on | Role |
 |---|---|---|
-| `robotics/nao_brain/naoqi_bridge/nao_ws_bridge.py` | **Robot NAO** | WebSocket client → rosbridge VPS |
-| `robotics/nao_brain/naoqi_bridge/app.py` | **VPS (Docker)** | API HTTP de compatibilité pour la chaîne brain/body en mode connexion sortante robot |
+| `robotics/nao_brain/naoqi_bridge/nao_ws_bridge.py` | **NAO robot** | Outbound WebSocket client → rosbridge VPS |
+| `robotics/nao_brain/naoqi_bridge/app.py` | **VPS (Docker)** | HTTP compatibility API (fallback, robot-initiated mode) |
+| `robotics/nao_brain/naoqi_driver/naoqi_driver_node.py` | **VPS (ROS 2)** | Bridges `/bodies/*/actuators/*` ↔ `/nao/*` topics |
+| `robotics/nao_brain/cognitive_renderer/cognitive_renderer_node.py` | **VPS (ROS 2)** | Translates cognitive state → LED + head animations |
+| `robotics/nao_brain/body_gateway/body_gateway.py` | **VPS (ROS 2)** | LLM (Ollama) ↔ robot bodies orchestrator |
+| `robotics/nao_brain/webui/nao_pipe.py` | **VPS (Open WebUI)** | Open WebUI Pipe — chat interface for NAO Brain |
 
-> `app.py` n'est **pas** destiné à tourner sur le robot — c'est un service VPS. Le déployer sur le NAO provoque une erreur `ImportError: No module named flask` car Flask n'est pas disponible sur OpenNAO.
-> Ce dépôt est orienté mode **connexion initiée par le robot** : `app.py` ne tente plus de connexion directe au robot par IP/PORT.
-
-### `nao_ws_bridge.py` (script embarqué sur le NAO)
-
-- Se connecte à rosbridge via WebSocket **sortant** avec reconnexion automatique
-- S'abonne aux topics `/nao/speech`, `/nao/cmd_vel`, `/nao/gesture`, `/nao/leds`, `/nao/stop`
-- Publie sur `/nao/status` (batterie toutes les 30 s)
-- Utilise le module `naoqi` natif du robot (pas besoin de l'installer)
+> `app.py` is **not** meant to run on the robot — it is a VPS service. Deploying it on the NAO causes `ImportError: No module named flask` because Flask is not available on OpenNAO.
 
 ---
 
-## Déploiement sur le robot
+## `nao_ws_bridge.py` — embedded bridge (Python 2.7)
 
-### 1. Copier le script
+### Features
+
+- **Outbound WebSocket** connection to rosbridge with automatic reconnect (exponential backoff)
+- **Zero external dependencies** — pure Python 2.7 built-in WebSocket client (RFC 6455)
+- **Module filtering** — enable only the capabilities you need via `--modules`
+- **Wake word detection** — "ok nao" / "okay nao" via ALSpeechRecognition
+- **VAD audio capture** — records speech after wake word, publishes WAV on `/nao/audio`
+- **TTS method negotiation** — announces `mp3` or `text` to the VPS on connect
+- **Post-flash provisioning** — applies autonomous life state, language, volume from JSON
+
+### CLI options
+
+```
+python /home/nao/nao_ws_bridge.py --vps ws://VPS_IP:9090 [options]
+
+--vps URL             rosbridge WebSocket URL (required unless --provision only)
+--nao-ip IP           NAOqi IP address (default: 127.0.0.1)
+--nao-port PORT       NAOqi port (default: 9559)
+--modules MOD,...     Comma-separated modules to enable (default: all)
+                      Available: audio_out, gesture, led, motion, move, speech, stop
+--no-audio-capture    Disable wake word and VAD capture
+--tts-method METHOD   auto | mp3 | text (default: auto)
+                        mp3  → VPS generates audio via edge-tts, sends on /nao/audio_out
+                        text → VPS sends raw text, NAOqi TTS speaks it
+                        auto → mp3 if NAOqi available, otherwise text
+--provision [FILE]    Apply post-flash config before starting (default: nao_provision.json)
+```
+
+### Usage examples
 
 ```bash
-# Depuis la racine du dépôt, sur ta machine de développement
+# All modules active (default):
+python nao_ws_bridge.py --vps ws://IP:9090
+
+# LEDs + speech only, no audio capture:
+python nao_ws_bridge.py --vps ws://IP:9090 --modules led,speech --no-audio-capture
+
+# Apply post-flash config then start bridge:
+python nao_ws_bridge.py --vps ws://IP:9090 --provision
+
+# Force native NAOqi TTS (no edge-tts on VPS):
+python nao_ws_bridge.py --vps ws://IP:9090 --tts-method text
+```
+
+---
+
+## ROS 2 topics
+
+### VPS → NAO (commands)
+
+| Topic | Type | Module | NAOqi action |
+|---|---|---|---|
+| `/nao/speech` | `std_msgs/String` | `speech` | `ALTextToSpeech.say()` — native TTS |
+| `/nao/audio_out` | `std_msgs/String` (base64 MP3) | `audio_out` | `ALAudioPlayer.playFile()` — edge-tts audio |
+| `/nao/cmd_vel` | `geometry_msgs/Twist` | `move` | `ALMotion.moveToward(x, y, theta)` |
+| `/nao/gesture` | `std_msgs/String` | `gesture` | `ALRobotPosture.goToPosture()` |
+| `/nao/leds` | `std_msgs/String` (JSON) | `led` | `ALLeds.fadeRGB(name, r, g, b, duration)` |
+| `/nao/motion` | `std_msgs/String` (JSON) | `motion` | `ALMotion.angleInterpolationWithSpeed()` |
+| `/nao/stop` | `std_msgs/Empty` | `stop` | `ALMotion.stopMove()` |
+| `/nao/shutdown` | `std_msgs/Empty` | *(always active)* | Clean bridge shutdown |
+
+**LED payload format:**
+```json
+{"name": "AllLeds", "r": 0.0, "g": 0.0, "b": 1.0, "duration": 0.5}
+```
+
+**Motion payload format:**
+```json
+{"joint": "HeadYaw", "angle": 0.15, "speed": 0.08}
+```
+
+### NAO → VPS (sensors / telemetry)
+
+| Topic | Type | Content | Interval |
+|---|---|---|---|
+| `/nao/status` | `std_msgs/String` (JSON) | `{"battery": 85}` — battery level heartbeat | Every 30 s |
+| `/nao/audio` | `std_msgs/String` (base64 WAV) | Captured speech after wake word | On demand |
+| `/nao/capabilities` | `std_msgs/String` (JSON) | `{"tts_method": "mp3"}` — TTS negotiation | On connect |
+
+---
+
+## VPS-side pipeline (ROS 2)
+
+```
+Open WebUI (chat)                   NAO wake word "ok nao"
+      │                                     │
+      ▼                                     ▼
+  nao_pipe.py                       nao_ws_bridge.py
+      │                              captures audio (VAD)
+      │                              publishes /nao/audio
+      │                                     │
+      └──────────► body_gateway ◄───────────┘
+                  (port 8095)
+                  calls Ollama
+                  parses JSON actions
+                       │
+            ┌──────────┼──────────┐
+            ▼          ▼          ▼
+        /nao/speech  /nao/leds  /nao/motion  ...
+            │
+         naoqi_driver
+            │
+         (via rosbridge)
+            │
+         nao_ws_bridge.py (on robot)
+            │
+         NAOqi SDK → speaker, LEDs, motors
+```
+
+### cognitive_renderer
+
+The `cognitive_renderer_node.py` runs an animation loop (1 tick/minute) that maps cognitive state to LED colours and head movements:
+
+| State | LEDs | Head |
+|---|---|---|
+| `thinking` | blue pulsing | tilt down |
+| `responding` | white steady | straight |
+| `listening` | green steady | slight forward |
+| `dreaming` | purple pulsing | slow micro-yaw |
+| `idle` | dark blue drift | slow yaw oscillation |
+| `uncertain` | yellow pulsing | slow yaw |
+| `excited` | bright white | look up |
+
+### Dream engine
+
+`body_gateway` enters DREAMING state between 02:00-06:00 when battery ≥ 80%. Soft micro-actions (head, LEDs, whisper) are triggered every 5 minutes via the `_DREAM_SYSTEM` prompt.
+
+---
+
+## Deployment on the robot
+
+### 1. Copy the script
+
+```bash
+# From the repository root on your dev machine:
 scp robotics/nao_brain/naoqi_bridge/nao_ws_bridge.py nao@NAO_IP:/home/nao/nao_ws_bridge.py
 ```
 
-### 2. Installer les dépendances Python
+> **No additional Python packages needed.** The WebSocket client is built into the script (pure Python 2.7).
 
-Sur NAO 2.1.x, `pip` n'est pas disponible et son installation via `get-pip.py` échoue car le robot ne peut pas atteindre PyPI. Comme tous ces paquets sont Python pur, on transfère les wheels depuis la machine de dev.
-
-`websocket-client` dépend de `six` — les deux doivent être installés.
-
-**a) Télécharger les wheels sur ta machine de dev**
+### 2. Launch the bridge manually
 
 ```bash
-pip download --no-deps websocket-client==0.59.0 six -d /tmp/nao-pkg/
-scp /tmp/nao-pkg/*.whl nao@NAO_IP:/tmp/
-```
-
-**b) Extraire les paquets sur le NAO**
-
-Un wheel est une archive zip — Python 2.7 peut l'extraire sans pip :
-
-```bash
-ssh nao@NAO_IP
-python -c "
-import zipfile, glob
-for whl in glob.glob('/tmp/*.whl'):
-    zipfile.ZipFile(whl).extractall('/home/nao/pylib')
-    print('extrait: ' + whl)
-"
-echo 'export PYTHONPATH=/home/nao/pylib:$PYTHONPATH' >> /home/nao/.bashrc
-export PYTHONPATH=/home/nao/pylib:$PYTHONPATH
-```
-
-### 3. Lancer le bridge manuellement
-
-```bash
-# Le NAO (Python 2.7 sans SSL) se connecte en ws:// direct sur le port 9090
+# Connect from NAO to VPS rosbridge (ws:// only — SSL handled by Traefik/stunnel)
 python /home/nao/nao_ws_bridge.py --vps ws://rosbridge.$DOMAIN:9090
 ```
 
-Les logs indiquent la connexion réussie :
+Successful connection logs:
 ```
-[bridge] Connexion a ws://rosbridge.$DOMAIN:9090 ...
-[bridge] Connecte. Abonnement aux topics ...
-[bridge] Pret.
+[bridge] Connecting to ws://rosbridge.example.com:9090 ...
+[bridge] Connected. Active modules: audio_out, gesture, led, motion, move, speech, stop. Audio capture: yes.
+[bridge] TTS capabilities announced: mp3
+[bridge] Ready.
 ```
 
----
+### 3. Automatic start on boot
 
-## Lancement automatique au démarrage
-
-### Via Choregraphe
-
-Créer `/home/nao/autostart.sh` :
+Create `/home/nao/autostart.sh`:
 ```bash
 #!/bin/bash
-export PYTHONPATH=/home/nao/pylib:$PYTHONPATH
-sleep 10   # attendre que le réseau soit établi
-python /home/nao/nao_ws_bridge.py --vps ws://rosbridge.mon-domain.com:9090 &
+sleep 10   # wait for network
+python /home/nao/nao_ws_bridge.py --vps ws://rosbridge.your-domain.com:9090 &
 ```
 
-> Remplacer `rosbridge.mon-domain.com` par la valeur de `$ROSBRIDGE_DOMAIN`.
+> Replace `rosbridge.your-domain.com` with the value of `$ROSBRIDGE_DOMAIN`.
 
-Puis dans Choregraphe : **Edit** → **Preferences** → **Autorun** → ajouter ce script.
+Then in Choregraphe: **Edit** → **Preferences** → **Autorun** → add this script.
 
-### Via autorun.ini (alternative)
-
-Éditer `/home/nao/.config/autostart/` ou le fichier `autorun.ini` de la préférence NAOqi selon la version du firmware.
+Alternatively edit `/home/nao/.config/autostart/` or the `autorun.ini` preference file depending on NAOqi firmware version.
 
 ---
 
-## Topics disponibles
+## Verifying the connection
 
-| Topic | Direction | Action NAO |
-|---|---|---|
-| `/nao/speech` | VPS → NAO | `ALTextToSpeech.say()` |
-| `/nao/cmd_vel` | VPS → NAO | `ALMotion.moveToward()` |
-| `/nao/gesture` | VPS → NAO | `ALRobotPosture.goToPosture()` |
-| `/nao/leds` | VPS → NAO | `ALLeds.fadeRGB()` |
-| `/nao/stop` | VPS → NAO | `ALMotion.stopMove()` |
-| `/nao/status` | NAO → VPS | Batterie + température (JSON) |
-
----
-
-## Vérification de la connexion
-
-**Sur le VPS :**
+**On the VPS:**
 ```bash
-# Vérifier que le rosbridge voit le robot connecté
+# Check that rosbridge sees the robot connected
 docker logs ros2-bridge -f
-# Chercher une ligne du type : "Client connected from NAO_IP"
+# Look for a line like: "Client connected from NAO_IP"
 
-# Tester une commande (NAO doit parler)
-curl -X POST http://localhost:8001/nao/say \
-  -H "X-API-Key: $GATEWAY_API_KEY" \
+# Test TTS (robot must speak)
+curl -X POST http://localhost:8095/say \
   -H "Content-Type: application/json" \
-  -d '{"text": "Test de connexion"}'
+  -d '{"text": "Connection test", "robot_id": "nao_01"}'
+
+# Run the full diagnostic suite
+bash tests/diag-nao-connection.sh
 ```
 
-**Sur le robot :**
+**On the robot:**
 ```bash
 ssh nao@NAO_IP
-# Vérifier que le processus tourne
-ps aux | grep nao_ws_bridge
+ps aux | grep nao_ws_bridge   # verify the process is running
 ```
 
 ---
 
-## Dépannage
+## Troubleshooting
 
-| Symptôme | Cause probable | Solution |
+| Symptom | Likely cause | Solution |
 |---|---|---|
-| Bridge ne se connecte pas | Port 9090 bloqué ou VPS_IP incorrect | Vérifier `ufw allow 9090` sur le VPS et l'IP utilisée |
-| `pip command not found` ou `No matching distribution found for pip<21.0` | pip absent / PyPI inaccessible sur OpenNAO 2.1.x | Utiliser l'installation par wheel sans pip — voir section 2 |
-| `ImportError: No module named websocket` | wheel non extrait ou PYTHONPATH absent | Vérifier que `/home/nao/pylib` contient `websocket/` et que `PYTHONPATH` inclut `/home/nao/pylib` |
-| `Erreur : SSL not available.` | Module `ssl` Python absent sur OpenNAO | Python 2.7 compilé sans OpenSSL — voir section **SSL non disponible** ci-dessous |
-| Le robot ne parle pas | rosbridge non démarré ou topic incorrect | `docker logs ros2-bridge` sur le VPS |
-| Reconnexions en boucle | Timeout réseau NAO | Normal — le script reconnecte automatiquement |
+| Bridge does not connect | Port 9090 blocked or wrong VPS IP | Check `ufw allow 9090` on VPS and the URL used |
+| `ImportError: No module named websocket` | Old install attempt — not needed anymore | No wheel installation required; the WS client is built in |
+| `Only ws:// is supported` | Trying to use `wss://` directly | Use `ws://` — TLS is terminated by Traefik upstream. Use stunnel if `wss://` is mandatory. |
+| Robot does not speak | rosbridge not started or wrong topic | `docker logs ros2-bridge` on VPS |
+| Wake word not detected | `--no-audio-capture` set or ASR unavailable | Check ALSpeechRecognition is active on robot |
+| Loop reconnections | Network timeout | Normal — script reconnects automatically |
+| `[MOCK]` lines in logs | Running without NAOqi (on dev machine) | Expected in mock/dev mode — no action needed |
 
 ---
 
-## SSL non disponible
+## SSL / WSS
 
-### Diagnostic
+The robot connects via plain `ws://` (no SSL on port 9090). TLS termination is handled upstream by Traefik, which proxies to `rosbridge-proxy` (Caddy) → `ros2-bridge`.
 
-```bash
-ssh nao@NAO_IP
-python -c "import ssl; print(ssl.OPENSSL_VERSION)"
-```
-
-- Si la commande affiche la version OpenSSL → le module est disponible, l'erreur vient d'un autre problème TLS.
-- Si elle lève `ImportError: No module named ssl` → Python 2.7 sur ce robot a été compilé sans support SSL.
-
-### Solution A — vérifier la bibliothèque partagée
-
-Sur certains firmwares OpenNAO, `_ssl.so` existe mais n'est pas dans le `sys.path` par défaut :
+If you need the robot to connect directly to a `wss://` endpoint (no Traefik), use `stunnel`:
 
 ```bash
-find / -name "_ssl*.so" 2>/dev/null
-# Si trouvée, par exemple /usr/lib/python2.7/lib-dynload/_ssl.so :
-export PYTHONPATH=/usr/lib/python2.7/lib-dynload:$PYTHONPATH
-python -c "import ssl; print('OK')"
-```
-
-Ajouter la ligne `export PYTHONPATH=...` dans `/home/nao/.bashrc` pour la rendre permanente.
-
-### Solution B — tunnel SSL via stunnel
-
-Si `_ssl.so` est vraiment absent, `stunnel` crée un tunnel local non-chiffré → chiffré SSL vers le VPS :
-
-```bash
-# Installer stunnel sur le NAO (si opkg disponible)
+# Install on NAO (if opkg available)
 opkg install stunnel
 ```
 
-Créer `/home/nao/stunnel-rosbridge.conf` :
+Create `/home/nao/stunnel-rosbridge.conf`:
 ```ini
 [rosbridge]
-client = yes
+client  = yes
 accept  = 127.0.0.1:9090
-connect = rosbridge.monolithoid.com:443
+connect = rosbridge.your-domain.com:443
 ```
 
-Lancer stunnel puis connecter le bridge en `ws://` :
+Then:
 ```bash
 stunnel /home/nao/stunnel-rosbridge.conf &
 python /home/nao/nao_ws_bridge.py --vps ws://127.0.0.1:9090
+```
+
+---
+
+## Post-flash provisioning
+
+Create `nao_provision.json` next to the script (see `nao_provision.json.example`):
+
+```json
+{
+  "autonomous_life": {"state": "disabled"},
+  "language": {
+    "tts": "French",
+    "asr": "French"
+  },
+  "system": {"volume": 70}
+}
+```
+
+Apply on first boot:
+```bash
+python /home/nao/nao_ws_bridge.py --provision --vps ws://VPS_IP:9090
+```
+
+Or provision only (without starting the bridge):
+```bash
+python /home/nao/nao_ws_bridge.py --provision
 ```

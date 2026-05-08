@@ -1,30 +1,38 @@
 #!/usr/bin/env python2
 # -*- coding: utf-8 -*-
 """
-nao_ws_bridge.py — Script embarque sur le robot NAO (Python 2.7).
+nao_ws_bridge.py — Script embedded on the NAO robot (Python 2.7).
 
-Etablit une connexion WebSocket SORTANTE vers rosbridge sur le VPS,
-s'abonne aux topics de commande et publie le statut du robot.
+Establishes an OUTBOUND WebSocket connection to the rosbridge server on the VPS,
+subscribes to command topics and publishes robot status and captured audio.
 
-Usage :
-    python /home/nao/nao_ws_bridge.py --vps ws://IP_VPS:9090 [options]
+No external Python dependencies — uses a built-in pure Python 2.7 WebSocket client.
+The naoqi module is available natively on the robot (OpenNAO firmware).
 
-Options de filtrage des modules :
-    --modules led,speech,gesture   Active uniquement les modules listés.
-                                   Modules disponibles : led, speech, gesture,
-                                   motion, move, stop (defaut: tous actifs).
-    --no-audio-capture             Desactive le wake word et la capture VAD.
+Usage:
+    python /home/nao/nao_ws_bridge.py --vps ws://VPS_IP:9090 [options]
 
-Exemples :
-    # LED + parole uniquement, sans capture audio :
+Module filtering:
+    --modules led,speech,gesture   Enable only the listed modules.
+                                   Available: led, speech, audio_out, gesture,
+                                   motion, move, stop (default: all active).
+    --no-audio-capture             Disable wake word detection and VAD capture.
+
+TTS method:
+    --tts-method auto|mp3|text
+        mp3  : VPS generates audio via edge-tts and sends it on /nao/audio_out.
+        text : VPS sends raw text on /nao/speech (native NAOqi TTS).
+        auto : mp3 if NAOqi is available, otherwise text (default).
+
+Examples:
+    # LEDs + speech only, no audio capture:
     python nao_ws_bridge.py --vps ws://IP:9090 --modules led,speech --no-audio-capture
 
-    # Tout actif (comportement par defaut) :
+    # All modules active (default behaviour):
     python nao_ws_bridge.py --vps ws://IP:9090
 
-Dependances :
-    Aucune dependance externe — client WebSocket pur Python 2.7 integre.
-    naoqi (disponible nativement sur le robot)
+    # Apply post-flash config then start bridge:
+    python nao_ws_bridge.py --vps ws://IP:9090 --provision
 """
 
 from __future__ import print_function
@@ -49,7 +57,7 @@ except ImportError:
     class ALModule(object):
         def __init__(self, name):
             pass
-    print("[bridge] WARNING: module naoqi introuvable — mode MOCK actif", file=sys.stderr)
+    print("[bridge] WARNING: naoqi module not found — MOCK mode active", file=sys.stderr)
 
 NAO_IP = "127.0.0.1"
 NAO_PORT = 9559
@@ -60,29 +68,30 @@ _PROVISION_DEFAULT = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "nao_provision.json"
 )
 
-# Mapping module → (topic, msg_type)
+# Mapping: module name → (ROS topic, message type)
 _MODULE_TOPICS = {
-    "speech":   ("/nao/speech",     "std_msgs/String"),
-    "gesture":  ("/nao/gesture",    "std_msgs/String"),
-    "led":      ("/nao/leds",       "std_msgs/String"),
-    "motion":   ("/nao/motion",     "std_msgs/String"),
-    "move":     ("/nao/cmd_vel",    "geometry_msgs/Twist"),
-    "stop":     ("/nao/stop",       "std_msgs/Empty"),
-    "audio_out": ("/nao/audio_out", "std_msgs/String"),
+    "speech":    ("/nao/speech",     "std_msgs/String"),
+    "gesture":   ("/nao/gesture",    "std_msgs/String"),
+    "led":       ("/nao/leds",       "std_msgs/String"),
+    "motion":    ("/nao/motion",     "std_msgs/String"),
+    "move":      ("/nao/cmd_vel",    "geometry_msgs/Twist"),
+    "stop":      ("/nao/stop",       "std_msgs/Empty"),
+    "audio_out": ("/nao/audio_out",  "std_msgs/String"),
 }
-# Topics toujours actifs (contrôle du bridge lui-même)
+# System topics always subscribed regardless of module filtering
 _SYSTEM_TOPICS = [
     ("/nao/shutdown", "std_msgs/Empty"),
 ]
 ALL_MODULES = frozenset(_MODULE_TOPICS.keys())
 
-_BROKER      = None  # ALBroker local (doit rester vivant pour les callbacks)
-_CAPTURE_REF = None  # empêche le GC de l'instance _AudioCapture courante
+_BROKER      = None  # ALBroker instance — must stay alive for NAOqi callbacks
+_CAPTURE_REF = None  # strong ref to active _AudioCapture, prevents GC during recording
 
 
 # ======================================================================
-# Client WebSocket pur Python 2.7 (RFC 6455, ws:// uniquement)
-# Remplace websocket-client pour eviter toute dependance au module ssl.
+# Pure Python 2.7 WebSocket client (RFC 6455, ws:// only)
+# Replaces websocket-client to avoid any dependency on the ssl module,
+# which may not be available on all OpenNAO firmware builds.
 # ======================================================================
 
 class _WebSocketApp(object):
@@ -100,7 +109,7 @@ class _WebSocketApp(object):
         self._closed = False
 
     # ------------------------------------------------------------------
-    # API publique
+    # Public API
     # ------------------------------------------------------------------
 
     def send(self, data):
@@ -143,12 +152,12 @@ class _WebSocketApp(object):
             self.on_close(self)
 
     # ------------------------------------------------------------------
-    # Connexion TCP + handshake HTTP/WebSocket
+    # TCP connection + HTTP/WebSocket handshake (RFC 6455 §4)
     # ------------------------------------------------------------------
 
     def _connect(self):
         if not self.url.startswith("ws://"):
-            raise ValueError("Seule ws:// est supportee (recu: {})".format(self.url))
+            raise ValueError("Only ws:// is supported (got: {})".format(self.url))
         tail = self.url[5:]
 
         if "/" in tail:
@@ -184,24 +193,25 @@ class _WebSocketApp(object):
         while b"\r\n\r\n" not in resp:
             chunk = self._sock.recv(4096)
             if not chunk:
-                raise IOError("Connexion fermee pendant le handshake")
+                raise IOError("Connection closed during WebSocket handshake")
             resp += chunk
 
         status_line = resp.split(b"\r\n")[0]
         if b"101" not in status_line:
-            raise IOError("Echec handshake WebSocket : {}".format(
+            raise IOError("WebSocket handshake failed: {}".format(
                 status_line.decode("ascii", "replace")))
 
+        # Verify the server's Sec-WebSocket-Accept header (RFC 6455 §4.1)
         expected = base64.b64encode(
             hashlib.sha1(
                 (raw_key + self._GUID).encode("ascii")
             ).digest()
         ).decode("ascii")
         if expected not in resp.decode("ascii", "replace"):
-            raise IOError("Sec-WebSocket-Accept invalide")
+            raise IOError("Invalid Sec-WebSocket-Accept")
 
     # ------------------------------------------------------------------
-    # Framing WebSocket (RFC 6455)
+    # WebSocket frame encoding/decoding (RFC 6455 §5)
     # ------------------------------------------------------------------
 
     def _send_frame(self, data, opcode=0x1):
@@ -230,11 +240,12 @@ class _WebSocketApp(object):
         self._sock.sendall(bytes(header) + bytes(masked))
 
     def _recv_exact(self, n):
+        """Read exactly n bytes from the socket, blocking until complete."""
         buf = b""
         while len(buf) < n:
             chunk = self._sock.recv(n - len(buf))
             if not chunk:
-                raise IOError("Connexion fermee")
+                raise IOError("Connection closed")
             buf += chunk
         return buf
 
@@ -256,16 +267,16 @@ class _WebSocketApp(object):
                 for i in range(length):
                     payload[i] ^= mask_key[i % 4]
 
-            if opcode == 0x1:   # texte
+            if opcode == 0x1:   # text frame
                 if self.on_message:
                     self.on_message(self, payload.decode("utf-8", "replace"))
-            elif opcode == 0x2: # binaire
+            elif opcode == 0x2: # binary frame
                 if self.on_message:
                     self.on_message(self, bytes(payload))
-            elif opcode == 0x8: # close
+            elif opcode == 0x8: # close frame
                 self._closed = True
                 break
-            elif opcode == 0x9: # ping → pong
+            elif opcode == 0x9: # ping → reply with pong (0xA)
                 self._send_frame(bytes(payload), opcode=0xA)
 
 
@@ -274,24 +285,24 @@ class _WebSocketApp(object):
 # ======================================================================
 
 def _provision(config_path):
-    """Applique la configuration post-flash définie dans config_path (JSON)."""
+    """Apply post-flash configuration from config_path (JSON file)."""
     try:
         with open(config_path, "r") as f:
             config = json.load(f)
     except Exception as e:
-        print("[provision] Erreur lecture {}: {}".format(config_path, e), file=sys.stderr)
+        print("[provision] Error reading {}: {}".format(config_path, e), file=sys.stderr)
         return False
 
-    print("[provision] Application de {} ...".format(config_path), file=sys.stderr)
+    print("[provision] Applying {} ...".format(config_path), file=sys.stderr)
     ok = True
 
-    # -- Vie autonome --------------------------------------------------
+    # -- Autonomous life -----------------------------------------------
     al_cfg = config.get("autonomous_life", {})
     if "state" in al_cfg:
         state = str(al_cfg["state"])
         valid_states = ("disabled", "solitary", "interactive", "safeguard")
         if state not in valid_states:
-            print("[provision] autonomous_life.state '{}' invalide (valeurs : {}).".format(
+            print("[provision] autonomous_life.state '{}' invalid (valid: {}).".format(
                 state, ", ".join(valid_states)), file=sys.stderr)
         else:
             proxy = get_proxy("ALAutonomousLife")
@@ -300,13 +311,12 @@ def _provision(config_path):
                     proxy.setState(state)
                     print("[provision] ALAutonomousLife -> '{}'.".format(state), file=sys.stderr)
                 except Exception as e:
-                    print("[provision] ALAutonomousLife erreur : {}".format(e), file=sys.stderr)
+                    print("[provision] ALAutonomousLife error: {}".format(e), file=sys.stderr)
                     ok = False
 
-    # -- Langues -------------------------------------------------------
-    # Les paquets .pkg sont copiés dans /tmp (seul espace disponible).
-    # Installation via qicli (PackageManager sans préfixe AL, toujours
-    # disponible sur NAO OS).
+    # -- Language packages --------------------------------------------
+    # .pkg files are copied to /tmp (only writable space available on NAO).
+    # Installation uses qicli (PackageManager, always present on NAO OS).
     lang_cfg = config.get("language", {})
     if lang_cfg:
         import glob as _glob
@@ -319,20 +329,18 @@ def _provision(config_path):
                         ["qicli", "call", "PackageManager.install", pkg_path]
                     )
                     if ret == 0:
-                        print("[provision] Paquet installé : {}.".format(
+                        print("[provision] Package installed: {}.".format(
                             os.path.basename(pkg_path)), file=sys.stderr)
                     else:
-                        print("[provision] Erreur installation {} (code {}).".format(
+                        print("[provision] Install error {} (code {}).".format(
                             os.path.basename(pkg_path), ret), file=sys.stderr)
                         ok = False
                 except OSError:
-                    print("[provision] qicli introuvable — paquets ignorés.", file=sys.stderr)
+                    print("[provision] qicli not found — packages skipped.", file=sys.stderr)
                     ok = False
                     break
         else:
-            print("[provision] Aucun paquet .pkg trouvé dans /tmp.", file=sys.stderr)
-        else:
-            print("[provision] Aucun paquet .pkg trouvé dans /tmp.", file=sys.stderr)
+            print("[provision] No .pkg files found in /tmp.", file=sys.stderr)
 
         if "tts" in lang_cfg:
             lang = str(lang_cfg["tts"])
@@ -342,13 +350,13 @@ def _provision(config_path):
                     available = proxy.getAvailableLanguages()
                     if lang in available:
                         proxy.setLanguage(lang)
-                        print("[provision] TTS langue -> '{}'.".format(lang), file=sys.stderr)
+                        print("[provision] TTS language -> '{}'.".format(lang), file=sys.stderr)
                     else:
-                        print("[provision] TTS : '{}' non disponible (disponibles : {}).".format(
+                        print("[provision] TTS: '{}' not available (available: {}).".format(
                             lang, ", ".join(available)), file=sys.stderr)
                         ok = False
                 except Exception as e:
-                    print("[provision] TTS erreur : {}".format(e), file=sys.stderr)
+                    print("[provision] TTS error: {}".format(e), file=sys.stderr)
                     ok = False
 
         if "asr" in lang_cfg:
@@ -357,17 +365,17 @@ def _provision(config_path):
             if proxy:
                 try:
                     proxy.setLanguage(lang)
-                    print("[provision] ASR langue -> '{}'.".format(lang), file=sys.stderr)
+                    print("[provision] ASR language -> '{}'.".format(lang), file=sys.stderr)
                 except Exception as e:
-                    print("[provision] ASR erreur : {}".format(e), file=sys.stderr)
+                    print("[provision] ASR error: {}".format(e), file=sys.stderr)
                     ok = False
 
-    # -- Système -------------------------------------------------------
+    # -- System settings ----------------------------------------------
     sys_cfg = config.get("system", {})
     if "volume" in sys_cfg:
         vol = int(sys_cfg["volume"])
         if not (0 <= vol <= 100):
-            print("[provision] Volume {} hors plage [0-100].".format(vol), file=sys.stderr)
+            print("[provision] Volume {} out of range [0-100].".format(vol), file=sys.stderr)
         else:
             proxy = get_proxy("ALAudioDevice")
             if proxy:
@@ -375,10 +383,10 @@ def _provision(config_path):
                     proxy.setOutputVolume(vol)
                     print("[provision] Volume -> {}.".format(vol), file=sys.stderr)
                 except Exception as e:
-                    print("[provision] Volume erreur : {}".format(e), file=sys.stderr)
+                    print("[provision] Volume error: {}".format(e), file=sys.stderr)
                     ok = False
 
-    status = "OK" if ok else "terminé avec des erreurs"
+    status = "OK" if ok else "finished with errors"
     print("[provision] Provisioning {}.".format(status), file=sys.stderr)
     return ok
 
@@ -392,14 +400,14 @@ def get_proxy(service):
 
 
 def _ws_log(direction, msg):
-    """Affiche sur stderr un résumé lisible d'un échange WebSocket."""
+    """Print a human-readable WebSocket exchange summary to stderr."""
     op    = msg.get("op", "?")
     topic = msg.get("topic", "")
     inner = msg.get("msg", msg.get("data", {}))
     summary = json.dumps(inner, ensure_ascii=False)
-    # Tronquer les gros payloads (audio base64, etc.)
+    # Truncate large payloads (e.g. base64 audio) to keep logs readable
     if len(summary) > 200:
-        summary = u"{}… [tronqué, {} octets]".format(summary[:200], len(summary))
+        summary = u"{}… [truncated, {} bytes]".format(summary[:200], len(summary))
     ts = time.strftime("%H:%M:%S")
     print(u"[WS {dir}] {ts}  op={op}  topic={topic}  {summary}".format(
         dir=direction, ts=ts, op=op, topic=topic, summary=summary,
@@ -407,6 +415,11 @@ def _ws_log(direction, msg):
 
 
 def _ensure_broker():
+    """Create the ALBroker singleton if not yet initialised.
+
+    The broker is required before registering any ALModule subclass
+    (_AudioCapture). It must stay alive for the lifetime of the capture session.
+    """
     global _BROKER
     if _BROKER is not None:
         return True
@@ -421,14 +434,19 @@ def _ensure_broker():
 
 
 class _AudioCapture(ALModule):
-    """Module NAOqi recevant les trames audio et détectant la fin de parole par VAD."""
+    """NAOqi module that receives audio frames and detects end-of-speech via VAD.
 
-    _RATE         = 16000
-    _SPEECH_RMS   = 600    # seuil RMS déclenchant la capture
-    _SILENCE_RMS  = 200    # seuil RMS en-dessous duquel c'est du silence
-    _SILENCE_SEC  = 1.5    # secondes de silence consécutives pour stopper
-    _SAMPLES_CALL = 170    # échantillons/trame NAO à 16kHz (valeur par défaut)
-    _MAX_SEC      = 10.0   # timeout de sécurité
+    Registered with ALAudioDevice to receive raw 16-bit PCM at 16 kHz.
+    Accumulates samples while the RMS level exceeds _SPEECH_RMS, then stops
+    after _SILENCE_SEC of consecutive silence below _SILENCE_RMS.
+    """
+
+    _RATE         = 16000  # sample rate expected by Whisper (and NAO's minimum)
+    _SPEECH_RMS   = 600    # RMS threshold that triggers speech capture
+    _SILENCE_RMS  = 200    # RMS below which a frame is considered silence
+    _SILENCE_SEC  = 1.5    # consecutive silent seconds needed to stop recording
+    _SAMPLES_CALL = 170    # samples per NAO audio callback at 16 kHz (firmware default)
+    _MAX_SEC      = 10.0   # hard safety timeout to prevent infinite recording
 
     def __init__(self, name):
         ALModule.__init__(self, name)
@@ -482,24 +500,27 @@ class _AudioCapture(ALModule):
 
 
 class NaoBridge(object):
+    """Main bridge class: manages the WebSocket connection and dispatches commands.
+
+    Args:
+        vps_url       : rosbridge WebSocket URL (e.g. ws://VPS_IP:9090).
+        modules       : set of module names to enable (None = all modules).
+        audio_capture : enable wake word detection and VAD capture.
+        tts_method    : "mp3" | "text" | "auto".
+                        "auto" → mp3 if NAOqi available, otherwise text.
+    """
 
     def __init__(self, vps_url, modules=None, audio_capture=True, tts_method="auto"):
-        """
-        modules       : ensemble de noms de modules à activer (None = tous).
-        audio_capture : active le wake word et la capture VAD si True.
-        tts_method    : "mp3" | "text" | "auto" (défaut).
-                        "auto" → mp3 si NAOqi disponible, sinon text.
-        """
         self.vps_url = vps_url
         self._modules = ALL_MODULES if modules is None else frozenset(modules)
         self._audio_capture_enabled = audio_capture
         self._tts_method_override = tts_method
         self.ws = None
         self._stop = threading.Event()
-        self._busy_until = 0.0       # timestamp jusqu'auquel le wake word est ignoré
-        self._wakeword_started = False  # évite de relancer le thread à chaque reconnexion
-        self._asr = None             # proxy ASR conservé pour unsubscribe à l'arrêt
-        self._audio_capture = None   # module _AudioCapture en cours d'enregistrement
+        self._busy_until = 0.0          # timestamp until which wake word is ignored (during TTS)
+        self._wakeword_started = False   # prevents relaunching the wake-word thread on reconnect
+        self._asr = None                 # ASR proxy kept alive for unsubscribe on shutdown
+        self._audio_capture = None       # active _AudioCapture instance during VAD recording
 
     def _get_tts_method(self):
         if self._tts_method_override != "auto":
@@ -507,7 +528,7 @@ class NaoBridge(object):
         return "mp3" if HAS_NAOQI else "text"
 
     # ------------------------------------------------------------------
-    # Connexion / reconnexion
+    # Connection / auto-reconnect loop
     # ------------------------------------------------------------------
 
     def run(self):
@@ -536,7 +557,7 @@ class NaoBridge(object):
             self.ws.close()
 
     def _cleanup_resources(self):
-        """Libère les ressources NAOqi : désabonnement ASR, arrêt éventuel de la capture VAD."""
+        """Release NAOqi resources: unsubscribe ASR and stop any active VAD capture."""
         if self._audio_capture:
             self._audio_capture._done.set()
             audio_dev = get_proxy("ALAudioDevice")
@@ -557,11 +578,7 @@ class NaoBridge(object):
             self._asr = None
 
     # ------------------------------------------------------------------
-    # Evenements WebSocket
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Envoi WebSocket avec logging
+    # WebSocket send with structured logging
     # ------------------------------------------------------------------
 
     def _send(self, payload_dict):
@@ -576,20 +593,20 @@ class NaoBridge(object):
             "oui" if self._audio_capture_enabled else "non",
         ), file=sys.stderr)
 
-        # Topics filtrés selon les modules activés
+        # Subscribe to command topics for each enabled module
         for mod, (topic, msg_type) in _MODULE_TOPICS.items():
             if mod in self._modules:
                 sub_msg = {"op": "subscribe", "topic": topic, "type": msg_type}
                 _ws_log(u"→", sub_msg)
                 ws.send(json.dumps(sub_msg))
 
-        # Topics système toujours souscrits
+        # Subscribe to system topics unconditionally (e.g. /nao/shutdown)
         for topic, msg_type in _SYSTEM_TOPICS:
             sub_msg = {"op": "subscribe", "topic": topic, "type": msg_type}
             _ws_log(u"→", sub_msg)
             ws.send(json.dumps(sub_msg))
 
-        # Topics publiés par le bridge
+        # Advertise topics published by this bridge
         advertised = ["/nao/status", "/nao/capabilities"]
         if self._audio_capture_enabled:
             advertised.append("/nao/audio")
@@ -598,7 +615,7 @@ class NaoBridge(object):
             _ws_log(u"→", adv_msg)
             ws.send(json.dumps(adv_msg))
 
-        # Annonce des capacités TTS dès la connexion
+        # Immediately announce TTS capability so the driver can negotiate the method
         tts_method = self._get_tts_method()
         cap_payload = json.dumps({"tts_method": tts_method})
         cap_msg = {"op": "publish", "topic": "/nao/capabilities",
@@ -632,7 +649,7 @@ class NaoBridge(object):
         print("[bridge] Connexion fermee.", file=sys.stderr)
 
     # ------------------------------------------------------------------
-    # Dispatch des commandes recues
+    # Dispatch incoming ROS topic messages to NAOqi commands
     # ------------------------------------------------------------------
 
     def _dispatch(self, topic, data):
@@ -669,8 +686,8 @@ class NaoBridge(object):
         elif topic == "/nao/stop" and "stop" in self._modules:
             self._stop_move()
         elif topic == "/nao/shutdown":
-            # Toujours traité, quel que soit le filtrage des modules
-            print("[bridge] Commande /nao/shutdown reçue — arrêt propre.", file=sys.stderr)
+            # Always handled regardless of module filtering
+            print("[bridge] /nao/shutdown received — clean shutdown.", file=sys.stderr)
             threading.Thread(target=self.stop).start()
         elif topic == "/nao/motion" and "motion" in self._modules:
             try:
@@ -684,7 +701,7 @@ class NaoBridge(object):
             )
 
     # ------------------------------------------------------------------
-    # Commandes NAOqi
+    # NAOqi command implementations
     # ------------------------------------------------------------------
 
     def _say(self, text):
@@ -699,7 +716,11 @@ class NaoBridge(object):
                 print("[bridge] say error: {}".format(e), file=sys.stderr)
 
     def _play_audio(self, b64_data):
-        """Joue un MP3 base64 reçu du VPS via ALAudioPlayer (contourne le TTS NAOqi)."""
+        """Play a base64-encoded MP3 received from the VPS via ALAudioPlayer.
+
+        Bypasses NAOqi TTS entirely — used when tts_method is "mp3"
+        and the VPS generates audio with edge-tts.
+        """
         import os
         import tempfile
         if not HAS_NAOQI:
@@ -767,6 +788,7 @@ class NaoBridge(object):
                 print("[bridge] stop error: {}".format(e), file=sys.stderr)
 
     def _motion_joint(self, joint, angle, speed):
+        """Move a single joint to the given angle (radians) at the given speed fraction."""
         if not HAS_NAOQI:
             print("[MOCK] motion_joint: {} -> {:.3f} rad speed={}".format(joint, angle, speed),
                   file=sys.stderr)
@@ -774,17 +796,14 @@ class NaoBridge(object):
         proxy = get_proxy("ALMotion")
         if proxy:
             try:
+                # Stiffness must be set before commanding joint position
                 proxy.setStiffnesses("Head", 1.0)
                 proxy.angleInterpolationWithSpeed([joint], [angle], speed, True)
             except Exception as e:
                 print("[bridge] motion_joint error: {}".format(e), file=sys.stderr)
 
     # ------------------------------------------------------------------
-    # Publication du statut (batterie) toutes les STATUS_INTERVAL s
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Wake word → enregistrement audio → publication /nao/audio
+    # Wake word detection → audio recording → publish /nao/audio
     # ------------------------------------------------------------------
 
     def _wakeword_loop(self):
@@ -812,9 +831,8 @@ class NaoBridge(object):
                     continue
 
                 if _exiting_busy:
-                    # Première itération après la période occupée :
-                    # on vide le cache ALMemory pour éviter une fausse détection
-                    # sur la valeur residuelle du dernier "ok nao".
+                    # First iteration after the busy window: flush the ALMemory
+                    # cache to avoid a false trigger on the residual "ok nao" value.
                     _exiting_busy = False
                     last_word = ""
                     try:
@@ -829,9 +847,9 @@ class NaoBridge(object):
                     phrase = value[0].lower().strip()
                     if phrase != last_word and ("ok nao" in phrase or "okay nao" in phrase):
                         last_word = phrase
-                        self._busy_until = time.time() + 20.0  # bloque pendant écoute + TTS
-                        # Efface immédiatement le cache ALMemory pour éviter une re-détection
-                        # si body_gateway répond lentement et dépasse les 20 s.
+                        self._busy_until = time.time() + 20.0  # lock out wake word during listen + TTS
+                        # Immediately clear ALMemory to prevent re-detection if body_gateway
+                        # is slow and the 20 s window expires before TTS completes.
                         try:
                             memory.insertData("WordRecognized", ["", 0.0])
                         except Exception:
@@ -903,7 +921,7 @@ class NaoBridge(object):
             _CAPTURE_REF = None
 
     # ------------------------------------------------------------------
-    # Publication du statut (batterie) toutes les STATUS_INTERVAL s
+    # Status publisher — battery level heartbeat every STATUS_INTERVAL s
     # ------------------------------------------------------------------
 
     def _status_loop(self):
@@ -944,7 +962,7 @@ if __name__ == "__main__":
         ).format(",".join(sorted(ALL_MODULES)))
     )
     parser.add_argument("--vps", default=None,
-                        help="URL rosbridge (ex: ws://IP_VPS:9090). Obligatoire sauf avec --provision seul.")
+                        help="Rosbridge URL (e.g. ws://VPS_IP:9090). Required unless using --provision only.")
     parser.add_argument(
         "--provision",
         nargs="?",
@@ -952,24 +970,24 @@ if __name__ == "__main__":
         default=None,
         metavar="CONFIG_FILE",
         help=(
-            "Applique la configuration post-flash (WiFi, vie autonome, langue, volume) "
-            "avant de démarrer le bridge. "
-            "Sans argument utilise nao_provision.json à côté du script. "
-            "Sans --vps, quitte après le provisioning."
+            "Apply post-flash configuration (autonomous life, language, volume) "
+            "before starting the bridge. "
+            "Without argument, uses nao_provision.json next to this script. "
+            "Without --vps, exits after provisioning."
         ),
     )
     parser.add_argument("--nao-ip", default="127.0.0.1",
-                        help="IP du NAO (defaut: 127.0.0.1)")
+                        help="NAO IP address (default: 127.0.0.1)")
     parser.add_argument("--nao-port", type=int, default=9559,
-                        help="Port NAOqi (defaut: 9559)")
+                        help="NAOqi port (default: 9559)")
     parser.add_argument(
         "--modules",
         default=None,
         metavar="MOD1,MOD2,...",
         help=(
-            "Liste de modules a activer, separee par des virgules. "
-            "Valeurs possibles : {}. "
-            "Par defaut tous les modules sont actifs."
+            "Comma-separated list of modules to enable. "
+            "Available: {}. "
+            "Default: all modules active."
         ).format(", ".join(sorted(ALL_MODULES)))
     )
     parser.add_argument(
@@ -977,7 +995,7 @@ if __name__ == "__main__":
         dest="audio_capture",
         action="store_false",
         default=True,
-        help="Desactive le wake word et la capture VAD (actifs par defaut)."
+        help="Disable wake word detection and VAD capture (enabled by default)."
     )
     parser.add_argument(
         "--tts-method",
@@ -985,46 +1003,46 @@ if __name__ == "__main__":
         choices=["auto", "mp3", "text"],
         default="auto",
         help=(
-            "Methode TTS annoncee au VPS. "
-            "'mp3' : le VPS genere l'audio (edge-tts) et l'envoie sur /nao/audio_out. "
-            "'text' : le VPS envoie le texte brut sur /nao/speech (TTS local NAOqi). "
-            "'auto' (defaut) : mp3 si NAOqi disponible, sinon text."
+            "TTS method announced to the VPS. "
+            "'mp3': VPS generates audio (edge-tts) and sends it on /nao/audio_out. "
+            "'text': VPS sends raw text on /nao/speech (native NAOqi TTS). "
+            "'auto' (default): mp3 if NAOqi available, otherwise text."
         )
     )
     args = parser.parse_args()
 
     if not args.provision and not args.vps:
-        parser.error("--vps est obligatoire sauf en mode --provision seul.")
+        parser.error("--vps is required unless using --provision only.")
 
     NAO_IP = args.nao_ip
     NAO_PORT = args.nao_port
 
-    # Provisioning post-flash
+    # Apply post-flash provisioning if requested
     if args.provision:
         _provision(args.provision)
         if not args.vps:
             sys.exit(0)
 
-    # Valider et parser les modules demandés
+    # Validate and parse the requested module list
     if args.modules is not None:
         requested = set(m.strip().lower() for m in args.modules.split(",") if m.strip())
         unknown = requested - ALL_MODULES
         if unknown:
             parser.error(
-                "Module(s) inconnu(s) : {}. Modules valides : {}".format(
+                "Unknown module(s): {}. Valid modules: {}".format(
                     ", ".join(sorted(unknown)),
                     ", ".join(sorted(ALL_MODULES)),
                 )
             )
         active_modules = requested
     else:
-        active_modules = None  # tous
+        active_modules = None  # all modules
 
     bridge = NaoBridge(args.vps, modules=active_modules, audio_capture=args.audio_capture,
                        tts_method=args.tts_method)
     try:
         bridge.run()
     except KeyboardInterrupt:
-        print("\n[bridge] Ctrl+C reçu — arrêt propre en cours ...", file=sys.stderr)
+        print("\n[bridge] Ctrl+C received — shutting down ...", file=sys.stderr)
         bridge.stop()
-        print("[bridge] Arrêté.", file=sys.stderr)
+        print("[bridge] Stopped.", file=sys.stderr)
