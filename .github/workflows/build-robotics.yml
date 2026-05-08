@@ -1,12 +1,10 @@
 name: Build & Push — Images robotiques
 
-# Publie six images sur Docker Hub :
-#   monolithoid/naoqi-bridge       → Python 2.7 + qi SDK, HTTP/SSE bridge vers NAO
-#   monolithoid/naoqi-driver       → ROS2 Humble, /bodies/{id}/sensors|actuators/*
-#   monolithoid/cognitive-renderer → ROS2 Humble, /cognitive_state → LEDs + tête
-#   monolithoid/body-gateway       → ROS2 Humble, pont Bitterbot ↔ bus ROS2
-#   monolithoid/ros2-bridge        → ROS2 Humble + rosbridge_server WebSocket :9090
-#   monolithoid/motion-engine      → ROS2 Humble, arousal/valence → NAO joints @ 20 Hz
+# Publie quatre images sur Docker Hub :
+#   monolithoid/naoqi-bridge  → Python 3.12 Alpine, HTTP bridge Flask vers NAO
+#   monolithoid/nao-core      → ROS2 Humble, naoqi-driver + cognitive-renderer + motion-engine
+#   monolithoid/body-gateway  → ROS2 Humble, pont LLM ↔ bus ROS2
+#   monolithoid/ros2-bridge   → ROS2 Humble + rosbridge_server WebSocket :9090
 #
 # Secrets requis :
 #   DOCKERHUB_USERNAME : monolithoid
@@ -19,6 +17,7 @@ on:
     paths:
       - 'robotics/nao_brain/**'
       - 'robotics/motion_engine/**'
+      - 'robotics/nao_core/**'
       - '.github/workflows/build-robotics.yml'
 
   workflow_dispatch:
@@ -38,15 +37,10 @@ jobs:
             context: ./robotics/nao_brain/naoqi_bridge
             dockerfile: ./robotics/nao_brain/naoqi_bridge/Dockerfile
 
-          - name: naoqi-driver
-            image: monolithoid/naoqi-driver
-            context: ./robotics/nao_brain/naoqi_driver
-            dockerfile: ./robotics/nao_brain/naoqi_driver/Dockerfile
-
-          - name: cognitive-renderer
-            image: monolithoid/cognitive-renderer
-            context: ./robotics/nao_brain/cognitive_renderer
-            dockerfile: ./robotics/nao_brain/cognitive_renderer/Dockerfile
+          - name: nao-core
+            image: monolithoid/nao-core
+            context: ./robotics
+            dockerfile: ./robotics/nao_core/Dockerfile
 
           - name: body-gateway
             image: monolithoid/body-gateway
@@ -57,11 +51,6 @@ jobs:
             image: monolithoid/ros2-bridge
             context: ./robotics/nao_brain/ros2_bridge
             dockerfile: ./robotics/nao_brain/ros2_bridge/Dockerfile
-
-          - name: motion-engine
-            image: monolithoid/motion-engine
-            context: ./robotics/motion_engine
-            dockerfile: ./robotics/motion_engine/Dockerfile
 
     steps:
       - name: Checkout

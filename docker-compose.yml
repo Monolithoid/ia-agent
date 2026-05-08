@@ -263,35 +263,24 @@ services:
       - ai-network
       - robotics-net
 
-  naoqi-driver:
-    image: ${DOCKERHUB_USERNAME}/naoqi-driver:latest
-    container_name: naoqi-driver
+  nao-core:
+    image: ${DOCKERHUB_USERNAME}/nao-core:latest
+    container_name: nao-core
     restart: unless-stopped
     network_mode: host
     environment:
       - ROS_DOMAIN_ID=42
       - ROS_LOCALHOST_ONLY=1
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - PYTHONUNBUFFERED=1
       - ROBOT_ID=${NAO_ROBOT_ID:-nao_01}
+      - NAOQI_BRIDGE_URL=http://localhost:8090
       - WHISPER_URL=http://localhost:9000
       - LISTEN_DURATION=${LISTEN_DURATION:-4.0}
       - NAO_STATUS_TIMEOUT=${NAO_STATUS_TIMEOUT:-90}
       - TTS_VOICE=${TTS_VOICE:-fr-FR-DeniseNeural}
     depends_on:
       whisper-asr:
-        condition: service_started
-
-  cognitive-renderer:
-    image: ${DOCKERHUB_USERNAME}/cognitive-renderer:latest
-    container_name: cognitive-renderer
-    restart: unless-stopped
-    network_mode: host
-    environment:
-      - ROS_DOMAIN_ID=42
-      - ROS_LOCALHOST_ONLY=1
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-    depends_on:
-      naoqi-driver:
         condition: service_started
 
   body-gateway:
@@ -319,34 +308,14 @@ services:
       - WEBUI_PIPE_MODEL=${WEBUI_PIPE_MODEL:-nao_brain}
       - WEBUI_VOICE_CHAT_ID=${WEBUI_VOICE_CHAT_ID:-}
     depends_on:
-      naoqi-driver:
-        condition: service_started
-      cognitive-renderer:
-        condition: service_started
-
-  motion-engine:
-    image: ${DOCKERHUB_USERNAME}/motion-engine:latest
-    container_name: motion-engine
-    restart: unless-stopped
-    network_mode: host
-    environment:
-      - ROS_DOMAIN_ID=42
-      - ROS_LOCALHOST_ONLY=1
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-    depends_on:
-      naoqi-driver:
+      nao-core:
         condition: service_started
 
   # ----------------------------------------------------------
   # ROS 2 BRIDGE — WebSocket rosbridge pour le script NAO
   #
   # ros2-bridge tourne en network_mode: host pour partager le
-  # domaine DDS 42 avec les autres nœuds ROS2 (naoqi-driver, etc.)
-  #
-  # rosbridge-proxy (Caddy) est sur le réseau Docker pour que
-  # Traefik puisse le router :
-  #   wss://rosbridge.$DOMAIN → Traefik (TLS) → Caddy (port 80)
-  #                           → host-gateway:9090 (ros2-bridge)
+  # domaine DDS 42 avec les autres nœuds ROS2
   # ----------------------------------------------------------
   ros2-bridge:
     image: ${DOCKERHUB_USERNAME}/ros2-bridge:latest
