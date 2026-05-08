@@ -127,8 +127,8 @@ Réponds UNIQUEMENT en JSON strict :
 # LED colour map and motion presets
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Motor temperature → human-readable state injected into LLM context
-# Thresholds from NAO V5 spec; at ~78°C the firmware automatically limits stiffness.
+# Motor temperature → label injected alongside raw value in LLM context
+# Thresholds from NAO V5 spec; firmware hard-limits stiffness above ~78°C.
 _TEMP_THRESHOLDS = [
     (78, "critique"),
     (72, "très_chaud"),
@@ -136,11 +136,24 @@ _TEMP_THRESHOLDS = [
     (0,  "normal"),
 ]
 
+_BATTERY_THRESHOLDS = [
+    (10, "critique"),
+    (20, "faible"),
+    (50, "moyen"),
+    (0,  "ok"),
+]
+
 def _temp_label(celsius: int) -> str:
     for threshold, label in _TEMP_THRESHOLDS:
         if celsius >= threshold:
             return label
     return "normal"
+
+def _battery_label(pct: int) -> str:
+    for threshold, label in _BATTERY_THRESHOLDS:
+        if pct >= threshold:
+            return label
+    return "ok"
 
 
 _COLORS = {
@@ -262,18 +275,23 @@ class BodyGatewayNode(Node):
             pass
 
     def _build_context(self, body_id: str) -> str:
-        """One-liner injected before the user message so the LLM sees hardware state."""
+        """One-liner injected before the user message so the LLM sees hardware state.
+
+        Format: raw value first (for numerical reasoning), label in parens (as hint).
+        Example: [Moteurs: head=44°C(normal), larm=71°C(chaud)] [Batterie: 18%(faible)]
+        """
         parts = []
         temps = self._motor_temps.get(body_id, {})
         if temps:
             labels = ", ".join(
-                f"{grp}={_temp_label(t)}({t}°C)"
+                f"{grp}={t}°C({_temp_label(t)})"
                 for grp, t in sorted(temps.items())
             )
             parts.append(f"[Moteurs: {labels}]")
         battery = self._batteries.get(body_id, -1)
         if battery >= 0:
-            parts.append(f"[Batterie: {int(battery)}%]")
+            pct = int(battery)
+            parts.append(f"[Batterie: {pct}%({_battery_label(pct)})]")
         return " ".join(parts)
 
     def _user_content(self, body_id: str, user_input: str) -> str:
