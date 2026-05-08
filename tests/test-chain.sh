@@ -22,7 +22,7 @@
 #
 #   body-gateway → publie /bodies/nao_01/actuators/* (ROS2 DDS domain 42)
 #     ▼
-#   naoqi-driver  (host network, DDS 42)
+#   nao-core  (host network, DDS 42 — naoqi-driver + cognitive-renderer + motion-engine)
 #     │  POST http://localhost:8090/say|motion|leds|…
 #     ▼
 #   naoqi-bridge  (ai-network, port 127.0.0.1:8090 exposé sur le host)
@@ -91,7 +91,7 @@ echo -e "${YELLOW}╚═══════════════════�
 # ─────────────────────────────────────────────────────────────────────────────
 _head 0 "Conteneurs Docker"
 
-for svc in open-webui chat-relay body-gateway naoqi-bridge naoqi-driver; do
+for svc in open-webui chat-relay body-gateway naoqi-bridge nao-core; do
     cname=$(_container "$svc")
     if [ -n "$cname" ]; then
         _pass "service $svc : running  (→ $cname)"
@@ -101,7 +101,7 @@ for svc in open-webui chat-relay body-gateway naoqi-bridge naoqi-driver; do
 done
 
 # Optionnel (ne bloque pas les tests suivants)
-for svc in ollama chromadb n8n whisper-asr cognitive-renderer ros2-bridge; do
+for svc in ollama chromadb n8n whisper-asr ros2-bridge; do
     cname=$(_container "$svc")
     if [ -n "$cname" ]; then
         _pass "service $svc : running  (→ $cname)"
@@ -205,27 +205,33 @@ _head 4 "body-gateway → ROS2 DDS domain 42"
 
 echo -e "  ${BLUE}→${NC} Vérifie que les topics ROS2 sont publiés"
 
-_C_DRIVER=$(_container naoqi-driver)
-if [ -n "$_C_DRIVER" ]; then
-    _check "ros2 topic list donne /cognitive_state et /bodies/* (→ $_C_DRIVER)" \
-        "docker exec $_C_DRIVER bash -c \
+_C_CORE=$(_container nao-core)
+if [ -n "$_C_CORE" ]; then
+    _check "ros2 topic list donne /cognitive_state et /bodies/* (→ $_C_CORE)" \
+        "docker exec $_C_CORE bash -c \
          'source /opt/ros/humble/setup.bash && ROS_DOMAIN_ID=42 \
           timeout 5 ros2 topic list 2>/dev/null' \
          | grep -E '/cognitive_state|/bodies'"
 
     _check "/cognitive_state a un publisher actif" \
-        "docker exec $_C_DRIVER bash -c \
+        "docker exec $_C_CORE bash -c \
          'source /opt/ros/humble/setup.bash && ROS_DOMAIN_ID=42 \
           timeout 5 ros2 topic info /cognitive_state 2>/dev/null' \
          | grep -i 'publisher'"
+
+    _check "/motion_engine/command souscrit par motion-engine" \
+        "docker exec $_C_CORE bash -c \
+         'source /opt/ros/humble/setup.bash && ROS_DOMAIN_ID=42 \
+          timeout 5 ros2 topic info /motion_engine/command 2>/dev/null' \
+         | grep -i 'subscription'"
 else
-    _skip "naoqi-driver non disponible — test ROS2 ignoré"
+    _skip "nao-core non disponible — test ROS2 ignoré"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MAILLON 5 — naoqi-driver → naoqi-bridge (localhost:8090)
+# MAILLON 5 — nao-core → naoqi-bridge (localhost:8090)
 # ─────────────────────────────────────────────────────────────────────────────
-_head 5 "naoqi-driver → naoqi-bridge (localhost:8090)"
+_head 5 "nao-core → naoqi-bridge (localhost:8090)"
 
 echo -e "  ${BLUE}→${NC} naoqi-bridge est exposé sur 127.0.0.1:8090 côté host"
 
