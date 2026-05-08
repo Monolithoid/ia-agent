@@ -78,9 +78,9 @@ class MotionEngineNode(Node):
         # Last angles sent to the robot (used for rate-limiting and ambivalence)
         self._current_angles: dict[JointName, float] = {}
 
-        self.get_logger().info(
-            f"motion_engine démarré — {_TOPIC_IN} → {_TOPIC_OUT} @ {TICK_RATE_HZ:.0f} Hz"
-        )
+        msg = f"motion_engine démarré — {_TOPIC_IN} → {_TOPIC_OUT} @ {TICK_RATE_HZ:.0f} Hz"
+        print(msg, flush=True)
+        self.get_logger().info(msg)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Subscription callback
@@ -260,4 +260,7 @@ def main(args: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
+    import sys
+    print("motion_engine: démarrage…", flush=True)
     main()
+    print("motion_engine: arrêt.", flush=True)
