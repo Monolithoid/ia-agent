@@ -175,8 +175,8 @@ _COLORS = {
 }
 
 _MOTION_PRESETS = {
-    "wave": {"joint": "RShoulderPitch", "angle": -1.0, "speed": 0.35},
-    "bow":  {"joint": "HeadPitch",      "angle":  0.5, "speed": 0.20},
+    "wave": {"joints": ["LShoulderPitch", "RShoulderPitch"], "angles": [-1.0, -1.0], "speed": 0.35},
+    "bow":  {"joint": "HeadPitch",                           "angle":   0.5,         "speed": 0.20},
 }
 
 
