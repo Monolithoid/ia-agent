@@ -179,6 +179,52 @@ _MOTION_PRESETS = {
     "bow":  {"joint": "HeadPitch",      "angle":  0.5, "speed": 0.20},
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Emotion → motion_engine command mapping
+# Allows the existing categorical LLM output to drive the motion_engine.
+# A full arousal/valence payload can also be injected directly via the
+# /motion-command HTTP endpoint (bypasses Ollama entirely).
+# ─────────────────────────────────────────────────────────────────────────────
+
+_EMOTION_TO_MOTION: dict = {
+    "curious": {
+        "arousal": 0.55, "valence": 0.35,
+        "vertical_split": 0.25, "lateral_bias": 0.0,
+        "motion": {
+            "pattern": "drift",
+            "joints": ["HeadYaw", "HeadPitch"],
+            "intensity": 0.4, "cycles": 2,
+        },
+    },
+    "excited": {
+        "arousal": 0.85, "valence": 0.80,
+        "vertical_split": 0.10, "lateral_bias": 0.0,
+        "motion": {
+            "pattern": "oscillate",
+            "joints": ["LShoulderPitch", "RShoulderPitch"],
+            "intensity": 0.70, "cycles": 3,
+        },
+    },
+    "neutral": {
+        "arousal": 0.30, "valence": 0.00,
+        "vertical_split": 0.00, "lateral_bias": 0.0,
+        "motion": {
+            "pattern": "settle",
+            "joints": [],
+            "intensity": 0.30, "cycles": 1,
+        },
+    },
+    "uncertain": {
+        "arousal": 0.45, "valence": -0.25,
+        "vertical_split": 0.00, "lateral_bias": 0.0,
+        "motion": {
+            "pattern": "tremor",
+            "joints": ["HeadYaw", "HeadPitch"],
+            "intensity": 0.35, "cycles": 2,
+        },
+    },
+}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ROS 2 node
@@ -199,9 +245,10 @@ class BodyGatewayNode(Node):
         self._voice_queue: collections.deque = collections.deque(maxlen=20)
         self._voice_queue_lock = threading.Lock()
 
-        self.pub_cognitive = self.create_publisher(String, "/cognitive_state", 10)
-        self.pub_emotion   = self.create_publisher(String, "/emotion_state",   10)
-        self.pub_energy    = self.create_publisher(String, "/energy_state",    10)
+        self.pub_cognitive  = self.create_publisher(String, "/cognitive_state",     10)
+        self.pub_emotion    = self.create_publisher(String, "/emotion_state",       10)
+        self.pub_energy     = self.create_publisher(String, "/energy_state",        10)
+        self.pub_motion_cmd = self.create_publisher(String, "/motion_engine/command", 10)
 
         self._pub_say:     dict[str, object] = {}
         self._pub_motion:  dict[str, object] = {}
@@ -477,6 +524,8 @@ class BodyGatewayNode(Node):
                     self._handle_chat()
                 elif self.path == "/say":
                     self._handle_say()
+                elif self.path == "/motion-command":
+                    self._handle_motion_command()
                 else:
                     self.send_response(404)
                     self.end_headers()
@@ -497,6 +546,28 @@ class BodyGatewayNode(Node):
 
                 result = node._infer_sync(robot_id, text)
                 self._json(200, result)
+
+            def _handle_motion_command(self):
+                """Direct injection of a full arousal/valence payload.
+
+                POST /motion-command
+                Body: {
+                  "arousal": 0.85, "valence": 0.9,
+                  "vertical_split": 0.2, "lateral_bias": 0.1,
+                  "motion": {"pattern": "oscillate", "joints": [...],
+                              "intensity": 0.8, "cycles": 4}
+                }
+                Published as-is to /motion_engine/command.
+                """
+                body = self._read_json()
+                if body is None:
+                    return
+                required = {"arousal", "valence"}
+                if not required.issubset(body):
+                    self._json(400, {"error": f"missing fields: {required - body.keys()}"})
+                    return
+                node._publish_motion_command(body)
+                self._json(200, {"ok": True})
 
             def _handle_say(self):
                 """Direct TTS: publish text on ROS 2 without going through Ollama."""
@@ -546,7 +617,8 @@ class BodyGatewayNode(Node):
         server = HTTPServer(("0.0.0.0", CHAT_PORT), _Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.get_logger().info(
-            f"HTTP démarré → :{CHAT_PORT}/ping  :{CHAT_PORT}/chat  :{CHAT_PORT}/say  :{CHAT_PORT}/voice-pop"
+            f"HTTP démarré → :{CHAT_PORT}/ping  :{CHAT_PORT}/chat  :{CHAT_PORT}/say"
+            f"  :{CHAT_PORT}/voice-pop  :{CHAT_PORT}/motion-command"
         )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -827,6 +899,16 @@ class BodyGatewayNode(Node):
         msg = String()
         msg.data = emotion
         self.pub_emotion.publish(msg)
+        # Forward a motion command derived from the categorical emotion
+        motion_payload = _EMOTION_TO_MOTION.get(emotion.lower())
+        if motion_payload:
+            self._publish_motion_command(motion_payload)
+
+    def _publish_motion_command(self, payload: dict):
+        """Publish a full emotion-motion JSON to /motion_engine/command."""
+        msg = String()
+        msg.data = json.dumps(payload)
+        self.pub_motion_cmd.publish(msg)
 
     def _publish_energy(self, energy: str):
         _valid = {"very-low", "low", "medium", "high", "very-high"}
