@@ -9,6 +9,7 @@ Exposes:
   POST /posture          {"posture": "Stand", "speed": 0.5}
   POST /move             {"x": 0.0, "y": 0.0, "theta": 0.0}
   POST /move/stop
+  POST /stiffness        {"groups": ["head","larm","rarm"], "value": 1.0}
   GET  /battery          → {"level": 85}
   GET  /events           → Server-Sent Events stream (sonar, bumper, battery)
   GET  /health           → {"ok": true, "connected": true/false}
@@ -456,6 +457,50 @@ def move():
     else:
         print("[MOCK] move: x={} y={} theta={}".format(x, y, theta), file=sys.stderr)
 
+    return jsonify({"ok": True})
+
+
+_NAOQI_GROUP = {
+    "head": "Head",
+    "larm": "LArm",
+    "rarm": "RArm",
+    "legs": "Legs",
+}
+
+
+@app.route("/stiffness", methods=["POST"])
+def stiffness():
+    data   = request.json or {}
+    groups = data.get("groups", [])
+    value  = float(data.get("value", 0.0))
+
+    if not isinstance(groups, list):
+        return jsonify({"error": "groups must be a list"}), 400
+
+    errors = []
+    for grp in groups:
+        naoqi_group = _NAOQI_GROUP.get(str(grp).lower())
+        if not naoqi_group:
+            errors.append("unknown group: {}".format(grp))
+            continue
+        if _motion:
+            try:
+                _motion.setStiffnesses(naoqi_group, value)
+            except Exception as e:
+                _disconnect()
+                return jsonify({"error": str(e)}), 500
+        elif _is_nao_connected():
+            payload = json.dumps({"groups": [str(grp).lower()], "value": value})
+            if not _rosbridge_publish(
+                "/nao/stiffness", "std_msgs/String", {"data": payload}
+            ):
+                return jsonify({"error": "rosbridge unreachable"}), 503
+        else:
+            print("[MOCK] stiffness: {} ({}) -> {}".format(grp, naoqi_group, value),
+                  file=sys.stderr)
+
+    if errors:
+        return jsonify({"ok": True, "warnings": errors})
     return jsonify({"ok": True})
 
 

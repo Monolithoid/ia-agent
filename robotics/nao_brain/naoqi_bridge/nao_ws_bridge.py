@@ -77,12 +77,42 @@ _MODULE_TOPICS = {
     "move":      ("/nao/cmd_vel",    "geometry_msgs/Twist"),
     "stop":      ("/nao/stop",       "std_msgs/Empty"),
     "audio_out": ("/nao/audio_out",  "std_msgs/String"),
+    "stiffness": ("/nao/stiffness",  "std_msgs/String"),
 }
 # System topics always subscribed regardless of module filtering
 _SYSTEM_TOPICS = [
     ("/nao/shutdown", "std_msgs/Empty"),
 ]
 ALL_MODULES = frozenset(_MODULE_TOPICS.keys())
+
+# ── Stiffness groups ──────────────────────────────────────────────────────────
+# NAOqi group name used in ALMotion.setStiffnesses()
+_NAOQI_GROUP = {
+    "head": "Head",
+    "larm": "LArm",
+    "rarm": "RArm",
+    "legs": "Legs",
+}
+# Reverse mapping: individual joint → group key (used to auto-detect group)
+_JOINT_TO_GROUP = {}
+for _g, _naoqi in _NAOQI_GROUP.items():
+    if _naoqi == "Head":
+        for _j in ("HeadYaw", "HeadPitch"):
+            _JOINT_TO_GROUP[_j] = _g
+    elif _naoqi == "LArm":
+        for _j in ("LShoulderPitch", "LShoulderRoll", "LElbowYaw", "LElbowRoll",
+                   "LWristYaw", "LHand"):
+            _JOINT_TO_GROUP[_j] = _g
+    elif _naoqi == "RArm":
+        for _j in ("RShoulderPitch", "RShoulderRoll", "RElbowYaw", "RElbowRoll",
+                   "RWristYaw", "RHand"):
+            _JOINT_TO_GROUP[_j] = _g
+    elif _naoqi == "Legs":
+        for _j in ("LHipYawPitch", "LHipRoll", "LHipPitch", "LKneePitch",
+                   "LAnklePitch", "LAnkleRoll",
+                   "RHipYawPitch", "RHipRoll", "RHipPitch", "RKneePitch",
+                   "RAnklePitch", "RAnkleRoll"):
+            _JOINT_TO_GROUP[_j] = _g
 
 _BROKER      = None  # ALBroker instance — must stay alive for NAOqi callbacks
 _CAPTURE_REF = None  # strong ref to active _AudioCapture, prevents GC during recording
@@ -521,6 +551,9 @@ class NaoBridge(object):
         self._wakeword_started = False   # prevents relaunching the wake-word thread on reconnect
         self._asr = None                 # ASR proxy kept alive for unsubscribe on shutdown
         self._audio_capture = None       # active _AudioCapture instance during VAD recording
+        # Groups whose stiffness has been explicitly enabled (others are skipped for motion)
+        self._stiffness_enabled = set()
+        self._stiffness_lock = threading.Lock()
 
     def _get_tts_method(self):
         if self._tts_method_override != "auto":
@@ -694,11 +727,27 @@ class NaoBridge(object):
                 payload = json.loads(data.get("data", "{}"))
             except ValueError:
                 return
-            self._motion_joint(
-                str(payload.get("joint", "HeadYaw")),
-                float(payload.get("angle", 0.0)),
-                float(payload.get("speed", 0.05)),
-            )
+            if "joints" in payload:
+                self._motion_joints(
+                    [str(j) for j in payload["joints"]],
+                    [float(a) for a in payload["angles"]],
+                    float(payload.get("speed", 0.05)),
+                )
+            else:
+                self._motion_joint(
+                    str(payload.get("joint", "HeadYaw")),
+                    float(payload.get("angle", 0.0)),
+                    float(payload.get("speed", 0.05)),
+                )
+        elif topic == "/nao/stiffness" and "stiffness" in self._modules:
+            try:
+                payload = json.loads(data.get("data", "{}"))
+            except ValueError:
+                return
+            groups = payload.get("groups", [])
+            value  = float(payload.get("value", 0.0))
+            if isinstance(groups, list):
+                self._set_stiffness(groups, value)
 
     # ------------------------------------------------------------------
     # NAOqi command implementations
@@ -787,8 +836,43 @@ class NaoBridge(object):
             except Exception as e:
                 print("[bridge] stop error: {}".format(e), file=sys.stderr)
 
+    def _set_stiffness(self, groups, value):
+        """Enable or disable stiffness for the given group keys (head/larm/rarm/legs)."""
+        with self._stiffness_lock:
+            for grp in groups:
+                grp = grp.lower()
+                naoqi_group = _NAOQI_GROUP.get(grp)
+                if not naoqi_group:
+                    print("[bridge] stiffness: groupe inconnu '{}'".format(grp), file=sys.stderr)
+                    continue
+                if value > 0.0:
+                    self._stiffness_enabled.add(grp)
+                else:
+                    self._stiffness_enabled.discard(grp)
+                if not HAS_NAOQI:
+                    print("[MOCK] stiffness: {} ({}) -> {}".format(grp, naoqi_group, value),
+                          file=sys.stderr)
+                    continue
+                proxy = get_proxy("ALMotion")
+                if proxy:
+                    try:
+                        proxy.setStiffnesses(naoqi_group, value)
+                    except Exception as e:
+                        print("[bridge] stiffness error {}: {}".format(grp, e), file=sys.stderr)
+
     def _motion_joint(self, joint, angle, speed):
-        """Move a single joint to the given angle (radians) at the given speed fraction."""
+        """Move a single joint to the given angle (radians) at the given speed fraction.
+
+        Skipped silently when the joint's group stiffness has not been enabled.
+        """
+        grp = _JOINT_TO_GROUP.get(joint, "head")
+        with self._stiffness_lock:
+            enabled = grp in self._stiffness_enabled
+        if not enabled:
+            if not HAS_NAOQI:
+                print("[MOCK] motion_joint skipped (stiffness off): {}".format(joint),
+                      file=sys.stderr)
+            return
         if not HAS_NAOQI:
             print("[MOCK] motion_joint: {} -> {:.3f} rad speed={}".format(joint, angle, speed),
                   file=sys.stderr)
@@ -796,11 +880,37 @@ class NaoBridge(object):
         proxy = get_proxy("ALMotion")
         if proxy:
             try:
-                # Stiffness must be set before commanding joint position
-                proxy.setStiffnesses("Head", 1.0)
+                proxy.setStiffnesses(_NAOQI_GROUP[grp], 1.0)
                 proxy.angleInterpolationWithSpeed([joint], [angle], speed, True)
             except Exception as e:
                 print("[bridge] motion_joint error: {}".format(e), file=sys.stderr)
+
+    def _motion_joints(self, joints, angles, speed):
+        """Move multiple joints simultaneously; all joints must share enabled groups."""
+        if not joints:
+            return
+        # Determine which groups need to be active and check they're all enabled
+        grps_needed = set(_JOINT_TO_GROUP.get(j, "head") for j in joints)
+        with self._stiffness_lock:
+            disabled = grps_needed - self._stiffness_enabled
+        if disabled:
+            if not HAS_NAOQI:
+                print("[MOCK] motion_joints skipped (stiffness off): {}".format(
+                    list(disabled)), file=sys.stderr)
+            return
+        if not HAS_NAOQI:
+            for j, a in zip(joints, angles):
+                print("[MOCK] motion_joint: {} -> {:.3f} rad speed={}".format(j, a, speed),
+                      file=sys.stderr)
+            return
+        proxy = get_proxy("ALMotion")
+        if proxy:
+            try:
+                for grp in grps_needed:
+                    proxy.setStiffnesses(_NAOQI_GROUP[grp], 1.0)
+                proxy.angleInterpolationWithSpeed(joints, angles, speed, True)
+            except Exception as e:
+                print("[bridge] motion_joints error: {}".format(e), file=sys.stderr)
 
     # ------------------------------------------------------------------
     # Wake word detection → audio recording → publish /nao/audio
