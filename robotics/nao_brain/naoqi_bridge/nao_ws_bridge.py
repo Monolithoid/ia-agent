@@ -284,23 +284,49 @@ def _provision(config_path):
     print("[provision] Application de {} ...".format(config_path), file=sys.stderr)
     ok = True
 
-    # -- WiFi ----------------------------------------------------------
-    for ap in config.get("wifi", []):
-        ssid       = ap.get("ssid", "").strip()
-        passphrase = ap.get("passphrase", "")
-        security   = str(ap.get("security", "wpa2-personal"))
-        if not ssid:
-            continue
-        proxy = get_proxy("ALNetwork")
-        if proxy:
+    # -- WiFi (via connman config files) -----------------------------------
+    # NAO OS utilise connman comme gestionnaire réseau. Écrire un fichier
+    # dans /var/lib/connman/ est la méthode fiable indépendante de la version
+    # NAOqi (ALNetwork n'existe pas, ALConnectionManager nécessite un scan).
+    _CONNMAN_DIR = "/var/lib/connman"
+    _SECURITY_MAP = {
+        "wpa2-personal": "psk",
+        "wpa-personal":  "psk",
+        "wep":           "wep",
+        "open":          "none",
+    }
+    wifi_list = config.get("wifi", [])
+    if wifi_list and not os.path.isdir(_CONNMAN_DIR):
+        print("[provision] {} introuvable — WiFi ignoré (pas NAO OS ?).".format(
+            _CONNMAN_DIR), file=sys.stderr)
+    else:
+        for ap in wifi_list:
+            ssid       = ap.get("ssid", "").strip()
+            passphrase = ap.get("passphrase", "")
+            security   = str(ap.get("security", "wpa2-personal"))
+            if not ssid:
+                continue
+            connman_sec = _SECURITY_MAP.get(security, "psk")
+            # Identifiant de service connman : caractères non alphanum → underscore
+            safe_id = "".join(c if c.isalnum() else "_" for c in ssid)
+            cfg_path = os.path.join(_CONNMAN_DIR, "nao_provision_{}.config".format(safe_id))
+            lines = [
+                "[service_{}]".format(safe_id),
+                "Type = wifi",
+                "Name = {}".format(ssid),
+                "Security = {}".format(connman_sec),
+            ]
+            if connman_sec != "none":
+                lines.append("Passphrase = {}".format(passphrase))
             try:
-                proxy.joinWifiNetwork(ssid, security, passphrase)
-                print("[provision] WiFi '{}' configuré.".format(ssid), file=sys.stderr)
+                with open(cfg_path, "w") as f:
+                    f.write("\n".join(lines) + "\n")
+                os.chmod(cfg_path, 0o600)
+                print("[provision] WiFi '{}' -> {}.".format(ssid, cfg_path), file=sys.stderr)
             except Exception as e:
-                print("[provision] WiFi '{}' erreur : {}".format(ssid, e), file=sys.stderr)
+                print("[provision] WiFi '{}' erreur écriture config : {}".format(ssid, e),
+                      file=sys.stderr)
                 ok = False
-        else:
-            print("[provision] ALNetwork indisponible — WiFi ignoré.", file=sys.stderr)
 
     # -- Vie autonome --------------------------------------------------
     al_cfg = config.get("autonomous_life", {})
