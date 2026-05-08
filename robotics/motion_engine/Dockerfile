@@ -2,7 +2,8 @@ FROM ros:humble-ros-base
 
 ENV DEBIAN_FRONTEND=noninteractive \
     ROS_DOMAIN_ID=42 \
-    RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
+    PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-numpy \
@@ -16,4 +17,4 @@ WORKDIR /ros2_ws
 COPY motion_engine/ ./motion_engine/
 
 CMD ["/bin/bash", "-c", \
-     "source /opt/ros/humble/setup.bash && python3 -m motion_engine.node"]
+     "source /opt/ros/humble/setup.bash && python3 -u -m motion_engine.node"]
