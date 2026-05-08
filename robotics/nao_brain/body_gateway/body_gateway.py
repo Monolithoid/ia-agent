@@ -66,7 +66,7 @@ from std_msgs.msg import Bool, Float32, String
 # ─────────────────────────────────────────────────────────────────────────────
 
 BRAIN_URL   = os.environ.get("BRAIN_URL",   "http://localhost:11434")
-BRAIN_MODEL = os.environ.get("BRAIN_MODEL", "qwen2.5:7b")
+BRAIN_MODEL = os.environ.get("BRAIN_MODEL", "qwen3:1.7b")
 BRAIN_API_KEY = os.environ.get("BRAIN_API_KEY", "")
 BODY_REGISTRY = [
     b.strip()
