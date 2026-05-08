@@ -85,6 +85,16 @@ _SYSTEM_TOPICS = [
 ]
 ALL_MODULES = frozenset(_MODULE_TOPICS.keys())
 
+# ── Motor temperature sampling ────────────────────────────────────────────────
+# One representative joint per group — enough to detect heat without spamming ALMemory.
+# We take the hottest joint in each group (max), which is the most relevant for safety.
+_TEMP_JOINTS = {
+    "head": ["HeadYaw", "HeadPitch"],
+    "larm": ["LShoulderPitch", "LElbowRoll"],
+    "rarm": ["RShoulderPitch", "RElbowRoll"],
+}
+_TEMP_KEY = "Device/SubDeviceList/{}/Temperature/Sensor/Value"
+
 # ── Stiffness groups ──────────────────────────────────────────────────────────
 # NAOqi group name used in ALMotion.setStiffnesses()
 _NAOQI_GROUP = {
@@ -1034,6 +1044,27 @@ class NaoBridge(object):
     # Status publisher — battery level heartbeat every STATUS_INTERVAL s
     # ------------------------------------------------------------------
 
+    def _read_motor_temps(self):
+        """Return max temperature (°C, int) per group via ALMemory, or {} in mock mode."""
+        if not HAS_NAOQI:
+            return {}
+        memory = get_proxy("ALMemory")
+        if not memory:
+            return {}
+        temps = {}
+        for grp, joints in _TEMP_JOINTS.items():
+            readings = []
+            for j in joints:
+                try:
+                    val = memory.getData(_TEMP_KEY.format(j))
+                    if val is not None:
+                        readings.append(float(val))
+                except Exception:
+                    pass
+            if readings:
+                temps[grp] = int(max(readings))
+        return temps
+
     def _status_loop(self):
         while not self._stop.is_set() and self.ws:
             level = -1
@@ -1044,7 +1075,8 @@ class NaoBridge(object):
                         level = proxy.getBatteryCharge()
                     except Exception:
                         pass
-            payload = json.dumps({"battery": level})
+            motor_temp = self._read_motor_temps()
+            payload = json.dumps({"battery": level, "motor_temp": motor_temp})
             try:
                 self._send({
                     "op": "publish",

@@ -20,7 +20,8 @@ Command flow (brain → NAO):
   /naoqi/stiffness               → /nao/stiffness (from cognitive_renderer via energy_state)
 
 Sensor flow (NAO → brain):
-  /nao/status  → /bodies/{id}/sensors/battery  (battery level + connection heartbeat)
+  /nao/status  → /bodies/{id}/sensors/battery    (battery level + connection heartbeat)
+               → /bodies/{id}/sensors/motor_temp (motor temperatures JSON, when present)
   /nao/audio   → Whisper STT → /bodies/{id}/sensors/speech
 
 Environment variables:
@@ -62,11 +63,12 @@ class NAOqiDriverNode(Node):
         self._connected = False
 
         # ── Publishers: NAO sensors → ROS 2 ──────────────────────────────────
-        self.pub_speech  = self.create_publisher(String,  f"{ns}/sensors/speech",  10)
-        self.pub_battery = self.create_publisher(Float32, f"{ns}/sensors/battery", 10)
-        self.pub_bumper  = self.create_publisher(Bool,    f"{ns}/sensors/bumper",  10)
-        self.pub_sonar   = self.create_publisher(Range,   f"{ns}/sensors/sonar",   10)
-        self.pub_connected = self.create_publisher(Bool,  f"{ns}/connected",       10)
+        self.pub_speech     = self.create_publisher(String,  f"{ns}/sensors/speech",     10)
+        self.pub_battery    = self.create_publisher(Float32, f"{ns}/sensors/battery",    10)
+        self.pub_motor_temp = self.create_publisher(String,  f"{ns}/sensors/motor_temp", 10)
+        self.pub_bumper     = self.create_publisher(Bool,    f"{ns}/sensors/bumper",     10)
+        self.pub_sonar      = self.create_publisher(Range,   f"{ns}/sensors/sonar",      10)
+        self.pub_connected  = self.create_publisher(Bool,    f"{ns}/connected",          10)
 
         # ── Publishers: commands → NAO (via rosbridge → nao_ws_bridge) ───────
         self.pub_nao_speech     = self.create_publisher(String, "/nao/speech",     10)
@@ -127,6 +129,11 @@ class NAOqiDriverNode(Node):
             bat = Float32()
             bat.data = level
             self.pub_battery.publish(bat)
+            temps = data.get("motor_temp")
+            if temps:
+                out = String()
+                out.data = json.dumps(temps)
+                self.pub_motor_temp.publish(out)
         except (json.JSONDecodeError, ValueError):
             pass
         if not self._connected:

@@ -127,6 +127,22 @@ Réponds UNIQUEMENT en JSON strict :
 # LED colour map and motion presets
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Motor temperature → human-readable state injected into LLM context
+# Thresholds from NAO V5 spec; at ~78°C the firmware automatically limits stiffness.
+_TEMP_THRESHOLDS = [
+    (78, "critique"),
+    (72, "très_chaud"),
+    (65, "chaud"),
+    (0,  "normal"),
+]
+
+def _temp_label(celsius: int) -> str:
+    for threshold, label in _TEMP_THRESHOLDS:
+        if celsius >= threshold:
+            return label
+    return "normal"
+
+
 _COLORS = {
     "blue":   (0.00, 0.00, 1.00),
     "green":  (0.00, 1.00, 0.00),
@@ -154,6 +170,7 @@ class BodyGatewayNode(Node):
 
         self._state = "IDLE"
         self._batteries: dict[str, float] = {b: 100.0 for b in BODY_REGISTRY}
+        self._motor_temps: dict[str, dict] = {}
         self._infer_lock = threading.Lock()
         self._running = True
 
@@ -225,6 +242,10 @@ class BodyGatewayNode(Node):
             Bool, f"{ns}/connected",
             lambda msg, bid=body_id: self._on_body_connected(bid, msg), 10
         )
+        self.create_subscription(
+            String, f"{ns}/sensors/motor_temp",
+            lambda msg, bid=body_id: self._on_motor_temp(bid, msg), 10
+        )
         self.get_logger().info(f"Corps enregistré : {body_id}")
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -233,6 +254,33 @@ class BodyGatewayNode(Node):
 
     def _on_battery(self, body_id: str, msg: Float32):
         self._batteries[body_id] = msg.data
+
+    def _on_motor_temp(self, body_id: str, msg: String):
+        try:
+            self._motor_temps[body_id] = json.loads(msg.data)
+        except json.JSONDecodeError:
+            pass
+
+    def _build_context(self, body_id: str) -> str:
+        """One-liner injected before the user message so the LLM sees hardware state."""
+        parts = []
+        temps = self._motor_temps.get(body_id, {})
+        if temps:
+            labels = ", ".join(
+                f"{grp}={_temp_label(t)}({t}°C)"
+                for grp, t in sorted(temps.items())
+            )
+            parts.append(f"[Moteurs: {labels}]")
+        battery = self._batteries.get(body_id, -1)
+        if battery >= 0:
+            parts.append(f"[Batterie: {int(battery)}%]")
+        return " ".join(parts)
+
+    def _user_content(self, body_id: str, user_input: str) -> str:
+        ctx = self._build_context(body_id)
+        if ctx:
+            return f"{ctx}\n[{body_id}] {user_input}"
+        return f"[{body_id}] {user_input}"
 
     def _on_body_connected(self, body_id: str, msg: Bool):
         prev = self._body_connected.get(body_id, False)
@@ -287,7 +335,7 @@ class BodyGatewayNode(Node):
             raw = self._ollama_chat(
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": f"[{body_id}] {user_input}"},
+                    {"role": "user",   "content": self._user_content(body_id, user_input)},
                 ],
                 temperature=0.7,
             )
@@ -508,7 +556,7 @@ class BodyGatewayNode(Node):
             raw = self._ollama_chat(
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": f"[{body_id}] {user_input}"},
+                    {"role": "user",   "content": self._user_content(body_id, user_input)},
                 ],
                 temperature=0.7,
             )
@@ -567,7 +615,7 @@ class BodyGatewayNode(Node):
             raw = self._ollama_chat(
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": f"[{body_id}] {user_input}"},
+                    {"role": "user",   "content": self._user_content(body_id, user_input)},
                 ],
                 temperature=0.5 if is_dream else 0.7,
             )
