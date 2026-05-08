@@ -284,50 +284,6 @@ def _provision(config_path):
     print("[provision] Application de {} ...".format(config_path), file=sys.stderr)
     ok = True
 
-    # -- WiFi (via connman config files) -----------------------------------
-    # NAO OS utilise connman comme gestionnaire réseau. Écrire un fichier
-    # dans /var/lib/connman/ est la méthode fiable indépendante de la version
-    # NAOqi (ALNetwork n'existe pas, ALConnectionManager nécessite un scan).
-    _CONNMAN_DIR = "/var/lib/connman"
-    _SECURITY_MAP = {
-        "wpa2-personal": "psk",
-        "wpa-personal":  "psk",
-        "wep":           "wep",
-        "open":          "none",
-    }
-    wifi_list = config.get("wifi", [])
-    if wifi_list and not os.path.isdir(_CONNMAN_DIR):
-        print("[provision] {} introuvable — WiFi ignoré (pas NAO OS ?).".format(
-            _CONNMAN_DIR), file=sys.stderr)
-    else:
-        for ap in wifi_list:
-            ssid       = ap.get("ssid", "").strip()
-            passphrase = ap.get("passphrase", "")
-            security   = str(ap.get("security", "wpa2-personal"))
-            if not ssid:
-                continue
-            connman_sec = _SECURITY_MAP.get(security, "psk")
-            # Identifiant de service connman : caractères non alphanum → underscore
-            safe_id = "".join(c if c.isalnum() else "_" for c in ssid)
-            cfg_path = os.path.join(_CONNMAN_DIR, "nao_provision_{}.config".format(safe_id))
-            lines = [
-                "[service_{}]".format(safe_id),
-                "Type = wifi",
-                "Name = {}".format(ssid),
-                "Security = {}".format(connman_sec),
-            ]
-            if connman_sec != "none":
-                lines.append("Passphrase = {}".format(passphrase))
-            try:
-                with open(cfg_path, "w") as f:
-                    f.write("\n".join(lines) + "\n")
-                os.chmod(cfg_path, 0o600)
-                print("[provision] WiFi '{}' -> {}.".format(ssid, cfg_path), file=sys.stderr)
-            except Exception as e:
-                print("[provision] WiFi '{}' erreur écriture config : {}".format(ssid, e),
-                      file=sys.stderr)
-                ok = False
-
     # -- Vie autonome --------------------------------------------------
     al_cfg = config.get("autonomous_life", {})
     if "state" in al_cfg:
@@ -347,34 +303,57 @@ def _provision(config_path):
                     ok = False
 
     # -- Langues -------------------------------------------------------
+    # Les paquets .pkg sont copiés dans /tmp (seul espace disponible).
+    # On les installe via ALPackageManager avant de sélectionner la langue.
     lang_cfg = config.get("language", {})
-    if "tts" in lang_cfg:
-        lang = str(lang_cfg["tts"])
-        proxy = get_proxy("ALTextToSpeech")
-        if proxy:
-            try:
-                available = proxy.getAvailableLanguages()
-                if lang in available:
-                    proxy.setLanguage(lang)
-                    print("[provision] TTS langue -> '{}'.".format(lang), file=sys.stderr)
-                else:
-                    print("[provision] TTS : langue '{}' non disponible (disponibles : {}).".format(
-                        lang, ", ".join(available)), file=sys.stderr)
-                    ok = False
-            except Exception as e:
-                print("[provision] TTS erreur : {}".format(e), file=sys.stderr)
+    if lang_cfg:
+        import glob as _glob
+        pkg_manager = get_proxy("ALPackageManager")
+        pkgs = sorted(_glob.glob("/tmp/*.pkg"))
+        if pkgs:
+            if not pkg_manager:
+                print("[provision] ALPackageManager indisponible — paquets ignorés.", file=sys.stderr)
                 ok = False
+            else:
+                for pkg_path in pkgs:
+                    try:
+                        pkg_manager.install(pkg_path)
+                        print("[provision] Paquet installé : {}.".format(
+                            os.path.basename(pkg_path)), file=sys.stderr)
+                    except Exception as e:
+                        print("[provision] Erreur installation {} : {}.".format(
+                            os.path.basename(pkg_path), e), file=sys.stderr)
+                        ok = False
+        else:
+            print("[provision] Aucun paquet .pkg trouvé dans /tmp.", file=sys.stderr)
 
-    if "asr" in lang_cfg:
-        lang = str(lang_cfg["asr"])
-        proxy = get_proxy("ALSpeechRecognition")
-        if proxy:
-            try:
-                proxy.setLanguage(lang)
-                print("[provision] ASR langue -> '{}'.".format(lang), file=sys.stderr)
-            except Exception as e:
-                print("[provision] ASR erreur : {}".format(e), file=sys.stderr)
-                ok = False
+        if "tts" in lang_cfg:
+            lang = str(lang_cfg["tts"])
+            proxy = get_proxy("ALTextToSpeech")
+            if proxy:
+                try:
+                    available = proxy.getAvailableLanguages()
+                    if lang in available:
+                        proxy.setLanguage(lang)
+                        print("[provision] TTS langue -> '{}'.".format(lang), file=sys.stderr)
+                    else:
+                        print("[provision] TTS : '{}' non disponible (disponibles : {}).".format(
+                            lang, ", ".join(available)), file=sys.stderr)
+                        ok = False
+                except Exception as e:
+                    print("[provision] TTS erreur : {}".format(e), file=sys.stderr)
+                    ok = False
+
+        if "asr" in lang_cfg:
+            lang = str(lang_cfg["asr"])
+            proxy = get_proxy("ALSpeechRecognition")
+            if proxy:
+                try:
+                    proxy.setLanguage(lang)
+                    print("[provision] ASR langue -> '{}'.".format(lang), file=sys.stderr)
+                except Exception as e:
+                    print("[provision] ASR erreur : {}".format(e), file=sys.stderr)
+                    ok = False
 
     # -- Système -------------------------------------------------------
     sys_cfg = config.get("system", {})

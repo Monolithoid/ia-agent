@@ -1,16 +1,4 @@
 {
-  "wifi": [
-    {
-      "ssid": "MON_RESEAU_PRINCIPAL",
-      "passphrase": "MON_MOT_DE_PASSE",
-      "security": "wpa2-personal"
-    },
-    {
-      "ssid": "RESEAU_BACKUP",
-      "passphrase": "MOT_DE_PASSE_BACKUP",
-      "security": "wpa2-personal"
-    }
-  ],
   "autonomous_life": {
     "state": "disabled"
   },
