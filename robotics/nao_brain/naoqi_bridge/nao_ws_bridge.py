@@ -56,6 +56,10 @@ NAO_PORT = 9559
 RECONNECT_DELAY = 5
 STATUS_INTERVAL = 30
 
+_PROVISION_DEFAULT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "nao_provision.json"
+)
+
 # Mapping module → (topic, msg_type)
 _MODULE_TOPICS = {
     "speech":   ("/nao/speech",   "std_msgs/String"),
@@ -267,6 +271,105 @@ class _WebSocketApp(object):
 # ======================================================================
 # Bridge NAO ↔ rosbridge
 # ======================================================================
+
+def _provision(config_path):
+    """Applique la configuration post-flash définie dans config_path (JSON)."""
+    try:
+        with open(config_path, "r") as f:
+            config = json.load(f)
+    except Exception as e:
+        print("[provision] Erreur lecture {}: {}".format(config_path, e), file=sys.stderr)
+        return False
+
+    print("[provision] Application de {} ...".format(config_path), file=sys.stderr)
+    ok = True
+
+    # -- WiFi ----------------------------------------------------------
+    for ap in config.get("wifi", []):
+        ssid       = ap.get("ssid", "").strip()
+        passphrase = ap.get("passphrase", "")
+        security   = str(ap.get("security", "wpa2-personal"))
+        if not ssid:
+            continue
+        proxy = get_proxy("ALNetwork")
+        if proxy:
+            try:
+                proxy.joinWifiNetwork(ssid, security, passphrase)
+                print("[provision] WiFi '{}' configuré.".format(ssid), file=sys.stderr)
+            except Exception as e:
+                print("[provision] WiFi '{}' erreur : {}".format(ssid, e), file=sys.stderr)
+                ok = False
+        else:
+            print("[provision] ALNetwork indisponible — WiFi ignoré.", file=sys.stderr)
+
+    # -- Vie autonome --------------------------------------------------
+    al_cfg = config.get("autonomous_life", {})
+    if "state" in al_cfg:
+        state = str(al_cfg["state"])
+        valid_states = ("disabled", "solitary", "interactive", "safeguard")
+        if state not in valid_states:
+            print("[provision] autonomous_life.state '{}' invalide (valeurs : {}).".format(
+                state, ", ".join(valid_states)), file=sys.stderr)
+        else:
+            proxy = get_proxy("ALAutonomousLife")
+            if proxy:
+                try:
+                    proxy.setState(state)
+                    print("[provision] ALAutonomousLife -> '{}'.".format(state), file=sys.stderr)
+                except Exception as e:
+                    print("[provision] ALAutonomousLife erreur : {}".format(e), file=sys.stderr)
+                    ok = False
+
+    # -- Langues -------------------------------------------------------
+    lang_cfg = config.get("language", {})
+    if "tts" in lang_cfg:
+        lang = str(lang_cfg["tts"])
+        proxy = get_proxy("ALTextToSpeech")
+        if proxy:
+            try:
+                available = proxy.getAvailableLanguages()
+                if lang in available:
+                    proxy.setLanguage(lang)
+                    print("[provision] TTS langue -> '{}'.".format(lang), file=sys.stderr)
+                else:
+                    print("[provision] TTS : langue '{}' non disponible (disponibles : {}).".format(
+                        lang, ", ".join(available)), file=sys.stderr)
+                    ok = False
+            except Exception as e:
+                print("[provision] TTS erreur : {}".format(e), file=sys.stderr)
+                ok = False
+
+    if "asr" in lang_cfg:
+        lang = str(lang_cfg["asr"])
+        proxy = get_proxy("ALSpeechRecognition")
+        if proxy:
+            try:
+                proxy.setLanguage(lang)
+                print("[provision] ASR langue -> '{}'.".format(lang), file=sys.stderr)
+            except Exception as e:
+                print("[provision] ASR erreur : {}".format(e), file=sys.stderr)
+                ok = False
+
+    # -- Système -------------------------------------------------------
+    sys_cfg = config.get("system", {})
+    if "volume" in sys_cfg:
+        vol = int(sys_cfg["volume"])
+        if not (0 <= vol <= 100):
+            print("[provision] Volume {} hors plage [0-100].".format(vol), file=sys.stderr)
+        else:
+            proxy = get_proxy("ALAudioDevice")
+            if proxy:
+                try:
+                    proxy.setOutputVolume(vol)
+                    print("[provision] Volume -> {}.".format(vol), file=sys.stderr)
+                except Exception as e:
+                    print("[provision] Volume erreur : {}".format(e), file=sys.stderr)
+                    ok = False
+
+    status = "OK" if ok else "terminé avec des erreurs"
+    print("[provision] Provisioning {}.".format(status), file=sys.stderr)
+    return ok
+
 
 def get_proxy(service):
     try:
@@ -558,7 +661,6 @@ class NaoBridge(object):
         proxy = get_proxy("ALTextToSpeech")
         if proxy:
             try:
-                proxy.setLanguage("French")
                 proxy.say(text.encode("utf-8") if isinstance(text, unicode) else text)
             except Exception as e:
                 print("[bridge] say error: {}".format(e), file=sys.stderr)
@@ -635,11 +737,6 @@ class NaoBridge(object):
             print("[bridge] ASR non disponible — wake word désactivé.", file=sys.stderr)
             return
         try:
-            try:
-                asr.setLanguage("French")
-            except Exception:
-                asr.setLanguage("English")
-                print("[bridge] ASR: French non disponible, bascule sur English.", file=sys.stderr)
             asr.setVocabulary(["ok nao", "okay nao"], True)
             asr.subscribe("nao_ws_bridge_ww")
             self._asr = asr
@@ -789,8 +886,21 @@ if __name__ == "__main__":
             "    python nao_ws_bridge.py --vps ws://IP:9090 --modules gesture,led"
         ).format(",".join(sorted(ALL_MODULES)))
     )
-    parser.add_argument("--vps", required=True,
-                        help="URL rosbridge (ex: ws://IP_VPS:9090)")
+    parser.add_argument("--vps", default=None,
+                        help="URL rosbridge (ex: ws://IP_VPS:9090). Obligatoire sauf avec --provision seul.")
+    parser.add_argument(
+        "--provision",
+        nargs="?",
+        const=_PROVISION_DEFAULT,
+        default=None,
+        metavar="CONFIG_FILE",
+        help=(
+            "Applique la configuration post-flash (WiFi, vie autonome, langue, volume) "
+            "avant de démarrer le bridge. "
+            "Sans argument utilise nao_provision.json à côté du script. "
+            "Sans --vps, quitte après le provisioning."
+        ),
+    )
     parser.add_argument("--nao-ip", default="127.0.0.1",
                         help="IP du NAO (defaut: 127.0.0.1)")
     parser.add_argument("--nao-port", type=int, default=9559,
@@ -814,8 +924,17 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    if not args.provision and not args.vps:
+        parser.error("--vps est obligatoire sauf en mode --provision seul.")
+
     NAO_IP = args.nao_ip
     NAO_PORT = args.nao_port
+
+    # Provisioning post-flash
+    if args.provision:
+        _provision(args.provision)
+        if not args.vps:
+            sys.exit(0)
 
     # Valider et parser les modules demandés
     if args.modules is not None:
