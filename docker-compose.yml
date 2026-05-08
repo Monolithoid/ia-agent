@@ -324,6 +324,22 @@ services:
       cognitive-renderer:
         condition: service_started
 
+  motion-engine:
+    build:
+      context: robotics/motion_engine
+      dockerfile: Dockerfile
+    image: ${DOCKERHUB_USERNAME}/motion-engine:latest
+    container_name: motion-engine
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=42
+      - ROS_LOCALHOST_ONLY=1
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    depends_on:
+      naoqi-driver:
+        condition: service_started
+
   # ----------------------------------------------------------
   # ROS 2 BRIDGE — WebSocket rosbridge pour le script NAO
   #

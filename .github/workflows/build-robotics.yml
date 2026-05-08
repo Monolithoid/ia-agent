@@ -1,11 +1,12 @@
 name: Build & Push — Images robotiques
 
-# Publie cinq images sur Docker Hub :
+# Publie six images sur Docker Hub :
 #   monolithoid/naoqi-bridge       → Python 2.7 + qi SDK, HTTP/SSE bridge vers NAO
 #   monolithoid/naoqi-driver       → ROS2 Humble, /bodies/{id}/sensors|actuators/*
 #   monolithoid/cognitive-renderer → ROS2 Humble, /cognitive_state → LEDs + tête
 #   monolithoid/body-gateway       → ROS2 Humble, pont Bitterbot ↔ bus ROS2
 #   monolithoid/ros2-bridge        → ROS2 Humble + rosbridge_server WebSocket :9090
+#   monolithoid/motion-engine      → ROS2 Humble, arousal/valence → NAO joints @ 20 Hz
 #
 # Secrets requis :
 #   DOCKERHUB_USERNAME : monolithoid
@@ -17,6 +18,7 @@ on:
       - main
     paths:
       - 'robotics/nao_brain/**'
+      - 'robotics/motion_engine/**'
       - '.github/workflows/build-robotics.yml'
 
   workflow_dispatch:
@@ -55,6 +57,11 @@ jobs:
             image: monolithoid/ros2-bridge
             context: ./robotics/nao_brain/ros2_bridge
             dockerfile: ./robotics/nao_brain/ros2_bridge/Dockerfile
+
+          - name: motion-engine
+            image: monolithoid/motion-engine
+            context: ./robotics/motion_engine
+            dockerfile: ./robotics/motion_engine/Dockerfile
 
     steps:
       - name: Checkout
