@@ -95,6 +95,14 @@ _TEMP_JOINTS = {
 }
 _TEMP_KEY = "Device/SubDeviceList/{}/Temperature/Sensor/Value"
 
+# ── Environment sensor ALMemory keys ─────────────────────────────────────────
+# Each entry: sensor_name → ALMemory key (read once per status tick).
+# All values are raw floats; interpretation (labels + thresholds) happens on the VPS.
+_ENV_SENSOR_KEYS = {
+    "ambient_light": "Device/SubDeviceList/CameraTop/Illuminance/Sensor/Value",
+    "sound_level":   "Device/SubDeviceList/LMicroFront/SoundLevel/Sensor/Value",
+}
+
 # ── Stiffness groups ──────────────────────────────────────────────────────────
 # NAOqi group name used in ALMotion.setStiffnesses()
 _NAOQI_GROUP = {
@@ -1065,6 +1073,23 @@ class NaoBridge(object):
                 temps[grp] = int(max(readings))
         return temps
 
+    def _read_environment(self):
+        """Return scalar environment sensor values via ALMemory, or {} in mock mode."""
+        if not HAS_NAOQI:
+            return {}
+        memory = get_proxy("ALMemory")
+        if not memory:
+            return {}
+        env = {}
+        for name, key in _ENV_SENSOR_KEYS.items():
+            try:
+                val = memory.getData(key)
+                if val is not None:
+                    env[name] = round(float(val), 1)
+            except Exception:
+                pass
+        return env
+
     def _status_loop(self):
         while not self._stop.is_set() and self.ws:
             level = -1
@@ -1075,8 +1100,10 @@ class NaoBridge(object):
                         level = proxy.getBatteryCharge()
                     except Exception:
                         pass
-            motor_temp = self._read_motor_temps()
-            payload = json.dumps({"battery": level, "motor_temp": motor_temp})
+            motor_temp  = self._read_motor_temps()
+            environment = self._read_environment()
+            payload = json.dumps({"battery": level, "motor_temp": motor_temp,
+                                  "environment": environment})
             try:
                 self._send({
                     "op": "publish",

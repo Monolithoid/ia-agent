@@ -127,33 +127,41 @@ Réponds UNIQUEMENT en JSON strict :
 # LED colour map and motion presets
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Motor temperature → label injected alongside raw value in LLM context
-# Thresholds from NAO V5 spec; firmware hard-limits stiffness above ~78°C.
-_TEMP_THRESHOLDS = [
-    (78, "critique"),
-    (72, "très_chaud"),
-    (65, "chaud"),
-    (0,  "normal"),
-]
+# ─────────────────────────────────────────────────────────────────────────────
+# Generic sensor label registry
+# Each entry: sensor_key → {label, unit, thresholds [(min_value, label), ...]}
+# "motor_temp" is special: its value is a dict {group → °C}, handled separately.
+# Thresholds are evaluated as: first entry whose value >= threshold wins.
+# ─────────────────────────────────────────────────────────────────────────────
 
-_BATTERY_THRESHOLDS = [
-    (10, "critique"),
-    (20, "faible"),
-    (50, "moyen"),
-    (0,  "ok"),
-]
+_SENSOR_REGISTRY: dict = {
+    "battery": {
+        "label": "Batterie", "unit": "%",
+        "thresholds": [(50, "ok"), (20, "moyen"), (10, "faible"), (0, "critique")],
+    },
+    "motor_temp": {
+        "label": "Moteurs", "unit": "°C",
+        "thresholds": [(78, "critique"), (72, "très_chaud"), (65, "chaud"), (0, "normal")],
+    },
+    "ambient_light": {
+        "label": "Lumière", "unit": "lux",
+        "thresholds": [(2000, "éblouissant"), (500, "lumineux"), (100, "tamisé"),
+                       (10,   "sombre"),      (0,   "obscur")],
+    },
+    "sound_level": {
+        "label": "Son", "unit": "dB",
+        "thresholds": [(80, "très_bruyant"), (65, "bruyant"), (45, "normal"),
+                       (20, "calme"),        (0,  "silencieux")],
+    },
+}
 
-def _temp_label(celsius: int) -> str:
-    for threshold, label in _TEMP_THRESHOLDS:
-        if celsius >= threshold:
-            return label
-    return "normal"
-
-def _battery_label(pct: int) -> str:
-    for threshold, label in _BATTERY_THRESHOLDS:
-        if pct >= threshold:
-            return label
-    return "ok"
+def _sensor_label(sensor_key: str, value: float) -> str:
+    """Return the human-readable label for a given sensor value."""
+    spec = _SENSOR_REGISTRY.get(sensor_key, {})
+    for threshold, lbl in sorted(spec.get("thresholds", []), reverse=True):
+        if value >= threshold:
+            return lbl
+    return ""
 
 
 _COLORS = {
@@ -183,7 +191,7 @@ class BodyGatewayNode(Node):
 
         self._state = "IDLE"
         self._batteries: dict[str, float] = {b: 100.0 for b in BODY_REGISTRY}
-        self._motor_temps: dict[str, dict] = {}
+        self._sensor_state: dict[str, dict] = {}   # body_id → latest sensor state JSON
         self._infer_lock = threading.Lock()
         self._running = True
 
@@ -256,8 +264,8 @@ class BodyGatewayNode(Node):
             lambda msg, bid=body_id: self._on_body_connected(bid, msg), 10
         )
         self.create_subscription(
-            String, f"{ns}/sensors/motor_temp",
-            lambda msg, bid=body_id: self._on_motor_temp(bid, msg), 10
+            String, f"{ns}/sensors/state",
+            lambda msg, bid=body_id: self._on_sensor_state(bid, msg), 10
         )
         self.get_logger().info(f"Corps enregistré : {body_id}")
 
@@ -268,9 +276,9 @@ class BodyGatewayNode(Node):
     def _on_battery(self, body_id: str, msg: Float32):
         self._batteries[body_id] = msg.data
 
-    def _on_motor_temp(self, body_id: str, msg: String):
+    def _on_sensor_state(self, body_id: str, msg: String):
         try:
-            self._motor_temps[body_id] = json.loads(msg.data)
+            self._sensor_state[body_id] = json.loads(msg.data)
         except json.JSONDecodeError:
             pass
 
@@ -278,20 +286,40 @@ class BodyGatewayNode(Node):
         """One-liner injected before the user message so the LLM sees hardware state.
 
         Format: raw value first (for numerical reasoning), label in parens (as hint).
-        Example: [Moteurs: head=44°C(normal), larm=71°C(chaud)] [Batterie: 18%(faible)]
+        Driven by _SENSOR_REGISTRY — adding a new sensor requires no change here.
         """
         parts = []
-        temps = self._motor_temps.get(body_id, {})
-        if temps:
-            labels = ", ".join(
-                f"{grp}={t}°C({_temp_label(t)})"
-                for grp, t in sorted(temps.items())
+        state = self._sensor_state.get(body_id, {})
+
+        # Motor temperatures: dict {group → °C} rendered as a grouped block
+        motor_temp = state.get("motor_temp")
+        if motor_temp:
+            spec = _SENSOR_REGISTRY["motor_temp"]
+            items = ", ".join(
+                f"{grp}={t}{spec['unit']}({_sensor_label('motor_temp', t)})"
+                for grp, t in sorted(motor_temp.items())
             )
-            parts.append(f"[Moteurs: {labels}]")
+            parts.append(f"[{spec['label']}: {items}]")
+
+        # Scalar sensors: render each present key from the registry (except motor_temp/battery)
+        for key in ("ambient_light", "sound_level"):
+            val = state.get(key)
+            if val is not None:
+                spec = _SENSOR_REGISTRY[key]
+                parts.append(
+                    f"[{spec['label']}: {val}{spec['unit']}({_sensor_label(key, val)})]"
+                )
+
+        # Battery kept separate (Float32 topic, used also for dreaming threshold)
         battery = self._batteries.get(body_id, -1)
         if battery >= 0:
             pct = int(battery)
-            parts.append(f"[Batterie: {pct}%({_battery_label(pct)})]")
+            parts.append(
+                f"[{_SENSOR_REGISTRY['battery']['label']}: "
+                f"{pct}{_SENSOR_REGISTRY['battery']['unit']}"
+                f"({_sensor_label('battery', pct)})]"
+            )
+
         return " ".join(parts)
 
     def _user_content(self, body_id: str, user_input: str) -> str:
