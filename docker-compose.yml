@@ -325,9 +325,6 @@ services:
         condition: service_started
 
   motion-engine:
-    build:
-      context: robotics/motion_engine
-      dockerfile: Dockerfile
     image: ${DOCKERHUB_USERNAME}/motion-engine:latest
     container_name: motion-engine
     restart: unless-stopped
