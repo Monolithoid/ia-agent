@@ -365,7 +365,7 @@ def motion():
     if _motion:
         try:
             _motion.setStiffnesses("Head", 1.0)
-            _motion.angleInterpolationWithSpeed([str(joint)], [angle], speed, True)
+            _motion.angleInterpolationWithSpeed([str(joint)], [angle], speed)
         except Exception as e:
             _disconnect()
             return jsonify({"error": str(e)}), 500

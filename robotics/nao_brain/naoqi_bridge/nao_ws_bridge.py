@@ -899,7 +899,7 @@ class NaoBridge(object):
         if proxy:
             try:
                 proxy.setStiffnesses(_NAOQI_GROUP[grp], 1.0)
-                proxy.angleInterpolationWithSpeed([joint], [angle], speed, True)
+                proxy.angleInterpolationWithSpeed([joint], [angle], speed)
             except Exception as e:
                 print("[bridge] motion_joint error: {}".format(e), file=sys.stderr)
 
@@ -926,7 +926,7 @@ class NaoBridge(object):
             try:
                 for grp in grps_needed:
                     proxy.setStiffnesses(_NAOQI_GROUP[grp], 1.0)
-                proxy.angleInterpolationWithSpeed(joints, angles, speed, True)
+                proxy.angleInterpolationWithSpeed(joints, angles, speed)
             except Exception as e:
                 print("[bridge] motion_joints error: {}".format(e), file=sys.stderr)
 
