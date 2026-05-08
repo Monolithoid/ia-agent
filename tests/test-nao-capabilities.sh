@@ -31,11 +31,11 @@ SECTIONS=()
 for arg in "$@"; do
     case "$arg" in
         --nao) PHYSICAL=1 ;;
-        health|battery|say|leds|posture|motion|move|events|robustness)
+        health|battery|say|leds|posture|motion|move|events|robustness|stiffness|emotions)
             SECTIONS+=("$arg") ;;
         *)
             echo "Argument inconnu : '$arg'" >&2
-            echo "Sections valides : health battery say leds posture motion move events robustness" >&2
+            echo "Sections valides : health battery say leds posture motion move events robustness stiffness emotions" >&2
             exit 1
             ;;
     esac
@@ -43,7 +43,7 @@ done
 
 # Par défaut : toutes les sections
 if [ ${#SECTIONS[@]} -eq 0 ]; then
-    SECTIONS=(health battery say leds posture motion move events robustness)
+    SECTIONS=(health battery say leds posture motion move events robustness stiffness emotions)
 fi
 
 # ─── Configuration ────────────────────────────────────────────────────────────
@@ -421,6 +421,200 @@ _section_robustness() {
     fi
 }
 
+_section_stiffness() {
+    _head "9 — Stiffness (contrôle rigidité moteurs)"
+
+    _sub "Activer stiffness tête uniquement"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/stiffness" \
+          -H "Content-Type: application/json" \
+          -d '{"groups":["head"],"value":1.0}' 2>&1)
+    if echo "$out" | grep -q '"ok".*true'; then
+        _pass "/stiffness head 1.0 → ok"
+    else
+        _fail "/stiffness head 1.0 → réponse inattendue"
+    fi
+    _info "$out"
+
+    _sub "Activer stiffness bras gauche"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/stiffness" \
+          -H "Content-Type: application/json" \
+          -d '{"groups":["larm"],"value":1.0}' 2>&1)
+    if echo "$out" | grep -q '"ok".*true'; then
+        _pass "/stiffness larm 1.0 → ok"
+    else
+        _fail "/stiffness larm 1.0 → réponse inattendue"
+    fi
+    _info "$out"
+
+    _sub "Activer stiffness bras droit"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/stiffness" \
+          -H "Content-Type: application/json" \
+          -d '{"groups":["rarm"],"value":1.0}' 2>&1)
+    if echo "$out" | grep -q '"ok".*true'; then
+        _pass "/stiffness rarm 1.0 → ok"
+    else
+        _fail "/stiffness rarm 1.0 → réponse inattendue"
+    fi
+    _info "$out"
+
+    _sub "Activer tête + bras en une seule requête"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/stiffness" \
+          -H "Content-Type: application/json" \
+          -d '{"groups":["head","larm","rarm"],"value":1.0}' 2>&1)
+    if echo "$out" | grep -q '"ok".*true'; then
+        _pass "/stiffness head+larm+rarm 1.0 → ok"
+    else
+        _fail "/stiffness head+larm+rarm 1.0 → réponse inattendue"
+    fi
+    _info "$out"
+
+    _sub "Désactiver stiffness tête + bras"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/stiffness" \
+          -H "Content-Type: application/json" \
+          -d '{"groups":["head","larm","rarm"],"value":0.0}' 2>&1)
+    if echo "$out" | grep -q '"ok".*true'; then
+        _pass "/stiffness head+larm+rarm 0.0 → ok"
+    else
+        _fail "/stiffness head+larm+rarm 0.0 → réponse inattendue"
+    fi
+    _info "$out"
+
+    _sub "Groupe invalide → warning (pas d'erreur fatale)"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/stiffness" \
+          -H "Content-Type: application/json" \
+          -d '{"groups":["inconnu"],"value":1.0}' 2>&1)
+    if echo "$out" | grep -q '"ok".*true'; then
+        _pass "/stiffness groupe inconnu → ok avec warning"
+    else
+        _fail "/stiffness groupe inconnu → réponse inattendue"
+    fi
+    _info "$out"
+
+    _sub "Sans body JSON → erreur 4xx/5xx"
+    code=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" \
+           -X POST "${BRIDGE}/stiffness" 2>&1)
+    if echo "$code" | grep -qE "^[245]"; then
+        _pass "/stiffness sans body → HTTP $code (géré)"
+    else
+        _fail "/stiffness sans body → réponse inattendue (HTTP $code)"
+    fi
+}
+
+_section_emotions() {
+    _head "10 — Rendu émotions (speech + LEDs + tête + bras)"
+
+    # Pré-requis : activer stiffness tête + bras
+    _sub "Prérequis : activer stiffness tête + bras"
+    curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/stiffness" \
+         -H "Content-Type: application/json" \
+         -d '{"groups":["head","larm","rarm"],"value":1.0}' > /dev/null
+
+    _sub "Émotion EXCITED : speech + LEDs blanc + regard en haut + bras levés"
+    # 1. LEDs blanches vives
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/leds" \
+          -H "Content-Type: application/json" \
+          -d '{"group":"AllLeds","r":1.0,"g":1.0,"b":1.0,"duration":2.0}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "excited: LEDs blanches" || _fail "excited: LEDs blanches"
+    # 2. Tête vers le haut (HeadPitch = -0.30)
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/motion" \
+          -H "Content-Type: application/json" \
+          -d '{"joint":"HeadPitch","angle":-0.30,"speed":0.15}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "excited: tête en haut" || _fail "excited: tête en haut"
+    # 3. Bras levés (ShoulderPitch ~0.4)
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/motion" \
+          -H "Content-Type: application/json" \
+          -d '{"joint":"LShoulderPitch","angle":0.4,"speed":0.12}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "excited: bras gauche levé" || _fail "excited: bras gauche levé"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/motion" \
+          -H "Content-Type: application/json" \
+          -d '{"joint":"RShoulderPitch","angle":0.4,"speed":0.12}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "excited: bras droit levé" || _fail "excited: bras droit levé"
+    # 4. Speech
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/say" \
+          -H "Content-Type: application/json" \
+          -d '{"text":"Super ! Je suis vraiment excite !"}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "excited: speech" || _fail "excited: speech"
+
+    _sub "Émotion CURIOUS : speech + LEDs bleues + tête inclinée + bras repos"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/leds" \
+          -H "Content-Type: application/json" \
+          -d '{"group":"AllLeds","r":0.0,"g":0.0,"b":1.0,"duration":2.0}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "curious: LEDs bleues" || _fail "curious: LEDs bleues"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/motion" \
+          -H "Content-Type: application/json" \
+          -d '{"joint":"HeadPitch","angle":-0.20,"speed":0.04}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "curious: tête inclinée" || _fail "curious: tête inclinée"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/motion" \
+          -H "Content-Type: application/json" \
+          -d '{"joint":"LShoulderPitch","angle":1.50,"speed":0.06}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "curious: bras gauche repos" || _fail "curious: bras gauche repos"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/motion" \
+          -H "Content-Type: application/json" \
+          -d '{"joint":"RShoulderPitch","angle":1.50,"speed":0.06}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "curious: bras droit repos" || _fail "curious: bras droit repos"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/say" \
+          -H "Content-Type: application/json" \
+          -d '{"text":"Hmm, je me pose des questions..."}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "curious: speech" || _fail "curious: speech"
+
+    _sub "Émotion UNCERTAIN : speech + LEDs jaunes + yaw lent + haussement d'épaules"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/leds" \
+          -H "Content-Type: application/json" \
+          -d '{"group":"AllLeds","r":0.8,"g":0.6,"b":0.0,"duration":2.0}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "uncertain: LEDs jaunes" || _fail "uncertain: LEDs jaunes"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/motion" \
+          -H "Content-Type: application/json" \
+          -d '{"joint":"HeadYaw","angle":0.18,"speed":0.04}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "uncertain: tête yaw" || _fail "uncertain: tête yaw"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/motion" \
+          -H "Content-Type: application/json" \
+          -d '{"joint":"LElbowRoll","angle":-0.80,"speed":0.07}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "uncertain: bras gauche haussement" || _fail "uncertain: bras gauche haussement"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/motion" \
+          -H "Content-Type: application/json" \
+          -d '{"joint":"RElbowRoll","angle":0.80,"speed":0.07}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "uncertain: bras droit haussement" || _fail "uncertain: bras droit haussement"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/say" \
+          -H "Content-Type: application/json" \
+          -d '{"text":"Je ne suis pas sur de comprendre..."}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "uncertain: speech" || _fail "uncertain: speech"
+
+    _sub "Émotion NEUTRAL : speech + LEDs sombres + tête droite + bras repos"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/leds" \
+          -H "Content-Type: application/json" \
+          -d '{"group":"AllLeds","r":0.05,"g":0.05,"b":0.10,"duration":2.0}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "neutral: LEDs sombres" || _fail "neutral: LEDs sombres"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/motion" \
+          -H "Content-Type: application/json" \
+          -d '{"joint":"HeadPitch","angle":0.0,"speed":0.10}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "neutral: tête droite" || _fail "neutral: tête droite"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/motion" \
+          -H "Content-Type: application/json" \
+          -d '{"joint":"LShoulderPitch","angle":1.50,"speed":0.06}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "neutral: bras gauche repos" || _fail "neutral: bras gauche repos"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/motion" \
+          -H "Content-Type: application/json" \
+          -d '{"joint":"RShoulderPitch","angle":1.50,"speed":0.06}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "neutral: bras droit repos" || _fail "neutral: bras droit repos"
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/say" \
+          -H "Content-Type: application/json" \
+          -d '{"text":"Bonjour. Comment puis-je vous aider ?"}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "neutral: speech" || _fail "neutral: speech"
+
+    # Fin : remettre les bras au repos et désactiver stiffness
+    _sub "Remise au repos + désactivation stiffness bras"
+    curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/motion" \
+         -H "Content-Type: application/json" \
+         -d '{"joint":"HeadPitch","angle":0.0,"speed":0.10}' > /dev/null
+    curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/motion" \
+         -H "Content-Type: application/json" \
+         -d '{"joint":"HeadYaw","angle":0.0,"speed":0.10}' > /dev/null
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/stiffness" \
+          -H "Content-Type: application/json" \
+          -d '{"groups":["larm","rarm"],"value":0.0}' 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "remise au repos OK" || _fail "remise au repos échouée"
+}
+
 # ─── En-tête ──────────────────────────────────────────────────────────────────
 echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${YELLOW}║   test-nao-capabilities.sh — Capacités NAOqi via bridge     ║${NC}"
@@ -429,7 +623,7 @@ echo -e "${YELLOW}║   Mode : NAO physique  (--nao)                            
 else
 echo -e "${YELLOW}║   Mode : mock  (relancer avec --nao quand NAO est allumé)    ║${NC}"
 fi
-echo -e "${YELLOW}║   Sections : ${SECTIONS[*]}$(printf '%*s' $((44 - ${#SECTIONS[*]} * 1)) '')║${NC}"
+echo -e "${YELLOW}║   Sections : ${SECTIONS[*]:0:5}...$(printf '%*s' $((36 - ${#SECTIONS[*]} * 1)) '')║${NC}"
 echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════╝${NC}"
 
 # ─── Dispatch des sections ────────────────────────────────────────────────────
@@ -444,6 +638,8 @@ for section in "${SECTIONS[@]}"; do
         move)        _section_move ;;
         events)      _section_events ;;
         robustness)  _section_robustness ;;
+        stiffness)   _section_stiffness ;;
+        emotions)    _section_emotions ;;
     esac
 done
 
