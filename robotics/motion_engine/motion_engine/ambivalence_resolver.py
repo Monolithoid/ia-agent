@@ -20,20 +20,28 @@ def resolve_ambivalence(
     current_angles: dict[JointName, float],
     base_pose: dict[JointName, float],
 ) -> dict[JointName, float]:
-    """Return a committed pose derived from current joint positions."""
+    """Return a committed pose derived from current joint positions.
+
+    For each joint in current_angles, determine which biomechanical direction
+    the robot has already started moving (open vs closed) and reinforce it.
+    Joints absent from JOINT_LIMITS (unknown hardware) are left at base_pose.
+    """
     resolved: dict[JointName, float] = dict(base_pose)
 
     for joint, current in current_angles.items():
+        # Skip joints not defined in the URDF — no valid midpoint can be computed.
         if joint not in JOINT_LIMITS:
             continue
         lo, hi = JOINT_LIMITS[joint]
         midpoint = (lo + hi) * 0.5
 
         if current >= midpoint:
-            # Already in the upper half → commit to openness
+            # Joint is already in the upper half of its range → commit to openness.
+            # Openness maps to confidence/engagement (OPEN_POSE direction).
             resolved[joint] = OPEN_POSE.get(joint, base_pose.get(joint, current))
         else:
-            # Already in the lower half → commit to closure
+            # Joint is in the lower half → commit to closure.
+            # Closure maps to protection/withdrawal (CLOSED_POSE direction).
             resolved[joint] = CLOSED_POSE.get(joint, base_pose.get(joint, current))
 
     return resolved

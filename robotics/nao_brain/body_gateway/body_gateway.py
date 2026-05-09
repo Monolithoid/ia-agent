@@ -156,9 +156,14 @@ _SENSOR_REGISTRY: dict = {
 }
 
 def _sensor_label(sensor_key: str, value: float) -> str:
-    """Return the human-readable label for a given sensor value."""
+    """Return the human-readable label for a given sensor value.
+
+    Thresholds are sorted descending so the first match wins (highest band).
+    Returns an empty string for unknown sensor keys or unmatched values.
+    """
     spec = _SENSOR_REGISTRY.get(sensor_key, {})
     for threshold, lbl in sorted(spec.get("thresholds", []), reverse=True):
+        # First threshold whose floor is ≤ value wins — assign its label.
         if value >= threshold:
             return lbl
     return ""
@@ -338,7 +343,8 @@ class BodyGatewayNode(Node):
         parts = []
         state = self._sensor_state.get(body_id, {})
 
-        # Motor temperatures: dict {group → °C} rendered as a grouped block
+        # Motor temperatures: dict {group → °C} rendered as a grouped block.
+        # Only present when the NAO firmware sends temperature data.
         motor_temp = state.get("motor_temp")
         if motor_temp:
             spec = _SENSOR_REGISTRY["motor_temp"]
@@ -348,16 +354,18 @@ class BodyGatewayNode(Node):
             )
             parts.append(f"[{spec['label']}: {items}]")
 
-        # Scalar sensors: render each present key from the registry (except motor_temp/battery)
+        # Scalar sensors: render each present key from the registry (except motor_temp/battery).
         for key in ("ambient_light", "sound_level"):
             val = state.get(key)
+            # Skip sensors not present in this status message.
             if val is not None:
                 spec = _SENSOR_REGISTRY[key]
                 parts.append(
                     f"[{spec['label']}: {val}{spec['unit']}({_sensor_label(key, val)})]"
                 )
 
-        # Battery kept separate (Float32 topic, used also for dreaming threshold)
+        # Battery kept separate (Float32 topic, also used for dreaming threshold logic).
+        # Negative value (-1) means no battery reading received yet — omit from context.
         battery = self._batteries.get(body_id, -1)
         if battery >= 0:
             pct = int(battery)
@@ -376,14 +384,28 @@ class BodyGatewayNode(Node):
         return f"[{body_id}] {user_input}"
 
     def _on_body_connected(self, body_id: str, msg: Bool):
+        """Track physical robot connection state for each registered body.
+
+        naoqi_driver publishes True when the first heartbeat arrives from the
+        robot and False when the heartbeat times out.  We log transitions only
+        (not every re-publish) to keep logs readable.
+        """
         prev = self._body_connected.get(body_id, False)
         self._body_connected[body_id] = msg.data
+        # Log only on state transitions, not on repeated publications.
         if msg.data and not prev:
             self.get_logger().info(f"[{body_id}] Corps connecté")
         elif not msg.data and prev:
             self.get_logger().warn(f"[{body_id}] Corps déconnecté")
 
     def _on_sonar(self, body_id: str, msg: Range):
+        """React to sonar proximity: wake the robot when a human is detected nearby.
+
+        The wake transition only happens from IDLE so an already-active robot
+        is not interrupted mid-inference by repeated sonar pulses.
+        """
+        # Trigger AWAKE only when someone is within range AND the robot is idle.
+        # Prevents sonar from interrupting an ongoing conversation.
         if msg.range < PROXIMITY_THRESHOLD and self._state == "IDLE":
             self._state = "AWAKE"
             self.get_logger().info(f"[{body_id}] Humain à {msg.range:.2f} m → AWAKE")
@@ -419,6 +441,9 @@ class BodyGatewayNode(Node):
         """
         self._publish_cognitive("thinking")
 
+        # Non-blocking acquire: if another inference is already running, drop this one.
+        # Voice inputs during an active inference would produce a second concurrent
+        # Ollama call, which would saturate the CPU and produce incoherent output.
         if not self._infer_lock.acquire(blocking=False):
             self.get_logger().warn("Inférence en cours — voix ignorée")
             return
@@ -458,6 +483,8 @@ class BodyGatewayNode(Node):
                 f"[{body_id}] Voix traitée, résultat en attente WebUI : {user_input!r}"
             )
 
+            # Notify WebUI only when both URL and key are configured.
+            # Without them the voice result sits in the queue but no UI update occurs.
             if WEBUI_URL and WEBUI_API_KEY:
                 self._notify_webui(user_input)
 
@@ -483,6 +510,8 @@ class BodyGatewayNode(Node):
             "nao_voice": True,
             "stream":    False,
         }
+        # Attach a specific chat ID when configured so the voice result appears
+        # in the same conversation thread as the user's ongoing session.
         if WEBUI_VOICE_CHAT_ID:
             payload["chat_id"] = WEBUI_VOICE_CHAT_ID
 
@@ -540,6 +569,7 @@ class BodyGatewayNode(Node):
                 text = str(raw_text).strip() if raw_text else ""
                 robot_id = body.get("robot_id", BODY_REGISTRY[0])
 
+                # Guard: empty text would trigger Ollama with a useless prompt.
                 if not text:
                     self._json(400, {"error": "missing text"})
                     return
@@ -563,6 +593,7 @@ class BodyGatewayNode(Node):
                 if body is None:
                     return
                 required = {"arousal", "valence"}
+                # Reject requests missing the two mandatory emotion axes.
                 if not required.issubset(body):
                     self._json(400, {"error": f"missing fields: {required - body.keys()}"})
                     return
@@ -578,9 +609,11 @@ class BodyGatewayNode(Node):
                 text     = body.get("text", "").strip()
                 robot_id = body.get("robot_id", BODY_REGISTRY[0])
 
+                # Guard: empty text has nothing to speak.
                 if not text:
                     self._json(400, {"error": "missing text"})
                     return
+                # Guard: robot_id not registered at startup — cannot publish.
                 if robot_id not in node._pub_say:
                     self._json(404, {"error": f"unknown robot_id: {robot_id}"})
                     return
@@ -648,9 +681,11 @@ class BodyGatewayNode(Node):
         response.raise_for_status()
         chunks = []
         for line in response.iter_lines():
+            # Skip blank lines and non-SSE lines (e.g. HTTP headers in chunked encoding).
             if not line or not line.startswith(b"data: "):
                 continue
             data = line[6:]
+            # OpenAI-compatible streaming API terminates with a [DONE] sentinel.
             if data == b"[DONE]":
                 break
             delta = json.loads(data)["choices"][0]["delta"].get("content", "")
@@ -666,6 +701,8 @@ class BodyGatewayNode(Node):
         self._publish_cognitive("thinking")
         self._state = "AWAKE"
 
+        # Wait up to 25 s for the lock — longer than UI timeout to handle slow LLMs,
+        # but short enough to avoid blocking the HTTP thread indefinitely.
         if not self._infer_lock.acquire(timeout=25):
             return {"speech": "Je suis occupé, réessaie dans un instant.", "error": "busy"}
 
@@ -721,11 +758,14 @@ class BodyGatewayNode(Node):
         ).start()
 
     def _infer_and_act(self, body_id: str, user_input: str, is_dream: bool):
+        # Non-blocking acquire: async triggers (bumper, sonar, dream tick) are
+        # fire-and-forget — if an inference is already running, silently skip.
         if not self._infer_lock.acquire(blocking=False):
             self.get_logger().warn("Inférence en cours — ignoré")
             return
 
         try:
+            # Dream mode uses a restricted system prompt (no walking, no arm gestures).
             system_prompt = (
                 _DREAM_SYSTEM if is_dream else _AWAKE_SYSTEM
             ).format(body_ids=", ".join(BODY_REGISTRY))
@@ -735,10 +775,13 @@ class BodyGatewayNode(Node):
                     {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": self._user_content(body_id, user_input)},
                 ],
-                temperature=0.5 if is_dream else 0.7,
+                # Dream ticks use lower temperature for more predictable, subtle outputs.
+            temperature=0.5 if is_dream else 0.7,
             )
             parsed = self._parse_json(raw)
 
+            # Dream ticks do not update cognitive/emotion state — the robot should
+            # appear to be in a continuous dream, not flicker between states.
             if not is_dream:
                 self._publish_emotion(parsed.get("emotion", "neutral"))
                 self._publish_cognitive("responding")
@@ -747,6 +790,7 @@ class BodyGatewayNode(Node):
 
         except requests.RequestException as e:
             self.get_logger().error(f"Ollama error: {e}")
+            # On dream tick errors, swallow silently — the next tick will retry.
             if not is_dream:
                 self._fallback(body_id)
         except Exception as e:
@@ -755,10 +799,19 @@ class BodyGatewayNode(Node):
                 self._fallback(body_id)
         finally:
             self._infer_lock.release()
+            # After a non-dream inference, transition back to listening so the
+            # robot is ready to receive the next wake word or sensor event.
             if not is_dream:
                 self._publish_cognitive("listening")
 
     def _parse_json(self, raw: str) -> dict:
+        """Extract the structured JSON from the LLM response.
+
+        Handles three cases in priority order:
+          1. Clean JSON after stripping reasoning-model <think> blocks.
+          2. Raw response directly (in case stripping removed useful content).
+          3. First {...} block found via regex (LLM preamble before the JSON).
+        """
         # Strip <think>...</think> blocks emitted by reasoning models (Qwen3, DeepSeek-R1, etc.)
         cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         for candidate in (cleaned, raw):
@@ -766,6 +819,7 @@ class BodyGatewayNode(Node):
                 return json.loads(candidate)
             except json.JSONDecodeError:
                 pass
+            # Fallback: extract the first JSON object block from free text.
             m = re.search(r"\{.*\}", candidate, re.DOTALL)
             if m:
                 try:
@@ -780,11 +834,20 @@ class BodyGatewayNode(Node):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _dispatch_actions(self, actions: list):
+        """Iterate over the LLM action list and publish each one to the correct robot body.
+
+        Actions target specific bodies via the "body" field.  Unknown bodies
+        are skipped.  Disconnected bodies get a warning but still receive the
+        action — the driver will queue it for when the robot reconnects.
+        """
         for action in actions:
             body_id = action.get("body", BODY_REGISTRY[0])
+            # Skip actions targeting a body not registered at startup.
             if body_id not in BODY_REGISTRY:
                 self.get_logger().warn(f"Corps inconnu '{body_id}' — ignoré")
                 continue
+            # Warn but still forward — the robot may reconnect mid-action
+            # and the action is better sent than silently dropped.
             if not self._body_connected.get(body_id, False):
                 self.get_logger().warn(
                     f"[{body_id}] Non connecté — "
@@ -805,10 +868,12 @@ class BodyGatewayNode(Node):
         elif kind == "motion":
             name = action.get("name", "")
             if name in ("sit", "stand"):
+                # Posture presets use ALRobotPosture — separate channel from joint motion.
                 msg = String()
                 msg.data = "Sit" if name == "sit" else "Stand"
                 self._pub_posture[body_id].publish(msg)
             elif name in _MOTION_PRESETS:
+                # Named gesture presets defined at the top of this file.
                 msg = String()
                 msg.data = json.dumps(_MOTION_PRESETS[name])
                 self._pub_motion[body_id].publish(msg)
@@ -823,6 +888,7 @@ class BodyGatewayNode(Node):
 
         elif kind == "leds":
             color_name = action.get("color", "white")
+            # Unknown color names default to white rather than silently emitting black.
             r, g, b = _COLORS.get(color_name, _COLORS["white"])
             msg = String()
             msg.data = json.dumps({"group": "AllLeds", "r": r, "g": g, "b": b, "duration": 0.5})
@@ -859,24 +925,39 @@ class BodyGatewayNode(Node):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _check_state(self):
+        """Evaluate whether the robot should enter or exit DREAMING state.
+
+        Called every 60 s by the ROS 2 timer.
+        Conditions for DREAMING: within the configured hour window AND
+        all batteries above the minimum threshold (robot must be charging).
+        """
         hour = datetime.datetime.now().hour
+        # Use the minimum battery across all registered bodies — weakest link.
         min_bat = min(self._batteries.values()) if self._batteries else 100.0
         should_dream = (
             DREAMING_HOUR_START <= hour < DREAMING_HOUR_END
             and min_bat >= DREAMING_BATTERY_THRESHOLD
         )
+        # Transition into DREAMING only if not already dreaming (avoid re-entry).
         if should_dream and self._state != "DREAMING":
             self._state = "DREAMING"
             self._publish_cognitive("dreaming")
             self.get_logger().info("État → DREAMING")
+        # Exit DREAMING if conditions are no longer met (time window passed or battery low).
         elif not should_dream and self._state == "DREAMING":
             self._state = "IDLE"
             self._publish_cognitive("idle")
             self.get_logger().info("État → IDLE")
 
     def _dream_loop(self):
+        """Background thread: trigger a dream inference tick every DREAM_TICK_INTERVAL s.
+
+        Sleeps first so the first tick does not fire immediately at startup
+        (the robot needs time to reach DREAMING state via _check_state).
+        """
         while self._running:
             time.sleep(DREAM_TICK_INTERVAL)
+            # Skip if the state machine exited DREAMING while we were sleeping.
             if self._state != "DREAMING":
                 continue
             self.get_logger().info("Dream tick")
@@ -896,10 +977,16 @@ class BodyGatewayNode(Node):
         self.pub_cognitive.publish(msg)
 
     def _publish_emotion(self, emotion: str):
+        """Publish the emotion string and trigger the associated motion pattern.
+
+        The emotion topic drives cognitive_renderer (LEDs + head).
+        The motion command drives motion_engine (full-body pose + pattern).
+        """
         msg = String()
         msg.data = emotion
         self.pub_emotion.publish(msg)
-        # Forward a motion command derived from the categorical emotion
+        # Forward a motion command derived from the categorical emotion.
+        # Not all emotions have a motion mapping — unknown ones are silently skipped.
         motion_payload = _EMOTION_TO_MOTION.get(emotion.lower())
         if motion_payload:
             self._publish_motion_command(motion_payload)
@@ -911,8 +998,15 @@ class BodyGatewayNode(Node):
         self.pub_motion_cmd.publish(msg)
 
     def _publish_energy(self, energy: str):
+        """Publish the energy level to the /energy_state topic.
+
+        Drives stiffness control in cognitive_renderer.
+        Sanitises the LLM output — unknown values default to "medium" so the
+        robot always has a sensible stiffness level regardless of LLM quality.
+        """
         _valid = {"very-low", "low", "medium", "high", "very-high"}
         level = energy.lower().strip() if energy else "medium"
+        # Guard against hallucinated energy labels not in the system prompt schema.
         if level not in _valid:
             level = "medium"
         msg = String()

@@ -122,6 +122,12 @@ class NAOqiDriverNode(Node):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _on_nao_status(self, msg: String):
+        """Process the 30 s heartbeat published by the robot.
+
+        Updates the last-seen timestamp (used by _check_connection to detect
+        disconnection) and publishes battery + sensor state topics for the LLM.
+        Also transitions to connected state on the first heartbeat received.
+        """
         self._last_status_time = time.time()
         try:
             data = json.loads(msg.data)
@@ -134,10 +140,13 @@ class NAOqiDriverNode(Node):
 
             # All other sensor readings consolidated into one JSON topic for the LLM
             state: dict = {}
+            # Motor temperatures are present only when the NAO firmware reports them.
             if data.get("motor_temp"):
                 state["motor_temp"] = data["motor_temp"]
+            # Environment block may contain ambient_light, sound_level, etc.
             if data.get("environment"):
                 state.update(data["environment"])
+            # Only publish if there is at least one sensor value to report.
             if state:
                 out = String()
                 out.data = json.dumps(state)
@@ -145,16 +154,26 @@ class NAOqiDriverNode(Node):
 
         except (json.JSONDecodeError, ValueError):
             pass
+        # First heartbeat after (re)start transitions the driver to connected state.
         if not self._connected:
             self._connected = True
             self._publish_connected(True)
             self.get_logger().info(f"[{ROBOT_ID}] NAO connecté via rosbridge")
 
     def _check_connection(self):
+        """Detect robot disconnection from the heartbeat silence.
+
+        Called every 15 s by the ROS 2 timer.  If no /nao/status has arrived
+        within NAO_STATUS_TIMEOUT seconds, the robot is considered offline.
+        Also re-publishes the connected state periodically so body_gateway
+        learns the state within 15 s of its own restart.
+        """
+        # No heartbeat ever received — robot has not connected yet, nothing to check.
         if self._last_status_time == 0.0:
             return
         elapsed = time.time() - self._last_status_time
         if elapsed > NAO_STATUS_TIMEOUT:
+            # Heartbeat silent for too long — mark as disconnected and alert.
             if self._connected:
                 self._connected = False
                 self._publish_connected(False)
@@ -162,8 +181,8 @@ class NAOqiDriverNode(Node):
                     f"[{ROBOT_ID}] Pas de /nao/status depuis {elapsed:.0f}s — déconnecté"
                 )
         elif self._connected:
-            # Periodic re-publish so body_gateway receives the state within 15 s
-            # after its own (re)start even when naoqi_driver has not changed state.
+            # Robot is connected and heartbeat is current — re-publish so any
+            # newly started subscriber (e.g. body_gateway) gets the current state.
             self._publish_connected(True)
 
     def _publish_connected(self, state: bool):
@@ -176,6 +195,13 @@ class NAOqiDriverNode(Node):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _on_audio(self, msg: String):
+        """Receive base64-encoded WAV audio from the robot and transcribe it.
+
+        Audio arrives after a wake-word detection on the NAO side.
+        Transcription is offloaded to a daemon thread so the ROS spin
+        loop is not blocked during the Whisper HTTP call.
+        """
+        # Whisper disabled by config — audio received but not transcribed.
         if not WHISPER_URL:
             return
         threading.Thread(
@@ -192,10 +218,13 @@ class NAOqiDriverNode(Node):
                 files={"audio_file": ("audio.wav", audio_bytes, "audio/wav")},
                 timeout=30,
             )
+            # Whisper returned an HTTP error — log and abort without crashing.
             if not resp.ok:
                 self.get_logger().warn(f"Whisper erreur {resp.status_code}")
                 return
             text = resp.json().get("text", "").strip()
+            # Accept transcription only if it contains meaningful content
+            # (> 3 chars filters out noise artefacts like "." or "ok").
             if text and len(text) > 3:
                 self.get_logger().info(f"STT [{ROBOT_ID}]: {text}")
                 out = String()
@@ -211,9 +240,16 @@ class NAOqiDriverNode(Node):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _on_capabilities(self, msg: String):
+        """Receive the robot's TTS capability announcement on connect.
+
+        The robot publishes its preferred TTS method once after establishing
+        the rosbridge connection.  We update the local method so subsequent
+        /say commands use the right audio path.
+        """
         try:
             cap = json.loads(msg.data)
             method = cap.get("tts_method")
+            # Only accept known methods — guard against malformed capability messages.
             if method in ("mp3", "text"):
                 self._tts_method = method
                 self.get_logger().info(f"[{ROBOT_ID}] TTS method négocié : {method}")
@@ -221,13 +257,22 @@ class NAOqiDriverNode(Node):
             pass
 
     def _on_say(self, msg: String):
+        """Route a speech text to the appropriate TTS path.
+
+        mp3 path: generate audio via edge-tts on the VPS, send base64 MP3
+                  on /nao/audio_out → NAOqi ALAudioPlayer (better voice quality).
+        text path: send raw text on /nao/speech → NAOqi ALTextToSpeech (fallback).
+        """
         text = msg.data
         self.get_logger().info(
             f"[{ROBOT_ID}] → TTS ({self._tts_method}) : {text[:80]!r}"
         )
+        # Use edge-tts audio generation when both the mp3 method is selected
+        # AND a voice name is configured in TTS_VOICE.
         if self._tts_method == "mp3" and TTS_VOICE:
             threading.Thread(target=self._tts_and_publish, args=(text,), daemon=True).start()
         else:
+            # Fallback: send raw text for native NAOqi TTS synthesis on the robot.
             self.pub_nao_speech.publish(msg)
 
     def _tts_and_publish(self, text: str):
@@ -236,6 +281,7 @@ class NAOqiDriverNode(Node):
         try:
             import edge_tts
         except ImportError:
+            # edge-tts not available in this environment — fall back to native TTS.
             self.get_logger().warn("edge-tts non installé — fallback texte NAOqi")
             out = String()
             out.data = text
@@ -246,6 +292,7 @@ class NAOqiDriverNode(Node):
                 communicate = edge_tts.Communicate(text, TTS_VOICE)
                 buf = io.BytesIO()
                 async for chunk in communicate.stream():
+                    # Only audio chunks contain binary data — skip metadata events.
                     if chunk["type"] == "audio":
                         buf.write(chunk["data"])
                 return buf.getvalue()
@@ -313,6 +360,7 @@ class NAOqiDriverNode(Node):
         for entry in data.get("groups", []):
             name  = entry.get("name")
             value = entry.get("value")
+            # Skip malformed entries that are missing either the group name or value.
             if name is None or value is None:
                 continue
             out = String()
@@ -324,9 +372,17 @@ class NAOqiDriverNode(Node):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _normalize_leds(self, raw: str) -> String:
-        """Rename 'group' → 'name' in the LED JSON payload expected by nao_ws_bridge."""
+        """Rename 'group' → 'name' in the LED JSON payload expected by nao_ws_bridge.
+
+        body_gateway publishes LED commands with key 'group' (OpenAPI convention).
+        nao_ws_bridge expects 'name' (NAOqi ALLeds.fadeRGB convention).
+        This normalisation is done here so both body_gateway and cognitive_renderer
+        can use their own field names without knowing about the bridge's format.
+        """
         try:
             data = json.loads(raw)
+            # Only rename if 'group' is present and 'name' is not already set,
+            # to avoid overwriting an already-correct payload.
             if "group" in data and "name" not in data:
                 data["name"] = data.pop("group")
             raw = json.dumps(data)
