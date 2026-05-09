@@ -75,11 +75,14 @@ class _WS(object):
     _GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
     def __init__(self, url):
+        # TLS not supported here — VPS-internal calls go over plain ws://.
         if not url.startswith("ws://"):
             raise ValueError("Only ws:// supported")
         tail = url[5:]
         host_port, sep, path_rest = tail.partition("/")
+        # Re-add leading slash stripped by partition; default to root path.
         self._path = "/" + path_rest if sep else "/"
+        # Parse optional port from host:port notation.
         if ":" in host_port:
             self._host, port_str = host_port.rsplit(":", 1)
             self._port = int(port_str)
@@ -108,11 +111,14 @@ class _WS(object):
         s.sendall(req.encode("ascii"))
 
         resp = b""
+        # Accumulate HTTP response until the header terminator arrives.
         while b"\r\n\r\n" not in resp:
             chunk = s.recv(4096)
+            # Server closed the connection before completing the HTTP upgrade.
             if not chunk:
                 raise IOError("Connection closed during WS handshake")
             resp += chunk
+        # HTTP 101 is the only valid response to an Upgrade: websocket request.
         if b"101" not in resp.split(b"\r\n")[0]:
             raise IOError("WS handshake failed: {}".format(resp.split(b"\r\n")[0]))
 
@@ -121,6 +127,7 @@ class _WS(object):
         n = len(payload)
         mask_key = bytearray(os.urandom(4))
         hdr = bytearray([0x81])
+        # RFC 6455 §5.2 payload length encoding (same as nao_ws_bridge._send_frame).
         if n < 126:
             hdr.append(0x80 | n)
         elif n < 65536:
@@ -149,22 +156,25 @@ class _WS(object):
             opcode   = b0 & 0x0F
             is_mask  = (b1 & 0x80) != 0
             length   = b1 & 0x7F
+            # Decode extended payload lengths per RFC 6455 §5.2.
             if length == 126:
                 length = struct.unpack(">H", recv_exact(2))[0]
             elif length == 127:
                 length = struct.unpack(">Q", recv_exact(8))[0]
+            # Server frames are typically unmasked; read key only if present.
             mask_key = bytearray(recv_exact(4)) if is_mask else None
             payload  = bytearray(recv_exact(length))
+            # Unmask payload if a masking key was sent.
             if mask_key:
                 for i in range(length):
                     payload[i] ^= mask_key[i % 4]
-            if opcode == 0x1:   # text
+            if opcode == 0x1:   # text frame — the only type we expect from rosbridge
                 return payload.decode("utf-8", "replace")
-            elif opcode == 0x9: # ping → pong
+            elif opcode == 0x9: # ping → must reply with pong per RFC 6455
                 self._send_pong(bytes(payload))
-            elif opcode == 0x8: # close
+            elif opcode == 0x8: # close — server terminated the connection
                 raise IOError("Server sent close frame")
-            # 0x0 continuation, 0x2 binary: ignored
+            # 0x0 continuation, 0x2 binary: not used by rosbridge, ignore silently.
 
     def _send_pong(self, data):
         hdr = bytearray([0x8A, 0x80 | len(data)])
@@ -197,6 +207,8 @@ def _rosbridge_monitor():
     timestamp to decide if the NAO is connected (no external notification needed).
     Reconnects automatically on any error.
     """
+    # When ROSBRIDGE_URL is not configured the bridge operates in full MOCK mode
+    # and NAO connection state is always "disconnected".
     if not ROSBRIDGE_URL:
         print("[naoqi_bridge] ROSBRIDGE_URL not set — connection monitor disabled",
               file=sys.stderr)
@@ -223,6 +235,7 @@ def _rosbridge_monitor():
                     msg = json.loads(raw)
                 except ValueError:
                     continue
+                # Only process heartbeat publishes on the expected topic.
                 if msg.get("op") == "publish" and msg.get("topic") == "/nao/status":
                     with _status_lock:
                         global _last_nao_status_time
@@ -239,9 +252,14 @@ def _rosbridge_monitor():
 
 
 def _is_nao_connected():
-    """True if a /nao/status heartbeat was received within NAO_STATUS_TIMEOUT seconds."""
+    """True if a /nao/status heartbeat was received within NAO_STATUS_TIMEOUT seconds.
+
+    t > 0 guards against the initial state where no heartbeat has ever arrived —
+    time.time() - 0 would be a large number and incorrectly appear "recent".
+    """
     with _status_lock:
         t = _last_nao_status_time
+    # t == 0.0 means no heartbeat received yet — robot is not connected.
     return t > 0 and (time.time() - t) < NAO_STATUS_TIMEOUT
 
 
@@ -332,23 +350,32 @@ def health():
 
 @app.route("/say", methods=["POST"])
 def say():
+    """Speak text aloud on NAO via one of three dispatch paths:
+      1. Direct NAOqi SDK (legacy — _tts proxy set up on connect)
+      2. rosbridge WebSocket publish (robot-initiated WS mode)
+      3. MOCK log (robot absent)
+    """
     text = request.json.get("text", "") if request.json else ""
+    # Guard: empty string would cause NAOqi TTS to error.
     if not text:
         return jsonify({"error": "missing text"}), 400
 
     if _tts:
+        # Path 1: direct NAOqi proxy (legacy direct connection mode).
         try:
             _tts.say(text)
         except Exception as e:
             _disconnect()
             return jsonify({"error": str(e)}), 500
     elif _is_nao_connected():
+        # Path 2: robot is connected via rosbridge — forward over WebSocket.
         if not _rosbridge_publish(
             "/nao/speech", "std_msgs/String",
             {"data": text},
         ):
             return jsonify({"error": "rosbridge unreachable"}), 503
     else:
+        # Path 3: robot offline — log as MOCK so tests can verify the call.
         sys.stderr.write("[MOCK] say: {}\n".format(
             text))
 
@@ -474,31 +501,37 @@ def stiffness():
     groups = data.get("groups", [])
     value  = float(data.get("value", 0.0))
 
+    # Guard: single-string group would iterate over characters without this check.
     if not isinstance(groups, list):
         return jsonify({"error": "groups must be a list"}), 400
 
     errors = []
     for grp in groups:
         naoqi_group = _NAOQI_GROUP.get(str(grp).lower())
+        # Unknown group key — record warning and continue with remaining groups.
         if not naoqi_group:
             errors.append("unknown group: {}".format(grp))
             continue
         if _motion:
+            # Path 1: direct NAOqi ALMotion proxy.
             try:
                 _motion.setStiffnesses(naoqi_group, value)
             except Exception as e:
                 _disconnect()
                 return jsonify({"error": str(e)}), 500
         elif _is_nao_connected():
+            # Path 2: forward via rosbridge → nao_ws_bridge._set_stiffness.
             payload = json.dumps({"groups": [str(grp).lower()], "value": value})
             if not _rosbridge_publish(
                 "/nao/stiffness", "std_msgs/String", {"data": payload}
             ):
                 return jsonify({"error": "rosbridge unreachable"}), 503
         else:
+            # Path 3: MOCK log.
             print("[MOCK] stiffness: {} ({}) -> {}".format(grp, naoqi_group, value),
                   file=sys.stderr)
 
+    # Partial success: some groups were unknown but the known ones were applied.
     if errors:
         return jsonify({"ok": True, "warnings": errors})
     return jsonify({"ok": True})
@@ -522,13 +555,16 @@ def move_stop():
 
 @app.route("/battery")
 def battery():
+    """Return battery level from the NAOqi SDK if available, or -1 in mock mode."""
     if _battery:
+        # Direct NAOqi read — only available in legacy direct SDK mode.
         try:
             level = _battery.getBatteryCharge()
             return jsonify({"level": int(level)})
         except Exception as e:
             _disconnect()
             return jsonify({"error": str(e)}), 500
+    # Battery unavailable — robot-initiated WS mode sends it via /nao/status instead.
     return jsonify({"level": -1, "mock": True})
 
 
@@ -545,9 +581,12 @@ def events():
                     data = q.get(timeout=15)
                     yield "data: {}\n\n".format(data)
                 except queue.Empty:
+                    # No events in 15 s — send an SSE keepalive comment to prevent
+                    # the browser or proxy from closing the idle connection.
                     yield ": keepalive\n\n"
         finally:
             with _event_queues_lock:
+                # Guard: client may have already been removed by a concurrent cleanup.
                 if q in _event_queues:
                     _event_queues.remove(q)
 

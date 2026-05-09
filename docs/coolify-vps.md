@@ -48,7 +48,7 @@ ufw deny 5678
 ufw enable
 ```
 
-> Les ports 8001 (nao-gateway) et 19001 (Bitterbot) ne sont pas exposés directement. Le port 9090 est restreint à l'IP publique du NAO (Python 2.7, OpenSSL trop vieux pour TLS 1.2) ; les autres clients WebSocket passent par `wss://$ROSBRIDGE_DOMAIN` via Traefik sur le port 443. Si l'IP du NAO est dynamique, la mettre à jour avec `ufw delete` + `ufw allow from NEW_IP to any port 9090`.
+> Le port 19001 (Bitterbot) n'est pas exposé directement. Le port 9090 est restreint à l'IP publique du NAO (Python 2.7, OpenSSL trop vieux pour TLS 1.2) ; les clients WebSocket passent par `wss://rosbridge.$DOMAIN` via Traefik sur le port 443. Si l'IP du NAO est dynamique, la mettre à jour avec `ufw delete` + `ufw allow from NEW_IP to any port 9090`.
 
 ---
 
@@ -69,7 +69,6 @@ Toutes les variables sensibles sont injectées par Coolify. Aucun secret n'est c
 |---|---|
 | `DOMAIN` | Ton domaine racine (ex : `mon-domain.com`) |
 | `DOCKERHUB_USERNAME` | Ton username Docker Hub |
-| `ROSBRIDGE_DOMAIN` | Sous-domaine rosbridge (ex : `rosbridge.mon-domain.com`) |
 | `OLLAMA_API_KEYS` | `openssl rand -hex 32` |
 | `WEBUI_SECRET_KEY` | `openssl rand -hex 32` |
 | `WEBUI_ADMIN_EMAIL` | Ton adresse email |
@@ -77,7 +76,6 @@ Toutes les variables sensibles sont injectées par Coolify. Aucun secret n'est c
 | `OAUTH_CLIENT_SECRET` | Idem, même credential |
 | `N8N_BASIC_AUTH_PASSWORD` | Mot de passe fort de ton choix |
 | `BITTERBOT_GATEWAY_TOKEN` | `openssl rand -hex 32` — doit correspondre à `gateway.auth.token` dans `bitterbot.json` |
-| `GATEWAY_API_KEY` | `openssl rand -hex 32` — clé `X-API-Key` pour les appels n8n → nao-gateway |
 
 **URI de callback à déclarer dans Google Cloud Console :**
 ```
@@ -114,7 +112,9 @@ GitHub → **Actions** :
 
 Chaque build prend 5–15 min. Les images produites :
 - `$DOCKERHUB_USERNAME/bitterbot:latest`
-- `$DOCKERHUB_USERNAME/nao-gateway:latest`
+- `$DOCKERHUB_USERNAME/naoqi-bridge:latest`
+- `$DOCKERHUB_USERNAME/nao-core:latest`
+- `$DOCKERHUB_USERNAME/body-gateway:latest`
 - `$DOCKERHUB_USERNAME/ros2-bridge:latest`
 
 **Rebuilds automatiques :**
@@ -145,7 +145,7 @@ docker compose up -d
 
 # Un service spécifique
 docker compose pull bitterbot-gateway && docker compose up -d bitterbot-gateway
-docker compose pull nao-gateway ros2-bridge && docker compose up -d nao-gateway ros2-bridge
+docker compose pull naoqi-bridge nao-core body-gateway ros2-bridge && docker compose up -d naoqi-bridge nao-core body-gateway ros2-bridge
 ```
 
 Ou depuis Coolify : bouton **Redeploy** sur la resource.
@@ -233,13 +233,14 @@ docker compose ps
 
 # Logs d'un service
 docker logs ollama -f
-docker logs nao-gateway -f
+docker logs body-gateway -f
+docker logs nao-core -f
 docker logs ros2-bridge -f
 
-# Vérifier l'isolation réseau de Bitterbot
+# Vérifier l'isolation réseau de Bitterbot (quand réactivé)
 docker exec bitterbot-gateway curl -s --max-time 3 https://example.com
 # Attendu : timeout ou "Could not resolve host"
 
-# Vérifier que Bitterbot atteint Ollama
+# Vérifier que Bitterbot atteint Ollama (quand réactivé)
 docker exec bitterbot-gateway curl -s http://ollama:11434/api/tags | head -c 100
 ```

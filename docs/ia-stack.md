@@ -41,7 +41,7 @@ Tous ces services tournent dans `ai-network`, sauf Bitterbot qui est isolé dans
 docker exec -it ollama ollama pull qwen3:8b
 ```
 
-**Changer le modèle utilisé par Bitterbot :** éditer `model:` dans `/opt/ia/bitterbot/config/bitterbot.json`.
+**Changer le modèle utilisé par body-gateway :** variable d'environnement `BRAIN_MODEL` dans Coolify.
 
 ---
 
@@ -72,7 +72,7 @@ https://chat.$DOMAIN/oauth/oidc/callback
 
 Le Pipe `NAO Brain` (`robotics/nao_brain/webui/nao_pipe.py`) connecte le chat Open WebUI au **même pipeline complet** que la parole directe à NAO.
 
-Le mot de réveil **« ok nao »** active l'agent IA (Bitterbot / Qwen 2.5:7b). Celui-ci répond en langage naturel ET pilote simultanément ses corps physiques (NAO, drones, tout corps dans `BODY_REGISTRY`) via ROS 2.
+Le mot de réveil **« ok nao »** active l'agent IA (Ollama / `BRAIN_MODEL`). Celui-ci répond en langage naturel ET pilote simultanément ses corps physiques (NAO, drones, tout corps dans `BODY_REGISTRY`) via ROS 2.
 
 ```
 ok nao, comment tu vas ?
@@ -90,7 +90,7 @@ Chat WebUI  ──"ok nao, [message]"──►  nao_pipe.py (Pipe)
                                             │
                                      body-gateway (_infer_sync)
                                             │
-                               Bitterbot API (Qwen 2.5:7b)
+                                  Ollama (BRAIN_MODEL)
                                             │
                                JSON { thoughts, emotion, actions }
                                             │
@@ -135,7 +135,7 @@ ssh -L 5678:localhost:5678 $VPS_USER@$DOMAIN
 **Volume :** `/opt/ia/n8n` → définitions de workflows
 
 **Usages typiques :**
-- Déclencher des actions sur le robot NAO via le nao-gateway
+- Déclencher des actions sur le robot NAO via `body-gateway` (POST localhost:8095/chat)
 - Chaîner des appels LLM via Ollama
 - Automatiser des tâches sur calendrier ou événement
 

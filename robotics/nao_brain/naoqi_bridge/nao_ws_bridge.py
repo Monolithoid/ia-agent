@@ -204,16 +204,21 @@ class _WebSocketApp(object):
     # ------------------------------------------------------------------
 
     def _connect(self):
+        """Open a TCP socket and complete the RFC 6455 WebSocket handshake."""
+        # TLS is not supported here — ssl module may be absent on OpenNAO firmware.
+        # The caller (NaoBridge.run) is responsible for providing a ws:// URL.
         if not self.url.startswith("ws://"):
             raise ValueError("Only ws:// is supported (got: {})".format(self.url))
         tail = self.url[5:]
 
+        # Split optional path from host:port — default to "/" if no path given.
         if "/" in tail:
             host_port, path = tail.split("/", 1)
             path = "/" + path
         else:
             host_port, path = tail, "/"
 
+        # Split optional port from host — default to 80 for plain HTTP/WS.
         if ":" in host_port:
             host, port_str = host_port.rsplit(":", 1)
             port = int(port_str)
@@ -238,18 +243,24 @@ class _WebSocketApp(object):
         self._sock.sendall(req.encode("ascii"))
 
         resp = b""
+        # Read the HTTP upgrade response until the header terminator is found.
         while b"\r\n\r\n" not in resp:
             chunk = self._sock.recv(4096)
+            # Server closed the connection before completing the HTTP handshake.
             if not chunk:
                 raise IOError("Connection closed during WebSocket handshake")
             resp += chunk
 
         status_line = resp.split(b"\r\n")[0]
+        # HTTP 101 Switching Protocols is the only acceptable response to an
+        # Upgrade: websocket request; anything else is a server-side rejection.
         if b"101" not in status_line:
             raise IOError("WebSocket handshake failed: {}".format(
                 status_line.decode("ascii", "replace")))
 
-        # Verify the server's Sec-WebSocket-Accept header (RFC 6455 §4.1)
+        # Verify the server's Sec-WebSocket-Accept header (RFC 6455 §4.1).
+        # The server must echo back SHA-1(key + GUID) in base64 to prove it
+        # understood the WebSocket protocol — guards against plain HTTP servers.
         expected = base64.b64encode(
             hashlib.sha1(
                 (raw_key + self._GUID).encode("ascii")
@@ -271,8 +282,12 @@ class _WebSocketApp(object):
 
         header = bytearray()
         header.append(0x80 | opcode)
+        # RFC 6455 §5.2 payload length encoding:
+        # < 126 bytes  → inline 7-bit value
+        # < 65536 bytes → marker 126 + 16-bit big-endian length
+        # else          → marker 127 + 64-bit big-endian length
         if length < 126:
-            header.append(0x80 | length)
+            header.append(0x80 | length)        # mask bit set (clients must mask)
         elif length < 65536:
             header.append(0x80 | 126)
             header.extend(struct.pack(">H", length))
@@ -298,33 +313,39 @@ class _WebSocketApp(object):
         return buf
 
     def _recv_loop(self):
+        """Receive and decode WebSocket frames until the connection closes."""
         while not self._closed:
             b0, b1 = bytearray(self._recv_exact(2))
             opcode = b0 & 0x0F
             is_masked = (b1 & 0x80) != 0
             length = b1 & 0x7F
+            # Decode extended payload length fields per RFC 6455 §5.2.
             if length == 126:
+                # 16-bit extended payload length follows.
                 length = struct.unpack(">H", self._recv_exact(2))[0]
             elif length == 127:
+                # 64-bit extended payload length follows.
                 length = struct.unpack(">Q", self._recv_exact(8))[0]
 
+            # Server-to-client frames are usually unmasked; read key only if masked.
             mask_key = bytearray(self._recv_exact(4)) if is_masked else None
             payload = bytearray(self._recv_exact(length))
 
+            # Unmask payload when a masking key was provided.
             if mask_key:
                 for i in range(length):
                     payload[i] ^= mask_key[i % 4]
 
-            if opcode == 0x1:   # text frame
+            if opcode == 0x1:   # text frame — dispatch as decoded string
                 if self.on_message:
                     self.on_message(self, payload.decode("utf-8", "replace"))
-            elif opcode == 0x2: # binary frame
+            elif opcode == 0x2: # binary frame — dispatch as raw bytes
                 if self.on_message:
                     self.on_message(self, bytes(payload))
-            elif opcode == 0x8: # close frame
+            elif opcode == 0x8: # close frame — server initiated close, exit loop
                 self._closed = True
                 break
-            elif opcode == 0x9: # ping → reply with pong (0xA)
+            elif opcode == 0x9: # ping → must reply with pong (opcode 0xA) per RFC 6455
                 self._send_frame(bytes(payload), opcode=0xA)
 
 
@@ -469,8 +490,10 @@ def _ensure_broker():
     (_AudioCapture). It must stay alive for the lifetime of the capture session.
     """
     global _BROKER
+    # Already initialised — reuse the singleton rather than creating a second broker.
     if _BROKER is not None:
         return True
+    # Mock mode or missing NAOqi SDK — broker cannot be created.
     if not HAS_NAOQI or ALBroker is None:
         return False
     try:
@@ -506,27 +529,41 @@ class _AudioCapture(ALModule):
         self._done     = threading.Event()
 
     def processRemote(self, nb_ch, nb_samp, _ts, buffer):
+        """NAOqi audio callback: accumulate PCM frames and detect end-of-speech.
+
+        Called by ALAudioDevice at _RATE Hz.  We keep only the first (front) channel
+        by striding through the interleaved multichannel buffer.
+        """
+        # Stop collecting once the VAD has already signalled completion.
         if self._done.is_set():
             return
         try:
+            # Fast path: buffer is already a sequence of ints (most NAO firmware versions).
             samples = [buffer[i] for i in range(0, nb_ch * nb_samp, nb_ch)]
         except TypeError:
+            # Slow path: buffer is a raw bytes object — unpack as signed 16-bit LE.
             all_s = struct.unpack_from("<{}h".format(nb_ch * nb_samp), bytes(buffer))
             samples = list(all_s[::nb_ch])
+        # Guard: empty frame (should not happen, but avoids div-by-zero below).
         if not samples:
             return
         rms = (sum(s * s for s in samples) / len(samples)) ** 0.5
         if not self._speaking:
+            # Wait for the RMS to exceed the speech threshold before recording.
             if rms > self._SPEECH_RMS:
                 self._speaking = True
                 self._pcm.extend(samples)
         else:
+            # Already in speech: accumulate samples and watch for trailing silence.
             self._pcm.extend(samples)
             if rms < self._SILENCE_RMS:
+                # Frame is silent — count consecutive silent frames.
                 self._sil_n += 1
+                # Enough consecutive silence frames → speech segment is complete.
                 if self._sil_n >= self._sil_need:
                     self._done.set()
             else:
+                # Frame is loud again — reset silence counter.
                 self._sil_n = 0
 
     def to_wav(self):
@@ -574,8 +611,15 @@ class NaoBridge(object):
         self._stiffness_lock = threading.Lock()
 
     def _get_tts_method(self):
+        """Return the effective TTS method.
+
+        "auto" selects mp3 when NAOqi is available (real robot), otherwise
+        falls back to text — useful for development/mock mode on a non-NAO host.
+        """
+        # Explicit override takes precedence over auto-detection.
         if self._tts_method_override != "auto":
             return self._tts_method_override
+        # Auto: mp3 requires NAOqi ALAudioPlayer; on mock hosts use text fallback.
         return "mp3" if HAS_NAOQI else "text"
 
     # ------------------------------------------------------------------
@@ -583,6 +627,12 @@ class NaoBridge(object):
     # ------------------------------------------------------------------
 
     def run(self):
+        """Connect and run the WebSocket loop; reconnect on disconnect.
+
+        Blocks until stop() is called.  On each connection loss, waits
+        RECONNECT_DELAY seconds before retrying (exponential backoff is not
+        needed here — the NAO network is typically on a stable LAN).
+        """
         while not self._stop.is_set():
             print("[bridge] Connexion a {} ...".format(self.vps_url), file=sys.stderr)
             try:
@@ -597,6 +647,8 @@ class NaoBridge(object):
             except Exception as e:
                 print("[bridge] Erreur WebSocket : {}".format(e), file=sys.stderr)
 
+            # Only sleep if stop() has not been requested — avoids a spurious
+            # delay when the user presses Ctrl+C.
             if not self._stop.is_set():
                 print("[bridge] Reconnexion dans {}s ...".format(RECONNECT_DELAY), file=sys.stderr)
                 time.sleep(RECONNECT_DELAY)
@@ -682,11 +734,17 @@ class NaoBridge(object):
             threading.Thread(target=self._wakeword_loop).start()
 
     def _on_message(self, ws, raw):
+        """Handle an incoming WebSocket frame from rosbridge.
+
+        rosbridge uses the "publish" op to forward topic messages.
+        All other ops (service_response, set_level, etc.) are ignored here.
+        """
         try:
             msg = json.loads(raw)
         except ValueError:
             return
         _ws_log(u"←", msg)
+        # Only "publish" ops carry robot commands — skip status and control messages.
         if msg.get("op") != "publish":
             return
         topic = msg.get("topic", "")
@@ -704,12 +762,20 @@ class NaoBridge(object):
     # ------------------------------------------------------------------
 
     def _dispatch(self, topic, data):
+        """Route an incoming topic message to the appropriate NAOqi command.
+
+        Each branch checks both the topic name AND that the corresponding module
+        is enabled — this allows the user to run the bridge with a subset of
+        capabilities (e.g. leds + speech only).
+        """
         if topic == "/nao/audio_out" and "audio_out" in self._modules:
             b64 = data.get("data", "")
+            # Skip empty audio payloads that could arrive during a TTS race.
             if b64:
                 threading.Thread(target=self._play_audio, args=(b64,)).start()
         elif topic == "/nao/speech" and "speech" in self._modules:
             text = data.get("data", "")
+            # Skip empty text — NAOqi TTS would error on an empty string.
             if text:
                 self._say(text)
         elif topic == "/nao/cmd_vel" and "move" in self._modules:
@@ -745,6 +811,7 @@ class NaoBridge(object):
                 payload = json.loads(data.get("data", "{}"))
             except ValueError:
                 return
+            # Multi-joint payload (from motion_engine): "joints" key is present.
             if "joints" in payload:
                 self._motion_joints(
                     [str(j) for j in payload["joints"]],
@@ -764,6 +831,7 @@ class NaoBridge(object):
                 return
             groups = payload.get("groups", [])
             value  = float(payload.get("value", 0.0))
+            # Guard: groups must be a list (single-group string would iterate chars).
             if isinstance(groups, list):
                 self._set_stiffness(groups, value)
 
@@ -860,13 +928,17 @@ class NaoBridge(object):
             for grp in groups:
                 grp = grp.lower()
                 naoqi_group = _NAOQI_GROUP.get(grp)
+                # Unknown group key — skip rather than sending a bad NAOqi group name.
                 if not naoqi_group:
                     print("[bridge] stiffness: groupe inconnu '{}'".format(grp), file=sys.stderr)
                     continue
+                # Track which groups have stiffness ON so _motion_joint can gate on it.
                 if value > 0.0:
                     self._stiffness_enabled.add(grp)
                 else:
+                    # value == 0 means "release stiffness" — remove from enabled set.
                     self._stiffness_enabled.discard(grp)
+                # Mock mode: log instead of calling NAOqi.
                 if not HAS_NAOQI:
                     print("[MOCK] stiffness: {} ({}) -> {}".format(grp, naoqi_group, value),
                           file=sys.stderr)
@@ -886,11 +958,14 @@ class NaoBridge(object):
         grp = _JOINT_TO_GROUP.get(joint, "head")
         with self._stiffness_lock:
             enabled = grp in self._stiffness_enabled
+        # Do not attempt to move a joint whose group stiffness is off —
+        # NAOqi would ignore the command and the joint would stay limp.
         if not enabled:
             if not HAS_NAOQI:
                 print("[MOCK] motion_joint skipped (stiffness off): {}".format(joint),
                       file=sys.stderr)
             return
+        # Mock mode: log the command instead of calling NAOqi.
         if not HAS_NAOQI:
             print("[MOCK] motion_joint: {} -> {:.3f} rad speed={}".format(joint, angle, speed),
                   file=sys.stderr)
@@ -905,17 +980,21 @@ class NaoBridge(object):
 
     def _motion_joints(self, joints, angles, speed):
         """Move multiple joints simultaneously; all joints must share enabled groups."""
+        # Guard: empty joint list — nothing to do.
         if not joints:
             return
-        # Determine which groups need to be active and check they're all enabled
+        # Determine which groups need to be active and check they're all enabled.
         grps_needed = set(_JOINT_TO_GROUP.get(j, "head") for j in joints)
         with self._stiffness_lock:
             disabled = grps_needed - self._stiffness_enabled
+        # Reject the entire multi-joint command if any group is not stiffened.
+        # Sending a partial move with some limp joints would produce unexpected poses.
         if disabled:
             if not HAS_NAOQI:
                 print("[MOCK] motion_joints skipped (stiffness off): {}".format(
                     list(disabled)), file=sys.stderr)
             return
+        # Mock mode: log each joint individually.
         if not HAS_NAOQI:
             for j, a in zip(joints, angles):
                 print("[MOCK] motion_joint: {} -> {:.3f} rad speed={}".format(j, a, speed),
@@ -953,6 +1032,8 @@ class NaoBridge(object):
         _exiting_busy = False
         while not self._stop.is_set():
             try:
+                # During TTS/recording, suppress additional wake-word detections
+                # so the robot does not start a new capture while still speaking.
                 if time.time() < self._busy_until:
                     _exiting_busy = True
                     time.sleep(0.2)
@@ -971,8 +1052,12 @@ class NaoBridge(object):
                     continue
 
                 value = memory.getData("WordRecognized")
+                # Accept a wake-word match only when confidence > 0.3 and
+                # the ALMemory result contains at least [phrase, confidence].
                 if value and len(value) >= 2 and float(value[1]) > 0.3:
                     phrase = value[0].lower().strip()
+                    # Deduplicate: ignore the same phrase seen in consecutive polls
+                    # (ALMemory keeps the last result until explicitly cleared).
                     if phrase != last_word and ("ok nao" in phrase or "okay nao" in phrase):
                         last_word = phrase
                         self._busy_until = time.time() + 20.0  # lock out wake word during listen + TTS
@@ -1018,11 +1103,13 @@ class NaoBridge(object):
             self._audio_capture = None
             _CAPTURE_REF = None
 
+            # VAD timed out without detecting speech above threshold — nothing to send.
             if not capture._speaking:
                 print("[bridge] Aucune parole détectée.", file=sys.stderr)
                 return
 
             audio_bytes = capture.to_wav()
+            # Guard: empty WAV would cause Whisper to error; skip silently.
             if not audio_bytes:
                 return
 
@@ -1030,6 +1117,7 @@ class NaoBridge(object):
             if isinstance(encoded, bytes):
                 encoded = encoded.decode("ascii")
 
+            # Only publish if bridge is still running — avoids sending on shutdown.
             if not self._stop.is_set():
                 duration = len(capture._pcm) / float(_AudioCapture._RATE)
                 print("[bridge] Audio VAD prêt ({} octets, {:.1f}s) — envoi ...".format(
@@ -1065,10 +1153,12 @@ class NaoBridge(object):
             for j in joints:
                 try:
                     val = memory.getData(_TEMP_KEY.format(j))
+                    # ALMemory returns None for joints not available on this firmware.
                     if val is not None:
                         readings.append(float(val))
                 except Exception:
                     pass
+            # Report the hottest joint per group — the worst case is the safety-relevant value.
             if readings:
                 temps[grp] = int(max(readings))
         return temps
@@ -1084,6 +1174,7 @@ class NaoBridge(object):
         for name, key in _ENV_SENSOR_KEYS.items():
             try:
                 val = memory.getData(key)
+                # Sensor not available on this firmware version — skip gracefully.
                 if val is not None:
                     env[name] = round(float(val), 1)
             except Exception:
@@ -1091,8 +1182,14 @@ class NaoBridge(object):
         return env
 
     def _status_loop(self):
+        """Publish battery + sensor readings every STATUS_INTERVAL seconds.
+
+        Runs in a daemon thread started by _on_open.  Exits when the bridge
+        is stopped or the WebSocket is closed so it does not outlive its connection.
+        """
         while not self._stop.is_set() and self.ws:
             level = -1
+            # Battery level is only available with NAOqi — keep -1 in mock mode.
             if HAS_NAOQI:
                 proxy = get_proxy("ALBattery")
                 if proxy:
@@ -1180,22 +1277,26 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    # Both --provision-only and --vps-only are valid; only the combination of
+    # neither is invalid.
     if not args.provision and not args.vps:
         parser.error("--vps is required unless using --provision only.")
 
     NAO_IP = args.nao_ip
     NAO_PORT = args.nao_port
 
-    # Apply post-flash provisioning if requested
+    # Apply post-flash provisioning if requested.
     if args.provision:
         _provision(args.provision)
+        # When --vps was not given, the user only wanted to provision — exit now.
         if not args.vps:
             sys.exit(0)
 
-    # Validate and parse the requested module list
+    # Validate and parse the requested module list.
     if args.modules is not None:
         requested = set(m.strip().lower() for m in args.modules.split(",") if m.strip())
         unknown = requested - ALL_MODULES
+        # Reject unknown module names early rather than silently ignoring them.
         if unknown:
             parser.error(
                 "Unknown module(s): {}. Valid modules: {}".format(
@@ -1205,7 +1306,7 @@ if __name__ == "__main__":
             )
         active_modules = requested
     else:
-        active_modules = None  # all modules
+        active_modules = None  # None means all modules (default)
 
     bridge = NaoBridge(args.vps, modules=active_modules, audio_capture=args.audio_capture,
                        tts_method=args.tts_method)

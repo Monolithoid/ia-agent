@@ -135,7 +135,13 @@ class CognitiveRendererNode(Node):
     # ──────────────────────────────────────────────────────────────────────────
 
     def _on_cognitive(self, msg: String):
+        """Accept a new cognitive state and update the animation profile.
+
+        Only known states are accepted so a bad message from body_gateway
+        cannot corrupt the animation loop with an unmapped profile.
+        """
         state = msg.data.lower().strip()
+        # Ignore unknown states — only defined profiles have a rendering spec.
         if state in _PROFILES:
             with self._lock:
                 self._state = state
@@ -147,17 +153,32 @@ class CognitiveRendererNode(Node):
         self.get_logger().info(f"Dream phase: {msg.data}")
 
     def _on_emotion(self, msg: String):
+        """Map an emotion label to a cognitive state and apply it if the robot is idle.
+
+        Emotion updates have lower priority than direct cognitive state updates
+        (thinking, responding, etc.). They only take effect when the robot is
+        in the neutral idle state to avoid interrupting active animations.
+        """
         emotion = msg.data.lower().strip()
         mapped = _EMOTION_TO_STATE.get(emotion)
+        # Guard: unknown emotion has no mapped profile — discard silently.
         if mapped:
             with self._lock:
-                # Emotion overrides only when robot is in neutral idle state
+                # Only override when idle — active cognitive states take precedence
+                # over passive emotional colouring.
                 if self._state == "idle":
                     self._state = mapped
 
     def _on_energy(self, msg: String):
+        """Translate an energy level string into per-group stiffness commands.
+
+        Stiffness controls how actively the robot holds its joints — low energy
+        = limp/relaxed, high energy = tense/rigid.  Only head and arm groups
+        are driven; leg stiffness is never changed here (balance handled by NAOqi).
+        """
         level = msg.data.lower().strip()
         stiffness = _ENERGY_STIFFNESS.get(level)
+        # Guard: unknown energy level — no stiffness mapping available, skip.
         if stiffness is None:
             return
         head_v, larm_v, rarm_v = stiffness
@@ -195,6 +216,14 @@ class CognitiveRendererNode(Node):
             time.sleep(_ANIM_PERIOD)
 
     def _render_leds(self, r: float, g: float, b: float, pulse: bool):
+        """Publish an LED colour command, optionally with sinusoidal pulsing.
+
+        Pulsing is used for states that express ongoing internal activity
+        (thinking, dreaming, uncertain) — it makes the robot visibly "alive"
+        during the 3-8 s Ollama inference window.
+        """
+        # Modulate brightness with a sine wave when pulsing is active.
+        # Factor oscillates between 0 and 1, giving a breathing-lamp effect.
         if pulse:
             factor = 0.5 + 0.5 * math.sin(self._phase * 1.5)
             r *= factor
@@ -251,7 +280,8 @@ class CognitiveRendererNode(Node):
         msg = String()
 
         if arm_mode == "float":
-            # Dreamy slow oscillation: shoulder pitch gently rises and falls
+            # Dreamy slow oscillation: shoulder pitch gently rises and falls.
+            # Used during dreaming state — extremely slow so it is subtle.
             delta = 0.10 * math.sin(self._phase * 0.08)
             pitch = round(1.30 + delta, 3)
             msg.data = json.dumps({
@@ -261,6 +291,7 @@ class CognitiveRendererNode(Node):
             })
         else:
             pose = _ARM_POSES.get(arm_mode)
+            # Unknown arm mode — silently skip rather than publishing garbage angles.
             if not pose:
                 return
             msg.data = json.dumps({

@@ -51,7 +51,15 @@ class Pipe:
         self.name = "NAO Brain"
 
     def pipe(self, body: dict, __user__: dict = {}) -> str:
+        """Main Open WebUI entry point called for every chat message.
+
+        Dispatches to the appropriate handler based on message type:
+        - __ping__  → connectivity check without Ollama inference
+        - nao_voice → retrieve pre-computed voice result (Path 2)
+        - default   → full text inference via body-gateway (Path 1)
+        """
         messages = body.get("messages", [])
+        # Guard: no messages in body — nothing to process.
         if not messages:
             return "Aucun message."
 
@@ -61,11 +69,13 @@ class Pipe:
             (m for m in reversed(messages) if m.get("role") == "user"),
             None,
         )
+        # Guard: no user-role message found in the list.
         if not user_msg:
             return "Aucun message utilisateur."
 
         content = user_msg.get("content", "")
         # Open WebUI ≥ 0.4 may send content as a list of content blocks
+        # instead of a plain string — flatten to text in that case.
         if isinstance(content, list):
             user_message = " ".join(
                 part.get("text", "")
@@ -75,6 +85,7 @@ class Pipe:
         else:
             user_message = content
 
+        # Guard: empty message text — nothing useful to send to the LLM.
         if not user_message:
             return "Message vide."
 
@@ -82,11 +93,12 @@ class Pipe:
         if user_message.strip() == "__ping__":
             return self._ping()
 
-        # Path 2 — pre-computed result from body-gateway (voice "Ok nao")
+        # Path 2 — body-gateway already ran inference on a voice input
+        # and stored the result in its voice-queue; retrieve it here.
         if body.get("nao_voice"):
             return self._handle_voice(user_message)
 
-        # Path 1 — WebUI text message
+        # Path 1 — regular WebUI text message → full LLM inference.
         return self._call_gateway(user_message)
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -94,11 +106,17 @@ class Pipe:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _ping(self) -> str:
+        """Check that the pipe can reach body-gateway without triggering inference.
+
+        Returns a user-visible status message indicating whether the robot
+        stack is reachable.
+        """
         try:
             r = requests.get(
                 f"{self.valves.body_gateway_url}/ping",
                 timeout=5,
             )
+            # Gateway replied and confirmed it is healthy.
             if r.ok and r.json().get("ok"):
                 return "✅ body-gateway joignable — pipe opérationnel."
             return f"⚠️ body-gateway a répondu {r.status_code}."
@@ -115,6 +133,15 @@ class Pipe:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _handle_voice(self, transcription: str) -> str:
+        """Retrieve the pre-computed voice result and display it in the chat.
+
+        body-gateway ran inference immediately on the wake-word audio.
+        The Pipe only needs to pop the result from the voice-queue and format
+        it — no second Ollama call required.
+
+        Falls back to a normal /chat call if the queue is empty (e.g. the
+        voice result expired before the Pipe was notified).
+        """
         try:
             r = requests.get(
                 f"{self.valves.body_gateway_url}/voice-pop",
@@ -122,6 +149,7 @@ class Pipe:
             )
             if r.ok:
                 data = r.json()
+                # Non-empty dict means a pre-computed result is available.
                 if data:
                     return f"*🎤 « {transcription} »*\n\n" + self._format(data)
         except Exception:
@@ -134,6 +162,11 @@ class Pipe:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _call_gateway(self, text: str) -> str:
+        """Forward a text message to body-gateway and return the formatted reply.
+
+        Uses a (connect_timeout=10s, read_timeout=None) pair so the HTTP
+        connection is established quickly while allowing long LLM generations.
+        """
         try:
             r = requests.post(
                 f"{self.valves.body_gateway_url}/chat",
@@ -157,6 +190,13 @@ class Pipe:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _format(self, data: dict) -> str:
+        """Render the body-gateway JSON response as a human-readable chat message.
+
+        Layout:
+          **NAO :** <speech>
+          *Actions:* <emoji> type {detail} ...
+          *(emotion) thoughts*
+        """
         speech = data.get("speech", "")
         emotion = data.get("emotion", "neutral")
         thoughts = data.get("thoughts", "")
@@ -164,9 +204,11 @@ class Pipe:
 
         lines = []
 
+        # Primary content: what NAO said aloud.
         if speech:
             lines.append(f"**NAO :** {speech}")
 
+        # Secondary content: physical actions (exclude speech, already shown above).
         non_speech = [a for a in actions if a.get("type") != "speech"]
         if non_speech:
             icons = {"motion": "🤸", "leds": "💡", "move": "🚶", "look": "👀"}
@@ -179,6 +221,7 @@ class Pipe:
                 )
             lines.append("\n*Actions :*\n" + "\n".join(parts))
 
+        # Tertiary content: internal thoughts shown in italics.
         if thoughts:
             lines.append(f"\n*({emotion}) {thoughts}*")
 

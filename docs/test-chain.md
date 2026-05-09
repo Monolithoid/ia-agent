@@ -33,7 +33,7 @@ ollama  (:11434, port exposé sur le host)
 body-gateway  (publie sur ROS 2 DDS domain 42)
   │  /bodies/nao_01/actuators/*          ← Maillon 4
   ▼
-naoqi-driver  (host network, DDS 42)
+nao-core/naoqi_driver  (host network, DDS 42)
   │  POST http://localhost:8090/say|motion|leds|…     ← Maillon 5
   ▼
 naoqi-bridge  (:8090, exposé sur 127.0.0.1)
@@ -67,12 +67,11 @@ Vérifie que les conteneurs requis sont dans l'état `running`.
 | `chat-relay` | Proxy Caddy WebUI ↔ body-gateway | Oui |
 | `body-gateway` | Cerveau ROS 2 + endpoint HTTP | Oui |
 | `naoqi-bridge` | Bridge HTTP ↔ SDK NAOqi | Oui |
-| `naoqi-driver` | Nœud ROS 2, traduit topics ↔ HTTP | Oui |
+| `nao-core` | naoqi_driver + cognitive_renderer + motion_engine | Oui |
 | `ollama` | Moteur LLM | Recommandé |
 | `chromadb` | Mémoire vectorielle | Facultatif |
 | `n8n` | Orchestration workflows | Facultatif |
 | `whisper-asr` | Transcription vocale | Facultatif |
-| `cognitive-renderer` | Animations LEDs / tête | Facultatif |
 | `ros2-bridge` | WebSocket rosbridge | Facultatif |
 
 > Voir [ia-stack.md](ia-stack.md) pour la description complète de chaque service IA et [bridge-ia-ros2-nao.md](bridge-ia-ros2-nao.md) pour les services robotiques.
@@ -119,7 +118,7 @@ curl -sf -X POST http://localhost:8095/chat \
 
 **Ce qui est testé :** `body-gateway` tourne en `network_mode: host` et appelle Ollama sur `http://localhost:11434` (Ollama expose son port 11434 sur l'hôte). Deux sous-tests :
 
-1. `GET /api/tags` — Ollama répond et le modèle `qwen2.5:7b` est présent
+1. `GET /api/tags` — Ollama répond et le modèle configuré dans `BRAIN_MODEL` est présent
 2. `POST /v1/chat/completions` — l'endpoint OpenAI-compatible répond avec un champ `choices`
 
 **Succès :** Ollama répond, le modèle est listé, et `/v1/chat/completions` retourne une réponse valide.
@@ -131,10 +130,10 @@ curl -sf -X POST http://localhost:8095/chat \
 curl -sf http://localhost:11434/api/tags | python3 -c \
   "import json,sys; [print(m['name']) for m in json.load(sys.stdin)['models']]"
 
-# Test inférence directe
+# Test inférence directe (adapter le modèle si besoin)
 curl -sf -X POST http://localhost:11434/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen2.5:7b","messages":[{"role":"user","content":"ok"}],"stream":false}'
+  -d '{"model":"qwen3:1.7b","messages":[{"role":"user","content":"ok"}],"stream":false}'
 ```
 
 ---
@@ -165,19 +164,19 @@ curl -sf --max-time 60 -X POST http://localhost:8095/chat \
 
 ```bash
 # Lister les topics actifs (DDS domain 42)
-docker exec naoqi-driver bash -c \
+docker exec nao-core bash -c \
   "source /opt/ros/humble/setup.bash && ROS_DOMAIN_ID=42 ros2 topic list"
 
 # Vérifier qu'il y a bien un publisher sur /cognitive_state
-docker exec naoqi-driver bash -c \
+docker exec nao-core bash -c \
   "source /opt/ros/humble/setup.bash && ROS_DOMAIN_ID=42 ros2 topic info /cognitive_state"
 ```
 
 ---
 
-### Maillon 5 — naoqi-driver → naoqi-bridge (localhost:8090)
+### Maillon 5 — nao-core → naoqi-bridge (localhost:8090)
 
-**Ce qui est testé :** `naoqi-driver` reçoit les topics ROS 2 et les traduit en appels HTTP vers `naoqi-bridge` sur `localhost:8090`. Ce maillon valide que le bridge Flask est démarré, accessible, et répond aux commandes.
+**Ce qui est testé :** `nao-core/naoqi_driver` reçoit les topics ROS 2 et les traduit en appels HTTP vers `naoqi-bridge` sur `localhost:8090`. Ce maillon valide que le bridge Flask est démarré, accessible, et répond aux commandes.
 
 **Succès :** `/health` retourne `{"ok": true}`, `/say` et `/leds` retournent `{"ok": true}` (en mode mock ou réel).
 
@@ -245,7 +244,7 @@ ssh -L 5678:localhost:5678 $VPS_USER@$DOMAIN
 | 0 | Tous les conteneurs requis en `running` |
 | 1 | HTTP 400 `missing text` depuis open-webui vers chat-relay |
 | 2 | HTTP 400 `missing text` depuis le host sur :8095 |
-| 3 | Ollama répond, `qwen2.5:7b` listé, `/v1/chat/completions` OK |
+| 3 | Ollama répond, modèle `BRAIN_MODEL` listé, `/v1/chat/completions` OK |
 | 3b | JSON `{speech, emotion, thoughts, actions}` retourné |
 | 4 | `/cognitive_state` et `/bodies/nao_01/…` visibles sur DDS 42 |
 | 5 | `naoqi-bridge /health` et `/say` retournent `{"ok": true}` |
@@ -262,10 +261,10 @@ ssh -L 5678:localhost:5678 $VPS_USER@$DOMAIN
 | `Could not resolve host: chat-relay` | 1 | open-webui hors de `ai-network` | Vérifier `networks:` dans `docker-compose.yml` |
 | `Connection refused` sur :8095 depuis open-webui | 1–2 | chat-relay non démarré | `docker compose up -d chat-relay` |
 | `Connection refused` sur localhost:8095 | 2 | body-gateway crashé | `docker logs body-gateway` |
-| `model not found` dans Ollama | 3 | Modèle non téléchargé | `docker exec -it ollama ollama pull qwen2.5:7b` |
+| `model not found` dans Ollama | 3 | Modèle non téléchargé | `docker exec -it ollama ollama pull qwen3:1.7b` |
 | Timeout sur `/v1/chat/completions` | 3 | Modèle non chargé ou CPU saturé | Attendre le chargement initial (~30 s) |
 | JSON parse error dans body-gateway | 3b | Ollama ne retourne pas du JSON strict | Vérifier le system prompt `_AWAKE_SYSTEM` dans `body_gateway.py` |
-| Topics ROS 2 absents | 4 | DDS domain incorrect ou body-gateway crashé | `docker logs body-gateway` ; vérifier `ROS_DOMAIN_ID=42` |
+| Topics ROS 2 absents | 4 | DDS domain incorrect ou body-gateway/nao-core crashé | `docker logs body-gateway` ; `docker logs nao-core` ; vérifier `ROS_DOMAIN_ID=42` |
 | `Connection refused` sur localhost:8090 | 5 | naoqi-bridge non démarré | `docker compose up -d naoqi-bridge` |
 | `connected: true` avec NAO éteint | 6 | Ancienne connexion TCP non fermée | Redémarrer `naoqi-bridge` |
 | Pas de ligne `MOCK` dans les logs | 6 | Le SDK qi a été trouvé et NAO_IP est défini | Normal si NAO était allumé lors du démarrage |

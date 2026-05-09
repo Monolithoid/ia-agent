@@ -117,9 +117,16 @@ class RobotBridgeBase:
     # ── Internal ─────────────────────────────────────────────────────────────
 
     def _mark_disconnected(self, reason: str = ""):
+        """Mark the bridge as disconnected and trigger cleanup hooks.
+
+        Thread-safe: uses _conn_lock to avoid a race between the reconnect
+        loop setting _connected=True and a route's except block setting it False.
+        """
         with self._conn_lock:
             was_connected = self._connected
             self._connected = False
+        # Only log and call hook on an actual transition (connected → disconnected).
+        # Avoids duplicate log lines when _mark_disconnected is called repeatedly.
         if was_connected:
             self._log(
                 "Connection lost{} — will retry in {}s.".format(
@@ -153,7 +160,14 @@ class RobotBridgeBase:
             return False
 
     def _reconnect_loop(self):
+        """Background daemon thread: attempt reconnection whenever disconnected.
+
+        Sleeps RECONNECT_INTERVAL seconds between checks whether connected or not —
+        this also acts as a debounce if a successful connection drops immediately.
+        """
         while self._running:
+            # Only attempt a connection when currently disconnected —
+            # avoids calling _connect_impl while an existing session is live.
             if not self.connected:
                 self._connect_once()
             time.sleep(self._reconnect_interval)
