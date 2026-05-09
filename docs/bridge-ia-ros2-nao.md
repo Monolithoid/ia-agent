@@ -1,6 +1,6 @@
 # Bridge IA / ROS 2 / NAO
 
-Translation layer between the AI stack (Ollama, Open WebUI) and the NAO robot, via ROS 2 Jazzy and the rosbridge WebSocket protocol.
+Translation layer between the AI stack (Ollama, Open WebUI) and the NAO robot, via ROS 2 Humble and the rosbridge WebSocket protocol.
 
 ---
 
@@ -22,7 +22,7 @@ Open WebUI (chat / voice)
                                                   └─► NAOqi SDK → speaker, LEDs, motors
 ```
 
-The NAO robot establishes an **outbound WebSocket connection** to `ws://rosbridge.$ROSBRIDGE_DOMAIN` (port 9090 or proxied via Traefik on 443). No inbound connection to the robot is required.
+The NAO robot establishes an **outbound WebSocket connection** to `wss://rosbridge.$DOMAIN` (port 443, proxied via Traefik). No inbound connection to the robot is required.
 
 ---
 
@@ -33,7 +33,7 @@ The NAO robot establishes an **outbound WebSocket connection** to `ws://rosbridg
 **Image:** `$DOCKERHUB_USERNAME/ros2-bridge:latest` (built by GitHub Actions)
 **Port:** 9090 (internal only — accessed via `rosbridge-proxy`)
 
-ROS 2 Jazzy + `rosbridge_suite`. Exposes a JSON WebSocket following the rosbridge protocol. Runs in `network_mode: host` to share DDS domain 42 with other ROS 2 nodes.
+ROS 2 Humble + `rosbridge_suite`. Exposes a JSON WebSocket following the rosbridge protocol. Runs in `network_mode: host` to share DDS domain 42 with other ROS 2 nodes.
 
 ---
 
@@ -43,7 +43,7 @@ ROS 2 Jazzy + `rosbridge_suite`. Exposes a JSON WebSocket following the rosbridg
 **Role:** WebSocket proxy between Traefik (Docker network) and `ros2-bridge` (host network)
 
 ```
-wss://$ROSBRIDGE_DOMAIN → Traefik :443 (TLS) → rosbridge-proxy :80 (Caddy) → host:9090 (ros2-bridge)
+wss://rosbridge.$DOMAIN → Traefik :443 (TLS) → rosbridge-proxy :80 (Caddy) → host:9090 (ros2-bridge)
 ```
 
 Caddy proxies WebSocket connections to `host-gateway:9090`. Traefik handles the TLS certificate.
@@ -54,7 +54,7 @@ Caddy proxies WebSocket connections to `host-gateway:9090`. Traefik handles the 
 
 ### naoqi_driver
 
-**Image:** built with the `robotics` profile
+**Container:** `nao-core` (runs alongside `cognitive_renderer` and `motion_engine`)
 **Role:** ROS 2 bridge node — translates `/bodies/{ROBOT_ID}/actuators/*` commands into `/nao/*` topics that `nao_ws_bridge.py` subscribes to via rosbridge.
 
 Also handles:
@@ -75,6 +75,7 @@ Also handles:
 
 ### cognitive_renderer
 
+**Container:** `nao-core` (runs alongside `naoqi_driver` and `motion_engine`)
 **Role:** Translates cognitive/emotional state into continuous NAO physical expression (LEDs + head motion). Runs an animation loop at 1 tick/minute so the robot always appears alive, even during the 3-8 s Ollama inference window.
 
 **Subscribed topics:**
@@ -112,7 +113,7 @@ Also handles:
 | Variable | Description |
 |---|---|
 | `BRAIN_URL` | Ollama URL, default `http://localhost:11434` |
-| `BRAIN_MODEL` | LLM model, default `qwen2.5:7b` |
+| `BRAIN_MODEL` | LLM model, default `qwen3:1.7b` |
 | `BRAIN_API_KEY` | Ollama API key |
 | `BRAIN_TIMEOUT` | Ollama timeout in seconds, default 120 |
 | `BODY_REGISTRY` | Comma-separated body IDs, default `nao_01` |
@@ -214,16 +215,6 @@ Robot hears "ok nao"
 ```
 
 ---
-
-## Deploy the robotics profile
-
-Services `ros2-bridge`, `naoqi_driver`, `cognitive_renderer`, and `body_gateway` require the `robotics` Docker Compose profile:
-
-```bash
-docker compose --profile robotics up -d
-```
-
-Coolify automatically applies the correct profile when configured in the resource options.
 
 ---
 

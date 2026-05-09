@@ -11,10 +11,10 @@ The NAO cannot receive inbound connections from the internet (local network fire
 ```
 NAO (local network)
   └─► nao_ws_bridge.py (Python 2.7, no external dependencies)
-        └─► Outbound WebSocket ws://VPS_IP:9090
-              └─► ros2-bridge (ROS 2 Jazzy, VPS)
-                    └─► naoqi_driver → cognitive_renderer → body_gateway
-                                                              └─► Ollama (LLM)
+        └─► Outbound WebSocket wss://rosbridge.$DOMAIN:443
+              └─► rosbridge-proxy → ros2-bridge (ROS 2 Humble, VPS)
+                    └─► nao-core (naoqi_driver + cognitive_renderer + motion_engine)
+                          └─► body_gateway → Ollama (LLM)
 ```
 
 Once connected the bridge subscribes to command topics and executes them via the native NAOqi SDK. It also publishes status (battery) and captured audio back to the VPS.
@@ -29,8 +29,8 @@ Once connected the bridge subscribes to command topics and executes them via the
 |---|---|---|
 | `robotics/nao_brain/naoqi_bridge/nao_ws_bridge.py` | **NAO robot** | Outbound WebSocket client → rosbridge VPS |
 | `robotics/nao_brain/naoqi_bridge/app.py` | **VPS (Docker)** | HTTP compatibility API (fallback, robot-initiated mode) |
-| `robotics/nao_brain/naoqi_driver/naoqi_driver_node.py` | **VPS (ROS 2)** | Bridges `/bodies/*/actuators/*` ↔ `/nao/*` topics |
-| `robotics/nao_brain/cognitive_renderer/cognitive_renderer_node.py` | **VPS (ROS 2)** | Translates cognitive state → LED + head animations |
+| `robotics/nao_brain/naoqi_driver/naoqi_driver_node.py` | **VPS (container nao-core)** | Bridges `/bodies/*/actuators/*` ↔ `/nao/*` topics |
+| `robotics/nao_brain/cognitive_renderer/cognitive_renderer_node.py` | **VPS (container nao-core)** | Translates cognitive state → LED + head animations |
 | `robotics/nao_brain/body_gateway/body_gateway.py` | **VPS (ROS 2)** | LLM (Ollama) ↔ robot bodies orchestrator |
 | `robotics/nao_brain/webui/nao_pipe.py` | **VPS (Open WebUI)** | Open WebUI Pipe — chat interface for NAO Brain |
 
@@ -140,7 +140,7 @@ Open WebUI (chat)                   NAO wake word "ok nao"
             ▼          ▼          ▼
         /nao/speech  /nao/leds  /nao/motion  ...
             │
-         naoqi_driver
+         nao-core/naoqi_driver
             │
          (via rosbridge)
             │
@@ -204,7 +204,7 @@ sleep 10   # wait for network
 python /home/nao/nao_ws_bridge.py --vps ws://rosbridge.your-domain.com:9090 &
 ```
 
-> Replace `rosbridge.your-domain.com` with the value of `$ROSBRIDGE_DOMAIN`.
+> Replace `rosbridge.your-domain.com` with `rosbridge.$DOMAIN` (your actual domain).
 
 Then in Choregraphe: **Edit** → **Preferences** → **Autorun** → add this script.
 
