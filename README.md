@@ -111,4 +111,4 @@ ia-agent/
 | n8n | `ssh -L 5678:localhost:5678 $VPS_USER@$DOMAIN` | Basic auth |
 | Bitterbot | `ssh -L 19001:localhost:19001 $VPS_USER@$DOMAIN` | Token WS |
 | nao-gateway | `ssh -L 8001:localhost:8001 $VPS_USER@$DOMAIN` | `X-API-Key` |
-| rosbridge | `wss://$ROSBRIDGE_DOMAIN` | — (NAO se connecte en sortant) |
+| rosbridge | `wss://rosbridge.$DOMAIN` | — (NAO se connecte en sortant) |

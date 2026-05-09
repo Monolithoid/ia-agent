@@ -32,14 +32,11 @@ version: "3.8"
 # Variables à configurer dans Coolify → Environment Variables :
 #   DOMAIN                   : ton domaine (ex: mon-domain.com)
 #   DOCKERHUB_USERNAME       : ton username Docker Hub
-#   ROSBRIDGE_DOMAIN         : sous-domaine rosbridge (ex: rosbridge.mon-domain.com)
 #   OLLAMA_API_KEYS          : openssl rand -hex 32
 #   WEBUI_SECRET_KEY         : openssl rand -hex 32
 #   N8N_BASIC_AUTH_PASSWORD  : mot de passe de ton choix
 #   OAUTH_CLIENT_ID          : Google Cloud Console → OAuth 2.0
 #   OAUTH_CLIENT_SECRET      : idem
-#   BITTERBOT_GATEWAY_TOKEN  : openssl rand -hex 32
-#   GATEWAY_API_KEY          : openssl rand -hex 32
 #   NAO_ROBOT_ID             : nao_01 (identifiant ROS2 du corps)
 #   LISTEN_DURATION          : durée d'écoute après wake word en secondes (défaut: 4.0)
 #   ASR_MODEL                : modèle Whisper — tiny/base/small (défaut: small)
@@ -274,7 +271,6 @@ services:
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       - PYTHONUNBUFFERED=1
       - ROBOT_ID=${NAO_ROBOT_ID:-nao_01}
-      - NAOQI_BRIDGE_URL=http://localhost:8090
       - WHISPER_URL=http://localhost:9000
       - LISTEN_DURATION=${LISTEN_DURATION:-4.0}
       - NAO_STATUS_TIMEOUT=${NAO_STATUS_TIMEOUT:-90}

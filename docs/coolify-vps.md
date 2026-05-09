@@ -69,15 +69,12 @@ Toutes les variables sensibles sont injectées par Coolify. Aucun secret n'est c
 |---|---|
 | `DOMAIN` | Ton domaine racine (ex : `mon-domain.com`) |
 | `DOCKERHUB_USERNAME` | Ton username Docker Hub |
-| `ROSBRIDGE_DOMAIN` | Sous-domaine rosbridge (ex : `rosbridge.mon-domain.com`) |
 | `OLLAMA_API_KEYS` | `openssl rand -hex 32` |
 | `WEBUI_SECRET_KEY` | `openssl rand -hex 32` |
 | `WEBUI_ADMIN_EMAIL` | Ton adresse email |
 | `OAUTH_CLIENT_ID` | [console.cloud.google.com](https://console.cloud.google.com) → APIs & Services → Credentials → OAuth 2.0 Client ID |
 | `OAUTH_CLIENT_SECRET` | Idem, même credential |
 | `N8N_BASIC_AUTH_PASSWORD` | Mot de passe fort de ton choix |
-| `BITTERBOT_GATEWAY_TOKEN` | `openssl rand -hex 32` — doit correspondre à `gateway.auth.token` dans `bitterbot.json` |
-| `GATEWAY_API_KEY` | `openssl rand -hex 32` — clé `X-API-Key` pour les appels n8n → nao-gateway |
 
 **URI de callback à déclarer dans Google Cloud Console :**
 ```
