@@ -75,6 +75,7 @@ Toutes les variables sensibles sont injectées par Coolify. Aucun secret n'est c
 | `OAUTH_CLIENT_ID` | [console.cloud.google.com](https://console.cloud.google.com) → APIs & Services → Credentials → OAuth 2.0 Client ID |
 | `OAUTH_CLIENT_SECRET` | Idem, même credential |
 | `N8N_BASIC_AUTH_PASSWORD` | Mot de passe fort de ton choix |
+| `BITTERBOT_GATEWAY_TOKEN` | `openssl rand -hex 32` — doit correspondre à `gateway.auth.token` dans `bitterbot.json` |
 
 **URI de callback à déclarer dans Google Cloud Console :**
 ```

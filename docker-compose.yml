@@ -37,6 +37,7 @@ version: "3.8"
 #   N8N_BASIC_AUTH_PASSWORD  : mot de passe de ton choix
 #   OAUTH_CLIENT_ID          : Google Cloud Console → OAuth 2.0
 #   OAUTH_CLIENT_SECRET      : idem
+#   BITTERBOT_GATEWAY_TOKEN  : openssl rand -hex 32
 #   NAO_ROBOT_ID             : nao_01 (identifiant ROS2 du corps)
 #   LISTEN_DURATION          : durée d'écoute après wake word en secondes (défaut: 4.0)
 #   ASR_MODEL                : modèle Whisper — tiny/base/small (défaut: small)
