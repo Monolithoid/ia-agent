@@ -923,10 +923,18 @@ class NaoBridge(object):
                 print("[bridge] stop error: {}".format(e), file=sys.stderr)
 
     def _set_stiffness(self, groups, value):
-        """Enable or disable stiffness for the given group keys (head/larm/rarm/legs)."""
+        """Enable or disable stiffness for the given group keys (head/larm/rarm).
+
+        Leg group stiffness is permanently blocked — lower-body motors must
+        never be commanded to avoid unintended movement.
+        """
         with self._stiffness_lock:
             for grp in groups:
                 grp = grp.lower()
+                if grp == "legs":
+                    print("[bridge] stiffness: groupe 'legs' bloque — moteurs inferieurs desactives",
+                          file=sys.stderr)
+                    continue
                 naoqi_group = _NAOQI_GROUP.get(grp)
                 # Unknown group key — skip rather than sending a bad NAOqi group name.
                 if not naoqi_group:
@@ -953,9 +961,14 @@ class NaoBridge(object):
     def _motion_joint(self, joint, angle, speed):
         """Move a single joint to the given angle (radians) at the given speed fraction.
 
-        Skipped silently when the joint's group stiffness has not been enabled.
+        Leg joints are permanently blocked. Other joints are skipped when their
+        group stiffness has not been enabled.
         """
         grp = _JOINT_TO_GROUP.get(joint, "head")
+        if grp == "legs":
+            print("[bridge] motion_joint bloque: joint de jambe '{}'".format(joint),
+                  file=sys.stderr)
+            return
         with self._stiffness_lock:
             enabled = grp in self._stiffness_enabled
         # Do not attempt to move a joint whose group stiffness is off —
@@ -979,10 +992,21 @@ class NaoBridge(object):
                 print("[bridge] motion_joint error: {}".format(e), file=sys.stderr)
 
     def _motion_joints(self, joints, angles, speed):
-        """Move multiple joints simultaneously; all joints must share enabled groups."""
+        """Move multiple joints simultaneously; all joints must share enabled groups.
+
+        Leg joints are silently filtered out before processing.
+        """
         # Guard: empty joint list — nothing to do.
         if not joints:
             return
+        # Filter leg joints unconditionally — lower-body motors must never be commanded.
+        filtered = [(j, a) for j, a in zip(joints, angles)
+                    if _JOINT_TO_GROUP.get(j, "head") != "legs"]
+        if not filtered:
+            return
+        joints, angles = zip(*filtered)
+        joints = list(joints)
+        angles = list(angles)
         # Determine which groups need to be active and check they're all enabled.
         grps_needed = set(_JOINT_TO_GROUP.get(j, "head") for j in joints)
         with self._stiffness_lock:
