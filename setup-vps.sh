@@ -71,6 +71,9 @@ create_directories() {
         "${DATA_DIR}/chroma"
         "${DATA_DIR}/bitterbot/config"
         "${DATA_DIR}/bitterbot/workspace"
+        "${DATA_DIR}/automatic1111/models/Stable-diffusion"
+        "${DATA_DIR}/automatic1111/outputs"
+        "${DATA_DIR}/automatic1111/config"
         "${DATA_DIR}/sync/onedrive"
         "${DATA_DIR}/sync/gdrive"
     )

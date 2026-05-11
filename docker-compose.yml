@@ -8,23 +8,28 @@ version: "3.8"
 #   ollama.${DOMAIN} → API Ollama  (port 11434)
 #
 # Services internes (tunnel SSH uniquement) :
-#   n8n          → port 5678
-#   bitterbot    → port 19001
+#   n8n              → port 5678
+#   bitterbot        → port 19001
+#   automatic1111    → port 7860
 #
 # Données persistantes sous /opt/ia/ :
-#   /opt/ia/ollama/              → modèles IA
-#   /opt/ia/webui/               → agents, utilisateurs, historique
-#   /opt/ia/n8n/                 → workflows
-#   /opt/ia/chroma/              → base vectorielle
-#   /opt/ia/bitterbot/           → mémoire SQLite, config agent
-#   /opt/ia/nao/naoqi-sdk/       → SDK NAOqi Python 2.7 (fourni manuellement)
-#   /opt/ia/whisper/             → modèles Whisper ASR (téléchargés au premier démarrage)
+#   /opt/ia/ollama/                           → modèles IA
+#   /opt/ia/webui/                            → agents, utilisateurs, historique
+#   /opt/ia/n8n/                              → workflows
+#   /opt/ia/chroma/                           → base vectorielle
+#   /opt/ia/bitterbot/                        → mémoire SQLite, config agent
+#   /opt/ia/nao/naoqi-sdk/                    → SDK NAOqi Python 2.7 (fourni manuellement)
+#   /opt/ia/whisper/                          → modèles Whisper ASR (téléchargés au premier démarrage)
+#   /opt/ia/automatic1111/models/             → checkpoints, LoRA, VAE, embeddings
+#   /opt/ia/automatic1111/outputs/            → images générées
+#   /opt/ia/automatic1111/config/             → config.json, styles
 #
 # Avant de déployer :
 #   mkdir -p /opt/ia/{ollama,webui,n8n,chroma}
 #   mkdir -p /opt/ia/bitterbot/{config,workspace}
 #   mkdir -p /opt/ia/nao/naoqi-sdk
 #   mkdir -p /opt/ia/whisper
+#   mkdir -p /opt/ia/automatic1111/{models/Stable-diffusion,outputs,config}
 #   cp core/bitterbot/bitterbot.json /opt/ia/bitterbot/config/bitterbot.json
 #   # Extraire le SDK NAOqi Python 2.7 dans /opt/ia/nao/naoqi-sdk/
 #   # (pynaoqi-python2.7-2.1.4.*-linux64.tar.gz depuis le portail SoftBank)
@@ -104,10 +109,15 @@ services:
       - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
       - OAUTH_REDIRECT_URI=https://chat.${DOMAIN}/oauth/oidc/callback
       - OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true
+      - ENABLE_IMAGE_GENERATION=True
+      - IMAGE_GENERATION_ENGINE=automatic1111
+      - AUTOMATIC1111_BASE_URL=http://automatic1111:7860
     depends_on:
       ollama:
         condition: service_started
       chromadb:
+        condition: service_started
+      automatic1111:
         condition: service_started
     networks:
       - ai-network
@@ -226,6 +236,32 @@ services:
     environment:
       - ASR_MODEL=${ASR_MODEL:-small}
       - ASR_LANGUAGE=fr
+    networks:
+      - ai-network
+
+  # ----------------------------------------------------------
+  # AUTOMATIC1111 — génération d'images Stable Diffusion (CPU)
+  #
+  # Mode CPU uniquement — pas de GPU sur ce VPS.
+  # Les performances sont lentes (~5–15 min / image) mais fonctionnelles.
+  #
+  # Premier démarrage : téléchargement automatique de DreamShaper 8
+  # (~2.1 Go depuis HuggingFace). Les démarrages suivants sont immédiats.
+  #
+  # API activée (--api) → Open WebUI l'utilise pour la génération d'images.
+  # Accès local uniquement : 127.0.0.1:7860
+  # ----------------------------------------------------------
+  automatic1111:
+    image: ${DOCKERHUB_USERNAME}/automatic1111:latest
+    container_name: automatic1111
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:7860:7860"
+    volumes:
+      - /opt/ia/automatic1111/models:/app/models
+      - /opt/ia/automatic1111/outputs:/app/outputs
+      - /opt/ia/automatic1111/config:/app/config
+    shm_size: 512mb
     networks:
       - ai-network
 
