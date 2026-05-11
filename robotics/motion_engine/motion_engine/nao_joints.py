@@ -97,18 +97,8 @@ CLOSED_POSE: dict[JointName, float] = {
     "RElbowYaw":      0.50,
     "RElbowRoll":     1.20,
     "RWristYaw":      0.00,
-    "LHipYawPitch":  -0.10,    # hips slightly inward (guard stance)
-    "LHipRoll":      -0.05,
-    "LHipPitch":     -0.20,
-    "LKneePitch":     0.35,    # slight knee flexion
-    "LAnklePitch":   -0.15,
-    "LAnkleRoll":     0.00,
-    "RHipYawPitch":  -0.10,
-    "RHipRoll":       0.05,    # mirrored
-    "RHipPitch":     -0.20,
-    "RKneePitch":     0.35,
-    "RAnklePitch":   -0.15,
-    "RAnkleRoll":     0.00,
+    # Leg joints intentionally excluded — NAO operates seated or standing still;
+    # lower-body motors are never commanded to avoid unintended movement.
 }
 
 OPEN_POSE: dict[JointName, float] = {
@@ -124,18 +114,7 @@ OPEN_POSE: dict[JointName, float] = {
     "RElbowYaw":      1.40,
     "RElbowRoll":     0.25,
     "RWristYaw":      0.00,
-    "LHipYawPitch":   0.05,    # hips very slightly wider
-    "LHipRoll":       0.08,
-    "LHipPitch":     -0.05,
-    "LKneePitch":     0.10,    # nearly straight
-    "LAnklePitch":    0.00,
-    "LAnkleRoll":     0.00,
-    "RHipYawPitch":   0.05,
-    "RHipRoll":      -0.08,    # mirrored
-    "RHipPitch":     -0.05,
-    "RKneePitch":     0.10,
-    "RAnklePitch":    0.00,
-    "RAnkleRoll":     0.00,
+    # Leg joints intentionally excluded — see CLOSED_POSE comment.
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
