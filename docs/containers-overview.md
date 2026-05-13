@@ -13,6 +13,7 @@ Vue synthétique de tous les containers du projet, leurs rôles, et leurs échan
 | **n8n** | Orchestrateur de workflows d'automatisation. Accessible uniquement via tunnel SSH. | `ollama` ← texte généré (HTTP/JSON) | `ollama` → requêtes d'inférence (HTTP/JSON) |
 | **chromadb** | Base de données vectorielle pour la mémoire RAG (Retrieval-Augmented Generation). Jamais exposée publiquement. | `open-webui` → textes à vectoriser ou requêtes de similarité (HTTP/JSON, protocole ChromaDB) | `open-webui` ← vecteurs / chunks correspondants (HTTP/JSON) |
 | **whisper-asr** | Service de transcription vocale (Speech-to-Text) basé sur OpenAI Whisper. Langue par défaut : français. | `nao-core` → fichiers audio captés par le micro du NAO (HTTP multipart/form-data, WAV) | `nao-core` ← texte transcrit (HTTP/JSON) |
+| **automatic1111** | Engine de génération d'images Stable Diffusion, mode CPU uniquement. Expose l'API REST d'AUTOMATIC1111 (port 7860) consommée par Open WebUI. Modèle par défaut : DreamShaper 8 (téléchargé automatiquement au premier démarrage). | `open-webui` → requête de génération (HTTP/JSON POST `/sdapi/v1/txt2img`, prompt + paramètres) | `open-webui` ← image générée encodée base64 (HTTP/JSON) |
 | **naoqi-bridge** | Pont HTTP entre l'écosystème Docker et le SDK NAOqi (Python 2.7). Tourne en mode mock si le robot n'est pas connecté. | `nao-core` → commandes motrices / requêtes de statut (HTTP/JSON) | `nao-core` ← statut du robot, confirmations (HTTP/JSON) ; NAO physique ← commandes qi SDK (réseau local, protocole NAOqi binaire) |
 | **nao-core** | Container ROS 2 (Humble) regroupant trois nœuds : `naoqi_driver` (pont topics ↔ naoqi-bridge, audio → Whisper), `cognitive_renderer` (état cognitif → LEDs / tête) et `motion_engine` (synthèse biomécanique émotion → mouvement). | `whisper-asr` ← texte transcrit (HTTP/JSON) ; `naoqi-bridge` ← statut robot (HTTP/JSON) ; ROS 2 DDS ← commandes publiées par body-gateway | `whisper-asr` → audio WAV (HTTP multipart) ; `naoqi-bridge` → commandes et requêtes (HTTP/JSON) ; ROS 2 DDS → données capteurs `/bodies/{id}/sensors/*` (topics ROS 2) |
 | **body-gateway** | Nœud ROS 2 (Humble) faisant office de cerveau central. Route les inférences LLM vers les corps physiques (ROS 2), gère les cycles de rêve (2h–6h) et expose un endpoint HTTP de chat. | ROS 2 DDS ← données capteurs des corps (`/bodies/{id}/sensors/*`, topics ROS 2) ; `ollama` ← réponses LLM (HTTP/JSON) | `ollama` → prompts système + historique (HTTP/JSON, OpenAI chat format) ; ROS 2 DDS → commandes motrices / parole (topics ROS 2) ; ROS 2 DDS → état cognitif (topic `/cognitive_state`) ; `open-webui` via `chat-relay` ← réponses chat (HTTP/JSON, port 8095) |
@@ -68,7 +69,7 @@ NAO (WebSocket sortant)
 
 | Réseau | Type | Containers membres | Accès internet |
 |---|---|---|---|
-| `ai-network` | bridge | ollama, open-webui, n8n, chromadb, naoqi-bridge, whisper-asr, chat-relay | oui |
+| `ai-network` | bridge | ollama, open-webui, n8n, chromadb, naoqi-bridge, whisper-asr, automatic1111, chat-relay | oui |
 | `bitterbot-net` | bridge (interne) | *(réservé bitterbot-gateway)* | non |
 | `robotics-net` | bridge | rosbridge-proxy | oui |
 | host | — | ros2-bridge, nao-core, body-gateway | via hôte |

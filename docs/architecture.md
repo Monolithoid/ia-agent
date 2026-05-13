@@ -16,6 +16,7 @@ Le découpage en containers est une décision de scalabilité, pas de séparatio
 ```
 ia-agent/
 ├── core/
+│   ├── automatic1111/       → Dockerfile + entrypoint (CPU, DreamShaper 8)
 │   └── bitterbot/           → Dockerfile + config de l'agent Bitterbot
 ├── robotics/
 │   ├── motion_engine/       → Package ROS 2 : synthèse biomécanique (émotion → mouvement)
@@ -53,6 +54,7 @@ ia-agent/
 | `n8n` | Orchestrateur de workflows | 5678 | SSH tunnel |
 | `chromadb` | Mémoire vectorielle | 8000 | Interne uniquement |
 | `whisper-asr` | Transcription vocale (STT) | 9000 | Interne uniquement |
+| `automatic1111` | Génération d'images Stable Diffusion (CPU) | 7860 | Interne uniquement |
 | `naoqi-bridge` | HTTP bridge Python 2.7 → SDK NAOqi | 8090 | Interne (host) |
 | `nao-core` | ROS 2 Humble : naoqi_driver + cognitive_renderer + motion_engine | — | host network |
 | `body-gateway` | Cerveau ROS 2 : LLM ↔ corps robotiques | 8095 | host network |
@@ -65,7 +67,7 @@ ia-agent/
 
 ```
 ai-network (bridge, internet)
-  └── ollama, open-webui, n8n, chromadb, whisper-asr, naoqi-bridge, chat-relay
+  └── ollama, open-webui, n8n, chromadb, whisper-asr, automatic1111, naoqi-bridge, chat-relay
 
 bitterbot-net (bridge, internal — aucun accès internet)
   └── (réservé bitterbot-gateway — voir ADR 003)

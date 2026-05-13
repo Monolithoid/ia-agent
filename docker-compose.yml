@@ -54,6 +54,7 @@ version: "3.8"
 #   ufw deny 11434
 #   ufw deny 3000
 #   ufw deny 5678
+#   ufw deny 7860    # AUTOMATIC1111 (interne — SSH tunnel si besoin : ssh -L 7860:localhost:7860)
 #   ufw deny 9090    # rosbridge passe par Traefik (wss://), port 9090 non exposé
 #   ufw enable
 # ============================================================

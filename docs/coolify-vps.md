@@ -109,17 +109,24 @@ GitHub → repo → **Settings** → **Secrets and variables** → **Actions** :
 GitHub → **Actions** :
 - Workflow **"Build & Push — Bitterbot image"** → **Run workflow**
 - Workflow **"Build & Push — Images robotiques"** → **Run workflow**
+- Workflow **"Build & Push — automatic1111"** → **Run workflow**
 
-Chaque build prend 5–15 min. Les images produites :
+Durées de build approximatives :
+- Images robotiques (ROS 2) : 5–15 min chacune
+- AUTOMATIC1111 (PyTorch CPU ~900 Mo) : **40–60 min au premier build**, puis ~5 min grâce au cache GHA
+
+Images produites :
 - `$DOCKERHUB_USERNAME/bitterbot:latest`
 - `$DOCKERHUB_USERNAME/naoqi-bridge:latest`
 - `$DOCKERHUB_USERNAME/nao-core:latest`
 - `$DOCKERHUB_USERNAME/body-gateway:latest`
 - `$DOCKERHUB_USERNAME/ros2-bridge:latest`
+- `$DOCKERHUB_USERNAME/automatic1111:latest`
 
 **Rebuilds automatiques :**
 - Bitterbot : tous les lundis à 3h00 UTC
 - Images robotiques : à chaque push sur `main` qui modifie `robotics/**`
+- AUTOMATIC1111 : à chaque push sur `main` qui modifie `core/automatic1111/**`
 
 ---
 
@@ -134,6 +141,18 @@ Coolify exécute `docker compose pull && docker compose up -d`. Les données dan
 docker exec -it ollama ollama pull qwen3:8b
 ```
 
+**Premier démarrage — AUTOMATIC1111 :**  
+Le container `automatic1111` télécharge automatiquement **DreamShaper 8** (~2,1 Go) depuis HuggingFace lors de son premier démarrage. Surveiller la progression :
+
+```bash
+docker logs automatic1111 -f
+# Attendu : "[A1111] Téléchargement DreamShaper 8 (~2.1 Go)…"
+# puis     : "[A1111] Démarrage (mode CPU)…"
+# puis     : "Running on local URL:  http://0.0.0.0:7860"
+```
+
+Le téléchargement peut prendre 5–15 min selon la bande passante du VPS. Une fois terminé, le modèle est persisté dans `/opt/ia/automatic1111/models/` et les démarrages suivants sont immédiats.
+
 ---
 
 ## 7. Mettre à jour les services
@@ -146,6 +165,7 @@ docker compose up -d
 # Un service spécifique
 docker compose pull bitterbot-gateway && docker compose up -d bitterbot-gateway
 docker compose pull naoqi-bridge nao-core body-gateway ros2-bridge && docker compose up -d naoqi-bridge nao-core body-gateway ros2-bridge
+docker compose pull automatic1111 && docker compose up -d automatic1111
 ```
 
 Ou depuis Coolify : bouton **Redeploy** sur la resource.
@@ -236,6 +256,22 @@ docker logs ollama -f
 docker logs body-gateway -f
 docker logs nao-core -f
 docker logs ros2-bridge -f
+docker logs automatic1111 -f
+
+# Vérifier que l'API A1111 répond
+curl -s http://localhost:7860/sdapi/v1/sd-models | python3 -m json.tool | head -20
+# Attendu : liste des checkpoints disponibles dont dreamshaper_8
+
+# Générer une image de test (mode CPU — attendre 5–15 min)
+curl -s http://localhost:7860/sdapi/v1/txt2img \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"a cat","steps":10,"width":256,"height":256}' \
+  | python3 -c "import sys,json,base64; open('/tmp/test.png','wb').write(base64.b64decode(json.load(sys.stdin)['images'][0]))"
+ls -lh /tmp/test.png
+
+# Vérifier que Open WebUI voit bien A1111
+# → Admin Panel → Images → vérifie que "AUTOMATIC1111" est sélectionné
+# → l'icône image doit apparaître dans la barre de saisie du chat
 
 # Vérifier l'isolation réseau de Bitterbot (quand réactivé)
 docker exec bitterbot-gateway curl -s --max-time 3 https://example.com

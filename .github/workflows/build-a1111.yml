@@ -1,23 +1,32 @@
-name: Build — automatic1111
+name: Build & Push — automatic1111
+
+# Publie l'image AUTOMATIC1111 (Stable Diffusion, mode CPU) sur Docker Hub.
+# PyTorch CPU est pré-installé dans l'image — pas de dépendances CUDA.
+# Le premier build prend ~40–60 min ; les suivants sont accélérés par le cache GHA.
+#
+# Secrets requis dans GitHub → Settings → Secrets → Actions :
+#   DOCKERHUB_USERNAME : monolithoid
+#   DOCKERHUB_TOKEN    : Docker Hub → Account Settings → Security → New Access Token
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
-      - "core/automatic1111/**"
+      - 'core/automatic1111/**'
+      - '.github/workflows/build-a1111.yml'
+
   workflow_dispatch:
 
-env:
-  IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/automatic1111
-
 jobs:
-  build:
+  build-and-push:
+    name: Build & Push monolithoid/automatic1111
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    timeout-minutes: 90
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -25,15 +34,45 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push
-        uses: docker/build-push-action@v5
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
         with:
-          context: core/automatic1111
-          push: true
-          # PyTorch CPU wheel est lourd — le cache layer évite de le retélécharger
-          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
-          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
+          images: monolithoid/automatic1111
           tags: |
-            ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:build-${{ github.run_number }}
-            ${{ env.IMAGE }}:sha-${{ github.sha }}
+            type=raw,value=latest
+            type=raw,value=build-${{ github.run_number }}
+            type=sha,prefix=sha-,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./core/automatic1111
+          file: ./core/automatic1111/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Cache GHA : évite de retélécharger PyTorch CPU (~900 Mo) à chaque build
+          cache-from: type=gha,scope=automatic1111
+          cache-to: type=gha,mode=max,scope=automatic1111
+          platforms: linux/amd64
+
+      - name: Build summary
+        run: |
+          echo "## monolithoid/automatic1111 publié" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | Commande |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| latest | \`docker pull monolithoid/automatic1111:latest\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| build  | \`docker pull monolithoid/automatic1111:build-${{ github.run_number }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Pour mettre à jour le VPS :" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker compose pull automatic1111 && docker compose up -d automatic1111" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

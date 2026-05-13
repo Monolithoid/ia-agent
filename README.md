@@ -8,7 +8,7 @@ Stack IA auto-hébergée sur VPS Ubuntu, déployée via Docker Compose et géré
 |---|---|
 | [Architecture](docs/architecture.md) | Vision, infrastructure, réseaux Docker |
 | [Récapitulatif des containers](docs/containers-overview.md) | Tableau synthétique de tous les containers, entrées/sorties, formats |
-| [Stack IA](docs/ia-stack.md) | Ollama, Open WebUI, n8n, ChromaDB, Bitterbot |
+| [Stack IA](docs/ia-stack.md) | Ollama, Open WebUI, n8n, ChromaDB, AUTOMATIC1111, Bitterbot |
 | [Bridge IA / ROS 2 / NAO](docs/bridge-ia-ros2-nao.md) | nao-core, body-gateway, ros2-bridge, topics ROS 2 |
 | [Robot NAO](docs/nao.md) | Bridge embarqué sur le robot, déploiement, autostart |
 | [Test de la chaîne](docs/test-chain.md) | Diagnostic maillon par maillon WebUI → NAO |
@@ -45,6 +45,7 @@ flowchart TB
         subgraph aiNet["ai-network"]
             WebUI["Open WebUI :8080"]
             Ollama["Ollama :11434"]
+            A1111["AUTOMATIC1111 :7860"]
             N8N["n8n :5678"]
             Chroma["ChromaDB :8000"]
             ChatRelay["chat-relay :8095"]
@@ -72,6 +73,7 @@ flowchart TB
 
     WebUI -->|OIDC| Google
     WebUI --> Ollama & Chroma
+    WebUI -->|génération image| A1111
     WebUI --> ChatRelay --> BodyGW
     N8N --> Ollama
     Bitterbot -.->|bitterbot-net| Ollama
@@ -89,7 +91,9 @@ flowchart TB
 
 ```
 ia-agent/
-├── core/bitterbot/          → Dockerfile + config template de l'agent Bitterbot
+├── core/
+│   ├── automatic1111/       → Dockerfile + entrypoint (Stable Diffusion CPU, DreamShaper 8)
+│   └── bitterbot/           → Dockerfile + config template de l'agent Bitterbot
 ├── robotics/
 │   ├── motion_engine/       → Package ROS 2 : synthèse biomécanique (émotion → mouvement)
 │   ├── nao_core/            → Dockerfile + entrypoint du container nao-core
@@ -123,5 +127,6 @@ ia-agent/
 | Open WebUI | `https://chat.$DOMAIN` | Google SSO |
 | API Ollama | `https://ollama.$DOMAIN` | `Authorization: Bearer $OLLAMA_API_KEYS` |
 | n8n | `ssh -L 5678:localhost:5678 $VPS_USER@$DOMAIN` | Basic auth |
+| AUTOMATIC1111 | `ssh -L 7860:localhost:7860 $VPS_USER@$DOMAIN` | — (accès local uniquement) |
 | Bitterbot | `ssh -L 19001:localhost:19001 $VPS_USER@$DOMAIN` | Token WS |
 | rosbridge | `wss://rosbridge.$DOMAIN` | — (NAO se connecte en sortant) |

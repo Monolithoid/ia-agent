@@ -152,6 +152,59 @@ Utilisé par Open WebUI pour le RAG (Retrieval-Augmented Generation). Stocke les
 
 ---
 
+## AUTOMATIC1111 — génération d'images Stable Diffusion
+
+**Image :** `$DOCKERHUB_USERNAME/automatic1111:latest` (buildée via GitHub Actions)  
+**Port :** 7860 (lié à `127.0.0.1` — non exposé publiquement)  
+**Mode :** CPU uniquement (pas de GPU sur ce VPS)
+
+AUTOMATIC1111 sert d'engine de génération d'images pour Open WebUI via son API REST (`--api`). Les images sont générées lentement (~5–15 min en 512×512 sur CPU) mais le résultat est identique à une installation GPU.
+
+### Modèle par défaut : DreamShaper 8
+
+Au premier démarrage, l'`entrypoint.sh` télécharge automatiquement **DreamShaper 8** (~2,1 Go) depuis HuggingFace (`Lykon/DreamShaper`) si le fichier n'est pas déjà présent dans le volume. Les démarrages suivants sont immédiats.
+
+```
+/opt/ia/automatic1111/models/Stable-diffusion/dreamshaper_8.safetensors
+```
+
+DreamShaper 8 est un checkpoint SD 1.5 non censuré, généraliste et de haute qualité.
+
+### Ajouter d'autres modèles
+
+Déposer directement le fichier `.safetensors` ou `.ckpt` dans le volume hôte :
+
+```bash
+# Exemple : télécharger un modèle depuis HuggingFace
+wget -P /opt/ia/automatic1111/models/Stable-diffusion/ \
+  https://huggingface.co/<auteur>/<repo>/resolve/main/<fichier>.safetensors
+
+# Le modèle est immédiatement disponible sans redémarrage du container
+curl http://localhost:7860/sdapi/v1/refresh-checkpoints -X POST
+```
+
+### Intégration Open WebUI
+
+La connexion est automatique via les variables d'environnement du service `open-webui` :
+
+```
+ENABLE_IMAGE_GENERATION=True
+IMAGE_GENERATION_ENGINE=automatic1111
+AUTOMATIC1111_BASE_URL=http://automatic1111:7860
+```
+
+Dans Open WebUI, l'icône image apparaît dans la barre de saisie du chat. Cliquer dessus et entrer le prompt en anglais pour générer une image.
+
+### Volumes
+
+| Volume hôte | Contenu |
+|---|---|
+| `/opt/ia/automatic1111/models/` | Checkpoints SD, LoRA, VAE, embeddings, hypernetworks |
+| `/opt/ia/automatic1111/outputs/` | Images générées (horodatées) |
+| `/opt/ia/automatic1111/config/` | `config.json`, `styles.csv`, `ui-config.json` |
+
+---
+
 ## Bitterbot — agent IA autonome (désactivé)
 
 > Voir [ADR 003](decisions/003-ollama-direct-sans-bitterbot.md) pour le contexte complet.

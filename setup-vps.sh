@@ -250,6 +250,11 @@ main() {
     echo "  → Télécharger un modèle Ollama :"
     echo "    docker exec -it ollama ollama pull qwen3:8b"
     echo ""
+    echo "  → AUTOMATIC1111 (premier démarrage) :"
+    echo "    DreamShaper 8 (~2.1 Go) se télécharge automatiquement."
+    echo "    Suivre la progression : docker logs automatic1111 -f"
+    echo "    Attendu : 'Running on local URL: http://0.0.0.0:7860'"
+    echo ""
     echo "  → Déployer le bridge NAO (si robot présent) :"
     echo "    scp robotics/nao/nao_ws_bridge.py nao@NAO_IP:/home/nao/"
 }
