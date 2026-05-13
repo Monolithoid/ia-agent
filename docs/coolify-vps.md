@@ -136,9 +136,13 @@ Dans Coolify → resource **"IA"** → bouton **Deploy** (ou **Start**).
 
 Coolify exécute `docker compose pull && docker compose up -d`. Les données dans `/opt/ia/` sont préservées entre les redémarrages.
 
-**Premier démarrage — télécharger un modèle LLM :**
+**Premier démarrage — télécharger les modèles Ollama :**
 ```bash
+# Modèle LLM principal
 docker exec -it ollama ollama pull qwen3:8b
+
+# MoonDream — agent de vision pour analyser les planches de BD générées par A1111
+docker exec -it ollama ollama pull moondream
 ```
 
 **Premier démarrage — AUTOMATIC1111 :**  

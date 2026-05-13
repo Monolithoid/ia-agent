@@ -168,7 +168,7 @@ Au premier démarrage, l'`entrypoint.sh` télécharge automatiquement **DreamSha
 /opt/ia/automatic1111/models/Stable-diffusion/dreamshaper_8.safetensors
 ```
 
-DreamShaper 8 est un checkpoint SD 1.5 non censuré, généraliste et de haute qualité.
+DreamShaper 8 est un checkpoint SD 1.5 non censuré, généraliste et de haute qualité — adapté aux personnages, décors et planches de BD.
 
 ### Ajouter d'autres modèles
 
@@ -202,6 +202,50 @@ Dans Open WebUI, l'icône image apparaît dans la barre de saisie du chat. Cliqu
 | `/opt/ia/automatic1111/models/` | Checkpoints SD, LoRA, VAE, embeddings, hypernetworks |
 | `/opt/ia/automatic1111/outputs/` | Images générées (horodatées) |
 | `/opt/ia/automatic1111/config/` | `config.json`, `styles.csv`, `ui-config.json` |
+
+---
+
+## MoonDream — agent de vision pour la création de BD
+
+MoonDream est un modèle de vision-langage (VLM) léger (~1,8 B paramètres) distribué via Ollama. Il peut analyser des images et répondre à des questions sur leur contenu, ce qui en fait un assistant naturel pour relire et affiner des planches de BD générées avec A1111.
+
+**Aucun nouveau container requis** — MoonDream tourne dans Ollama.
+
+### Installation
+
+```bash
+docker exec -it ollama ollama pull moondream
+```
+
+Le modèle (~1,7 Go) est téléchargé une seule fois et persisté dans `/opt/ia/ollama/`.
+
+### Utilisation dans Open WebUI
+
+1. Ouvrir un chat dans Open WebUI
+2. Sélectionner le modèle **moondream** dans la liste des modèles
+3. Joindre une image (icône trombone) → la planche générée par A1111, une case, un personnage
+4. Poser la question : cohérence, description, suggestions de dialogue, etc.
+
+**Exemples de prompts :**
+```
+Décris cette planche de BD en détail.
+Le personnage dans cette case est-il cohérent avec la description "chevalier médiéval en armure noire" ?
+Que se passe-t-il dans cette scène ? Propose un dialogue pour les bulles.
+Quels éléments graphiques manquent pour rendre cette case plus dynamique ?
+```
+
+### Workflow BD complet
+
+```
+1. Générer un panel   →  Open WebUI (icône image) → A1111 (DreamShaper 8)
+                          prompt : "medieval knight, dark armor, comic book style, ink"
+
+2. Analyser le panel  →  Open WebUI (modèle moondream) → joindre l'image générée
+                          "Est-ce que l'armure est cohérente avec ma description ?"
+
+3. Itérer             →  Affiner le prompt A1111 selon les retours de MoonDream
+                          Ajouter des LoRA ou modifier le modèle SD si besoin
+```
 
 ---
 
