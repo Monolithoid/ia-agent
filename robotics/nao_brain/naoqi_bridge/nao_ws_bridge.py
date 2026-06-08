@@ -90,7 +90,8 @@ _MODULE_TOPICS = {
 _SYSTEM_TOPICS = [
     ("/nao/shutdown", "std_msgs/Empty"),
 ]
-ALL_MODULES = frozenset(_MODULE_TOPICS.keys())
+ALL_MODULES    = frozenset(_MODULE_TOPICS.keys())
+ALL_SENTINELS  = frozenset(["sound", "brightness", "motion"])
 
 # ── Motor temperature sampling ────────────────────────────────────────────────
 # One representative joint per group — enough to detect heat without spamming ALMemory.
@@ -610,8 +611,9 @@ class _SentinelManager(object):
 
     _POLL_INTERVAL = 0.5   # seconds between sensor checks
 
-    def __init__(self, bridge):
+    def __init__(self, bridge, active=None):
         self._bridge = bridge
+        self._active = ALL_SENTINELS if active is None else frozenset(active)
         self._last_trigger = {"sound": 0.0, "brightness": 0.0, "motion": 0.0}
         self._last_brightness = None   # mean luminosity of the previous frame
         self._stop = threading.Event()
@@ -637,13 +639,17 @@ class _SentinelManager(object):
         if not memory:
             print("[sentinel] ALMemory indisponible — sentinelles désactivées.", file=sys.stderr)
             return
-        print("[sentinel] Sentinelles actives.", file=sys.stderr)
+        print("[sentinel] Sentinelles actives: {}.".format(", ".join(sorted(self._active))),
+              file=sys.stderr)
         while not self._stop.is_set():
             try:
                 now = time.time()
-                self._check_sound(memory, now)
-                self._check_brightness(now)
-                self._check_motion(memory, motion, now)
+                if "sound" in self._active:
+                    self._check_sound(memory, now)
+                if "brightness" in self._active:
+                    self._check_brightness(now)
+                if "motion" in self._active:
+                    self._check_motion(memory, motion, now)
             except Exception as exc:
                 print("[sentinel] Erreur poll: {}".format(exc), file=sys.stderr)
             self._stop.wait(self._POLL_INTERVAL)
@@ -774,12 +780,13 @@ class NaoBridge(object):
     """
 
     def __init__(self, vps_url, modules=None, audio_capture=True, tts_method="auto",
-                 sentinels=True):
+                 sentinels=None):
         self.vps_url = vps_url
         self._modules = ALL_MODULES if modules is None else frozenset(modules)
         self._audio_capture_enabled = audio_capture
         self._tts_method_override = tts_method
-        self._sentinels_enabled = sentinels
+        # sentinels=None → all active; frozenset() → none; frozenset({"sound"}) → sound only
+        self._active_sentinels = ALL_SENTINELS if sentinels is None else frozenset(sentinels)
         self.ws = None
         self._stop = threading.Event()
         self._busy_until = 0.0          # timestamp until which wake word is ignored (during TTS)
@@ -787,7 +794,10 @@ class NaoBridge(object):
         self._sentinel_started = False   # prevents relaunching the sentinel manager on reconnect
         self._asr = None                 # ASR proxy kept alive for unsubscribe on shutdown
         self._audio_capture = None       # active _AudioCapture instance during VAD recording
-        self._sentinel_manager = _SentinelManager(self) if sentinels else None
+        self._sentinel_manager = (
+            _SentinelManager(self, active=self._active_sentinels)
+            if self._active_sentinels else None
+        )
         # Groups whose stiffness has been explicitly enabled (others are skipped for motion)
         self._stiffness_enabled = set()
         self._stiffness_lock = threading.Lock()
@@ -897,7 +907,7 @@ class NaoBridge(object):
         advertised = ["/nao/status", "/nao/capabilities"]
         if self._audio_capture_enabled:
             advertised.append("/nao/audio")
-        if self._sentinels_enabled:
+        if self._active_sentinels:
             advertised.append("/nao/image")
         for topic in advertised:
             adv_msg = {"op": "advertise", "topic": topic, "type": "std_msgs/String"}
@@ -918,7 +928,7 @@ class NaoBridge(object):
         if self._audio_capture_enabled and not self._wakeword_started:
             self._wakeword_started = True
             threading.Thread(target=self._wakeword_loop).start()
-        if self._sentinels_enabled and not self._sentinel_started:
+        if self._active_sentinels and not self._sentinel_started:
             self._sentinel_started = True
             self._sentinel_manager.start()
 
@@ -1477,11 +1487,14 @@ if __name__ == "__main__":
         help="Disable wake word detection and VAD capture (enabled by default)."
     )
     parser.add_argument(
-        "--no-sentinels",
-        dest="sentinels",
-        action="store_false",
-        default=True,
-        help="Disable vision sentinels (sound/brightness/motion triggers, enabled by default)."
+        "--sentinels",
+        default=None,
+        metavar="S1,S2,...",
+        help=(
+            "Comma-separated list of vision sentinels to enable. "
+            "Available: {}. "
+            "Default: all active. Pass empty string to disable all."
+        ).format(", ".join(sorted(ALL_SENTINELS)))
     )
     parser.add_argument(
         "--tts-method",
@@ -1528,8 +1541,22 @@ if __name__ == "__main__":
     else:
         active_modules = None  # None means all modules (default)
 
+    if args.sentinels is not None:
+        requested_s = set(s.strip().lower() for s in args.sentinels.split(",") if s.strip())
+        unknown_s = requested_s - ALL_SENTINELS
+        if unknown_s:
+            parser.error(
+                "Unknown sentinel(s): {}. Valid sentinels: {}".format(
+                    ", ".join(sorted(unknown_s)),
+                    ", ".join(sorted(ALL_SENTINELS)),
+                )
+            )
+        active_sentinels = requested_s  # may be empty set → all disabled
+    else:
+        active_sentinels = None  # None means all sentinels (default)
+
     bridge = NaoBridge(args.vps, modules=active_modules, audio_capture=args.audio_capture,
-                       tts_method=args.tts_method, sentinels=args.sentinels)
+                       tts_method=args.tts_method, sentinels=active_sentinels)
     try:
         bridge.run()
     except KeyboardInterrupt:
