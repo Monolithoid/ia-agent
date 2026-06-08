@@ -257,6 +257,10 @@ services:
       - BRIDGE_PORT=8090
       - RECONNECT_INTERVAL=15
       - ROSBRIDGE_URL=ws://rosbridge-proxy:80
+      - NAO_ROBOT_ID=${NAO_ROBOT_ID:-nao_01}
+      - VISION_URL=http://ollama:11434
+      - VISION_MODEL=${VISION_MODEL:-moondream2}
+      - VISION_TIMEOUT=30
     networks:
       - ai-network
       - robotics-net

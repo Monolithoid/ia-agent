@@ -64,6 +64,13 @@ NAO_PORT = 9559
 RECONNECT_DELAY = 5
 STATUS_INTERVAL = 30
 
+# ── Vision sentinel thresholds (env vars, overrideable per deployment) ────────
+SENTINEL_SOUND_THRESHOLD    = float(os.environ.get("SENTINEL_SOUND_THRESHOLD",    "0.3"))
+SENTINEL_SOUND_COOLDOWN     = float(os.environ.get("SENTINEL_SOUND_COOLDOWN",     "5.0"))
+SENTINEL_BRIGHTNESS_DELTA   = float(os.environ.get("SENTINEL_BRIGHTNESS_DELTA",   "15.0"))
+SENTINEL_BRIGHTNESS_COOLDOWN= float(os.environ.get("SENTINEL_BRIGHTNESS_COOLDOWN","10.0"))
+SENTINEL_MOTION_COOLDOWN    = float(os.environ.get("SENTINEL_MOTION_COOLDOWN",    "5.0"))
+
 _PROVISION_DEFAULT = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "nao_provision.json"
 )
@@ -134,6 +141,11 @@ for _g, _naoqi in _NAOQI_GROUP.items():
 
 _BROKER      = None  # ALBroker instance — must stay alive for NAOqi callbacks
 _CAPTURE_REF = None  # strong ref to active _AudioCapture, prevents GC during recording
+
+# ── Vision sentinel camera colorspace constants ───────────────────────────────
+_CAM_RGB    = 11   # kRGBColorSpace — 3 bytes per pixel, row-major
+_CAM_QVGA   = 1    # 320×240 resolution index
+_CAM_TOP    = 0    # top camera index
 
 
 # ======================================================================
@@ -584,6 +596,172 @@ class _AudioCapture(ALModule):
         return buf.getvalue()
 
 
+class _SentinelManager(object):
+    """Polls NAO sensors every 0.5 s and fires vision captures on significant events.
+
+    Three independent sentinels — each with its own cooldown:
+      sound      : RMS microphone level exceeds SENTINEL_SOUND_THRESHOLD
+      brightness : mean camera luminosity changes by more than SENTINEL_BRIGHTNESS_DELTA
+      motion     : ALMotionDetection fires while NAO's own joints are static
+
+    On trigger: captures a QVGA RGB frame, packs it as PPM, and publishes
+    it base64-encoded on the /nao/image ROS topic for VPS-side moondream2 inference.
+    """
+
+    _POLL_INTERVAL = 0.5   # seconds between sensor checks
+
+    def __init__(self, bridge):
+        self._bridge = bridge
+        self._last_trigger = {"sound": 0.0, "brightness": 0.0, "motion": 0.0}
+        self._last_brightness = None   # mean luminosity of the previous frame
+        self._stop = threading.Event()
+
+    def start(self):
+        t = threading.Thread(target=self._poll_loop)
+        t.daemon = True
+        t.start()
+
+    def stop(self):
+        self._stop.set()
+
+    # ------------------------------------------------------------------
+    # Internal polling loop
+    # ------------------------------------------------------------------
+
+    def _poll_loop(self):
+        if not HAS_NAOQI:
+            print("[sentinel] NAOqi absent — sentinelles désactivées.", file=sys.stderr)
+            return
+        memory = get_proxy("ALMemory")
+        motion = get_proxy("ALMotion")
+        if not memory:
+            print("[sentinel] ALMemory indisponible — sentinelles désactivées.", file=sys.stderr)
+            return
+        print("[sentinel] Sentinelles actives.", file=sys.stderr)
+        while not self._stop.is_set():
+            try:
+                now = time.time()
+                self._check_sound(memory, now)
+                self._check_brightness(now)
+                self._check_motion(memory, motion, now)
+            except Exception as exc:
+                print("[sentinel] Erreur poll: {}".format(exc), file=sys.stderr)
+            self._stop.wait(self._POLL_INTERVAL)
+
+    # ------------------------------------------------------------------
+    # Sentinel checks
+    # ------------------------------------------------------------------
+
+    def _cooldown_ok(self, source, now, cooldown):
+        return (now - self._last_trigger[source]) >= cooldown
+
+    def _check_sound(self, memory, now):
+        if not self._cooldown_ok("sound", now, SENTINEL_SOUND_COOLDOWN):
+            return
+        try:
+            val = memory.getData(
+                "Device/SubDeviceList/LMicroFront/SoundLevel/Sensor/Value"
+            )
+            if val is not None and float(val) >= SENTINEL_SOUND_THRESHOLD:
+                self._trigger("sound", now)
+        except Exception:
+            pass
+
+    def _check_brightness(self, now):
+        if not self._cooldown_ok("brightness", now, SENTINEL_BRIGHTNESS_COOLDOWN):
+            return
+        try:
+            video = get_proxy("ALVideoDevice")
+            if not video:
+                return
+            client = video.subscribeCamera("sentinel_bri", _CAM_TOP, _CAM_QVGA, _CAM_RGB, 1)
+            try:
+                img = video.getImageRemote(client)
+            finally:
+                try:
+                    video.unsubscribe(client)
+                except Exception:
+                    pass
+            if img is None:
+                return
+            # Compute mean luminosity over all RGB pixels (no numpy required).
+            raw = bytearray(img[6])
+            n_pix = len(raw) // 3
+            if n_pix == 0:
+                return
+            total = sum(raw[i] + raw[i + 1] + raw[i + 2] for i in range(0, n_pix * 3, 3))
+            mean_lum = total / (3.0 * n_pix)
+            if self._last_brightness is None:
+                self._last_brightness = mean_lum
+                return
+            delta = abs(mean_lum - self._last_brightness)
+            self._last_brightness = mean_lum
+            if delta >= SENTINEL_BRIGHTNESS_DELTA:
+                self._trigger("brightness", now)
+        except Exception as exc:
+            print("[sentinel] brightness error: {}".format(exc), file=sys.stderr)
+
+    def _check_motion(self, memory, motion, now):
+        if not self._cooldown_ok("motion", now, SENTINEL_MOTION_COOLDOWN):
+            return
+        try:
+            val = memory.getData("MotionDetected")
+            # ALMotionDetection: val[0] is a non-empty list when something is detected.
+            if not val or not val[0]:
+                return
+            # Discard detections caused by NAO's own movement.
+            if motion and motion.moveIsActive():
+                return
+            self._trigger("motion", now)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Capture and publish
+    # ------------------------------------------------------------------
+
+    def _trigger(self, source, now):
+        self._last_trigger[source] = now
+        print("[sentinel] Déclencheur vision: {}".format(source), file=sys.stderr)
+        threading.Thread(target=self._capture_and_publish, args=(source,)).start()
+
+    def _capture_and_publish(self, source):
+        """Grab a QVGA RGB frame, pack as PPM, publish base64 on /nao/image."""
+        try:
+            video = get_proxy("ALVideoDevice")
+            if not video:
+                return
+            client = video.subscribeCamera("sentinel_cap", _CAM_TOP, _CAM_QVGA, _CAM_RGB, 1)
+            try:
+                img = video.getImageRemote(client)
+            finally:
+                try:
+                    video.unsubscribe(client)
+                except Exception:
+                    pass
+            if img is None:
+                print("[sentinel] Capture échouée.", file=sys.stderr)
+                return
+            width, height = img[0], img[1]
+            raw = bytes(bytearray(img[6]))
+            # PPM binary format (P6) — readable by Pillow on the VPS without extra deps.
+            ppm_header = "P6\n{} {}\n255\n".format(width, height).encode("ascii")
+            b64 = base64.b64encode(ppm_header + raw)
+            if isinstance(b64, bytes):
+                b64 = b64.decode("ascii")
+            payload = json.dumps({"source": source, "format": "ppm",
+                                  "width": width, "height": height, "data": b64})
+            self._bridge._send({
+                "op":    "publish",
+                "topic": "/nao/image",
+                "msg":   {"data": payload},
+            })
+            print("[sentinel] Image publiée ({} {}x{}).".format(source, width, height),
+                  file=sys.stderr)
+        except Exception as exc:
+            print("[sentinel] capture error: {}".format(exc), file=sys.stderr)
+
+
 class NaoBridge(object):
     """Main bridge class: manages the WebSocket connection and dispatches commands.
 
@@ -595,17 +773,21 @@ class NaoBridge(object):
                         "auto" → mp3 if NAOqi available, otherwise text.
     """
 
-    def __init__(self, vps_url, modules=None, audio_capture=True, tts_method="auto"):
+    def __init__(self, vps_url, modules=None, audio_capture=True, tts_method="auto",
+                 sentinels=True):
         self.vps_url = vps_url
         self._modules = ALL_MODULES if modules is None else frozenset(modules)
         self._audio_capture_enabled = audio_capture
         self._tts_method_override = tts_method
+        self._sentinels_enabled = sentinels
         self.ws = None
         self._stop = threading.Event()
         self._busy_until = 0.0          # timestamp until which wake word is ignored (during TTS)
         self._wakeword_started = False   # prevents relaunching the wake-word thread on reconnect
+        self._sentinel_started = False   # prevents relaunching the sentinel manager on reconnect
         self._asr = None                 # ASR proxy kept alive for unsubscribe on shutdown
         self._audio_capture = None       # active _AudioCapture instance during VAD recording
+        self._sentinel_manager = _SentinelManager(self) if sentinels else None
         # Groups whose stiffness has been explicitly enabled (others are skipped for motion)
         self._stiffness_enabled = set()
         self._stiffness_lock = threading.Lock()
@@ -655,6 +837,8 @@ class NaoBridge(object):
 
     def stop(self):
         self._stop.set()
+        if self._sentinel_manager:
+            self._sentinel_manager.stop()
         self._cleanup_resources()
         if self.ws:
             self.ws.close()
@@ -713,6 +897,8 @@ class NaoBridge(object):
         advertised = ["/nao/status", "/nao/capabilities"]
         if self._audio_capture_enabled:
             advertised.append("/nao/audio")
+        if self._sentinels_enabled:
+            advertised.append("/nao/image")
         for topic in advertised:
             adv_msg = {"op": "advertise", "topic": topic, "type": "std_msgs/String"}
             _ws_log(u"→", adv_msg)
@@ -732,6 +918,9 @@ class NaoBridge(object):
         if self._audio_capture_enabled and not self._wakeword_started:
             self._wakeword_started = True
             threading.Thread(target=self._wakeword_loop).start()
+        if self._sentinels_enabled and not self._sentinel_started:
+            self._sentinel_started = True
+            self._sentinel_manager.start()
 
     def _on_message(self, ws, raw):
         """Handle an incoming WebSocket frame from rosbridge.
@@ -1288,6 +1477,13 @@ if __name__ == "__main__":
         help="Disable wake word detection and VAD capture (enabled by default)."
     )
     parser.add_argument(
+        "--no-sentinels",
+        dest="sentinels",
+        action="store_false",
+        default=True,
+        help="Disable vision sentinels (sound/brightness/motion triggers, enabled by default)."
+    )
+    parser.add_argument(
         "--tts-method",
         dest="tts_method",
         choices=["auto", "mp3", "text"],
@@ -1333,7 +1529,7 @@ if __name__ == "__main__":
         active_modules = None  # None means all modules (default)
 
     bridge = NaoBridge(args.vps, modules=active_modules, audio_capture=args.audio_capture,
-                       tts_method=args.tts_method)
+                       tts_method=args.tts_method, sentinels=args.sentinels)
     try:
         bridge.run()
     except KeyboardInterrupt:

@@ -26,6 +26,7 @@ Environment variables:
 
 import base64
 import hashlib
+import io
 import json
 import os
 import queue
@@ -34,12 +35,23 @@ import sys
 import threading
 import time
 
+import requests as _requests
 from flask import Flask, Response, jsonify, request
 
 BRIDGE_PORT        = int(os.environ.get("BRIDGE_PORT", "8090"))
 RECONNECT_INTERVAL = int(os.environ.get("RECONNECT_INTERVAL", "15"))
 ROSBRIDGE_URL      = os.environ.get("ROSBRIDGE_URL", "")
 NAO_STATUS_TIMEOUT = float(os.environ.get("NAO_STATUS_TIMEOUT", "90"))
+NAO_ROBOT_ID       = os.environ.get("NAO_ROBOT_ID", "nao_01")
+
+# ── Vision / moondream2 config ────────────────────────────────────────────────
+VISION_URL     = os.environ.get("VISION_URL",     os.environ.get("BRAIN_URL", "http://localhost:11434"))
+VISION_MODEL   = os.environ.get("VISION_MODEL",   "moondream2")
+VISION_TIMEOUT = int(os.environ.get("VISION_TIMEOUT", "30"))
+VISION_PROMPT  = os.environ.get(
+    "VISION_PROMPT",
+    "Décris brièvement ce que tu vois sur cette image en français (1-2 phrases).",
+)
 
 app = Flask(__name__)
 
@@ -62,6 +74,10 @@ _status_lock = threading.Lock()
 # ── SSE event bus ─────────────────────────────────────────────────────────────
 _event_queues      = []
 _event_queues_lock = threading.Lock()
+
+# ── Visual context store — latest moondream2 description per body ─────────────
+_visual_context: dict = {}          # body_id → {"description": str, "ts": float}
+_visual_context_lock = threading.Lock()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -197,6 +213,79 @@ class _WS(object):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Vision processing — moondream2 inference on NAO camera frames
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _ppm_to_jpeg_b64(ppm_b64: str) -> str:
+    """Decode a base64 PPM image and re-encode as base64 JPEG for Ollama."""
+    from PIL import Image
+    raw = base64.b64decode(ppm_b64)
+    img = Image.open(io.BytesIO(raw))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _process_vision_image(payload_str: str):
+    """Call moondream2 with the captured frame; store result and publish to ROS."""
+    try:
+        payload = json.loads(payload_str)
+    except (ValueError, TypeError):
+        print("[vision] Payload JSON invalide", file=sys.stderr)
+        return
+
+    source = payload.get("source", "unknown")
+    fmt    = payload.get("format", "ppm")
+    data   = payload.get("data",   "")
+
+    if not data:
+        print("[vision] Payload image vide — ignoré.", file=sys.stderr)
+        return
+
+    try:
+        if fmt == "ppm":
+            jpeg_b64 = _ppm_to_jpeg_b64(data)
+        else:
+            jpeg_b64 = data   # assume already JPEG base64
+    except Exception as exc:
+        print("[vision] Conversion image échouée: {}".format(exc), file=sys.stderr)
+        return
+
+    try:
+        resp = _requests.post(
+            "{}/api/generate".format(VISION_URL),
+            json={
+                "model":  VISION_MODEL,
+                "prompt": VISION_PROMPT,
+                "images": [jpeg_b64],
+                "stream": False,
+            },
+            timeout=VISION_TIMEOUT,
+        )
+        resp.raise_for_status()
+        description = resp.json().get("response", "").strip()
+    except Exception as exc:
+        print("[vision] Appel {} échoué: {}".format(VISION_MODEL, exc), file=sys.stderr)
+        return
+
+    if not description:
+        return
+
+    print("[vision] [{}] {}".format(source, description), file=sys.stderr)
+
+    with _visual_context_lock:
+        _visual_context[NAO_ROBOT_ID] = {"description": description, "ts": time.time(),
+                                          "source": source}
+
+    _rosbridge_publish(
+        "/bodies/{}/sensors/visual_context".format(NAO_ROBOT_ID),
+        "std_msgs/String",
+        {"data": json.dumps({"body_id": NAO_ROBOT_ID, "description": description,
+                             "source": source})},
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Rosbridge monitor — subscribes to /nao/status, updates _last_nao_status_time
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -222,12 +311,12 @@ def _rosbridge_monitor():
         try:
             ws = _WS(ROSBRIDGE_URL)
             ws.connect(timeout=10)
-            ws.send(json.dumps({
-                "op":    "subscribe",
-                "topic": "/nao/status",
-                "type":  "std_msgs/String",
-            }))
-            print("[naoqi_bridge] Subscribed to /nao/status", file=sys.stderr)
+            for topic, msg_type in [
+                ("/nao/status", "std_msgs/String"),
+                ("/nao/image",  "std_msgs/String"),
+            ]:
+                ws.send(json.dumps({"op": "subscribe", "topic": topic, "type": msg_type}))
+            print("[naoqi_bridge] Subscribed to /nao/status + /nao/image", file=sys.stderr)
 
             while True:
                 raw = ws.recv()
@@ -235,11 +324,21 @@ def _rosbridge_monitor():
                     msg = json.loads(raw)
                 except ValueError:
                     continue
-                # Only process heartbeat publishes on the expected topic.
-                if msg.get("op") == "publish" and msg.get("topic") == "/nao/status":
+                if msg.get("op") != "publish":
+                    continue
+                topic = msg.get("topic", "")
+                if topic == "/nao/status":
                     with _status_lock:
                         global _last_nao_status_time
                         _last_nao_status_time = time.time()
+                elif topic == "/nao/image":
+                    payload_str = msg.get("msg", {}).get("data", "")
+                    if payload_str:
+                        threading.Thread(
+                            target=_process_vision_image,
+                            args=(payload_str,),
+                            daemon=True,
+                        ).start()
 
         except Exception as e:
             print("[naoqi_bridge] rosbridge monitor error: {} — retrying in {}s".format(

@@ -243,6 +243,7 @@ class BodyGatewayNode(Node):
         self._state = "IDLE"
         self._batteries: dict[str, float] = {b: 100.0 for b in BODY_REGISTRY}
         self._sensor_state: dict[str, dict] = {}   # body_id → latest sensor state JSON
+        self._visual_context: dict[str, dict] = {} # body_id → {description, ts, source}
         self._infer_lock = threading.Lock()
         self._running = True
 
@@ -319,6 +320,10 @@ class BodyGatewayNode(Node):
             String, f"{ns}/sensors/state",
             lambda msg, bid=body_id: self._on_sensor_state(bid, msg), 10
         )
+        self.create_subscription(
+            String, f"{ns}/sensors/visual_context",
+            lambda msg, bid=body_id: self._on_visual_context(bid, msg), 10
+        )
         self.get_logger().info(f"Corps enregistré : {body_id}")
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -331,6 +336,17 @@ class BodyGatewayNode(Node):
     def _on_sensor_state(self, body_id: str, msg: String):
         try:
             self._sensor_state[body_id] = json.loads(msg.data)
+        except json.JSONDecodeError:
+            pass
+
+    def _on_visual_context(self, body_id: str, msg: String):
+        try:
+            data = json.loads(msg.data)
+            self._visual_context[body_id] = {
+                "description": data.get("description", ""),
+                "source":      data.get("source", ""),
+                "ts":          time.time(),
+            }
         except json.JSONDecodeError:
             pass
 
@@ -374,6 +390,14 @@ class BodyGatewayNode(Node):
                 f"{pct}{_SENSOR_REGISTRY['battery']['unit']}"
                 f"({_sensor_label('battery', pct)})]"
             )
+
+        # Visual context: inject if a recent moondream2 description is available (< 60 s).
+        vc = self._visual_context.get(body_id)
+        if vc and (time.time() - vc["ts"]) < 60.0:
+            source_label = {"sound": "son", "brightness": "lumière", "motion": "mouvement"}.get(
+                vc.get("source", ""), vc.get("source", "")
+            )
+            parts.append(f"[Vision({source_label}): {vc['description']}]")
 
         return " ".join(parts)
 
