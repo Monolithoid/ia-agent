@@ -377,11 +377,12 @@ class BodyGatewayNode(Node):
 
         return " ".join(parts)
 
-    def _user_content(self, body_id: str, user_input: str) -> str:
+    def _user_content(self, body_id: str, user_input: str, source: str = "internal") -> str:
         ctx = self._build_context(body_id)
+        src = f"[source: {source}]"
         if ctx:
-            return f"{ctx}\n[{body_id}] {user_input}"
-        return f"[{body_id}] {user_input}"
+            return f"{ctx} {src}\n[{body_id}] {user_input}"
+        return f"{src}\n[{body_id}] {user_input}"
 
     def _on_body_connected(self, body_id: str, msg: Bool):
         """Track physical robot connection state for each registered body.
@@ -412,7 +413,7 @@ class BodyGatewayNode(Node):
 
     def _on_bumper(self, body_id: str, msg: Bool):
         if msg.data:
-            self._trigger_inference(body_id, f"[bumper] Contact physique sur {body_id}.")
+            self._trigger_inference(body_id, f"[bumper] Contact physique sur {body_id}.", source="bumper")
 
     def _on_speech(self, body_id: str, msg: String):
         """Path 2 — transcription received after wake word detection.
@@ -426,7 +427,7 @@ class BodyGatewayNode(Node):
         self._state = "AWAKE"
         threading.Thread(
             target=self._infer_voice,
-            args=(body_id, text),
+            args=(body_id, text, "voice"),
             daemon=True,
         ).start()
 
@@ -434,7 +435,7 @@ class BodyGatewayNode(Node):
     # Voice inference (Path 2 — wake word)
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _infer_voice(self, body_id: str, user_input: str):
+    def _infer_voice(self, body_id: str, user_input: str, source: str = "voice"):
         """Call Ollama, dispatch all actions (TTS + physical), store result in
         voice_queue and notify the WebUI.  The Pipe retrieves this pre-computed
         result via GET /voice-pop to avoid a second inference call.
@@ -453,7 +454,7 @@ class BodyGatewayNode(Node):
             raw = self._ollama_chat(
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": self._user_content(body_id, user_input)},
+                    {"role": "user",   "content": self._user_content(body_id, user_input, source)},
                 ],
                 temperature=0.7,
             )
@@ -574,7 +575,8 @@ class BodyGatewayNode(Node):
                     self._json(400, {"error": "missing text"})
                     return
 
-                result = node._infer_sync(robot_id, text)
+                source = body.get("source", "webui")
+                result = node._infer_sync(robot_id, text, source)
                 self._json(200, result)
 
             def _handle_motion_command(self):
@@ -697,7 +699,7 @@ class BodyGatewayNode(Node):
     # Synchronous inference (Path 1 — /chat endpoint)
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _infer_sync(self, body_id: str, user_input: str) -> dict:
+    def _infer_sync(self, body_id: str, user_input: str, source: str = "webui") -> dict:
         self._publish_cognitive("thinking")
         self._state = "AWAKE"
 
@@ -711,7 +713,7 @@ class BodyGatewayNode(Node):
             raw = self._ollama_chat(
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": self._user_content(body_id, user_input)},
+                    {"role": "user",   "content": self._user_content(body_id, user_input, source)},
                 ],
                 temperature=0.7,
             )
@@ -749,15 +751,15 @@ class BodyGatewayNode(Node):
     # Asynchronous inference (sonar proximity, bumper touch, dream ticks)
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _trigger_inference(self, body_id: str, user_input: str):
+    def _trigger_inference(self, body_id: str, user_input: str, source: str = "sensor"):
         self._publish_cognitive("thinking")
         threading.Thread(
             target=self._infer_and_act,
-            args=(body_id, user_input, False),
+            args=(body_id, user_input, False, source),
             daemon=True,
         ).start()
 
-    def _infer_and_act(self, body_id: str, user_input: str, is_dream: bool):
+    def _infer_and_act(self, body_id: str, user_input: str, is_dream: bool, source: str = "sensor"):
         # Non-blocking acquire: async triggers (bumper, sonar, dream tick) are
         # fire-and-forget — if an inference is already running, silently skip.
         if not self._infer_lock.acquire(blocking=False):
@@ -773,7 +775,7 @@ class BodyGatewayNode(Node):
             raw = self._ollama_chat(
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": self._user_content(body_id, user_input)},
+                    {"role": "user",   "content": self._user_content(body_id, user_input, source)},
                 ],
                 # Dream ticks use lower temperature for more predictable, subtle outputs.
             temperature=0.5 if is_dream else 0.7,
@@ -965,6 +967,7 @@ class BodyGatewayNode(Node):
                 BODY_REGISTRY[0],
                 "Génère une expression onirique subtile pour ton corps.",
                 is_dream=True,
+                source="dream",
             )
 
     # ─────────────────────────────────────────────────────────────────────────

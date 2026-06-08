@@ -1,0 +1,109 @@
+{
+  "name": "Twitch → NAO (!nao)",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": ["message"]
+      },
+      "id": "twitch-trigger",
+      "name": "Twitch Chat",
+      "type": "n8n-nodes-base.twitchTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "credentials": {
+        "twitchOAuth2Api": {
+          "id": "TWITCH_CREDENTIAL_ID",
+          "name": "Twitch account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.message.toLowerCase() }}",
+              "operation": "startsWith",
+              "value2": "!nao "
+            }
+          ]
+        }
+      },
+      "id": "filter-nao",
+      "name": "Filtre !nao",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "text",
+              "value": "={{ $json.message.slice(5).trim() }}"
+            },
+            {
+              "name": "source",
+              "value": "={{ 'twitch/' + $json.username }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "extract-message",
+      "name": "Extraire message",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [680, 240]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://chat-relay:8095/chat",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "text",
+              "value": "={{ $json.text }}"
+            },
+            {
+              "name": "source",
+              "value": "={{ $json.source }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "call-nao",
+      "name": "Appel body-gateway",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [900, 240]
+    }
+  ],
+  "connections": {
+    "Twitch Chat": {
+      "main": [
+        [{ "node": "Filtre !nao", "type": "main", "index": 0 }]
+      ]
+    },
+    "Filtre !nao": {
+      "main": [
+        [{ "node": "Extraire message", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Extraire message": {
+      "main": [
+        [{ "node": "Appel body-gateway", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "tags": []
+}
