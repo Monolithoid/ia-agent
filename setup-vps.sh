@@ -248,7 +248,7 @@ main() {
     echo "    docker exec -it ollama ollama pull qwen3:8b"
     echo ""
     echo "  → Déployer le bridge NAO (si robot présent) :"
-    echo "    scp robotics/nao/nao_ws_bridge.py nao@NAO_IP:/home/nao/"
+    echo "    scp robotics/drones/nao/onboard/nao_ws_bridge.py nao@NAO_IP:/home/nao/"
 }
 
 main "$@"

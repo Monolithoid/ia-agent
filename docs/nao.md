@@ -27,12 +27,12 @@ Once connected the bridge subscribes to command topics and executes them via the
 
 | Script | Runs on | Role |
 |---|---|---|
-| `robotics/nao_brain/naoqi_bridge/nao_ws_bridge.py` | **NAO robot** | Outbound WebSocket client → rosbridge VPS |
-| `robotics/nao_brain/naoqi_bridge/app.py` | **VPS (Docker)** | HTTP compatibility API (fallback, robot-initiated mode) |
-| `robotics/nao_brain/naoqi_driver/naoqi_driver_node.py` | **VPS (container nao-core)** | Bridges `/bodies/*/actuators/*` ↔ `/nao/*` topics |
-| `robotics/nao_brain/cognitive_renderer/cognitive_renderer_node.py` | **VPS (container nao-core)** | Translates cognitive state → LED + head animations |
-| `robotics/nao_brain/body_gateway/body_gateway.py` | **VPS (ROS 2)** | LLM (Ollama) ↔ robot bodies orchestrator |
-| `robotics/nao_brain/webui/nao_pipe.py` | **VPS (Open WebUI)** | Open WebUI Pipe — chat interface for NAO Brain |
+| `robotics/drones/nao/onboard/nao_ws_bridge.py` | **NAO robot** | Outbound WebSocket client → rosbridge VPS |
+| `robotics/drones/nao/bridge/app.py` | **VPS (Docker)** | HTTP compatibility API (fallback, robot-initiated mode) |
+| `robotics/drones/nao/driver/naoqi_driver_node.py` | **VPS (container nao-core)** | Bridges `/bodies/*/actuators/*` ↔ `/nao/*` topics |
+| `robotics/drones/nao/cognitive_renderer/cognitive_renderer_node.py` | **VPS (container nao-core)** | Translates cognitive state → LED + head animations |
+| `robotics/brain/body_gateway/body_gateway.py` | **VPS (ROS 2)** | LLM (Ollama) ↔ robot bodies orchestrator |
+| `robotics/brain/webui/nao_pipe.py` | **VPS (Open WebUI)** | Open WebUI Pipe — chat interface for NAO Brain |
 
 > `app.py` is **not** meant to run on the robot — it is a VPS service. Deploying it on the NAO causes `ImportError: No module named flask` because Flask is not available on OpenNAO.
 
@@ -175,7 +175,7 @@ The `cognitive_renderer_node.py` runs an animation loop (1 tick/minute) that map
 
 ```bash
 # From the repository root on your dev machine:
-scp robotics/nao_brain/naoqi_bridge/nao_ws_bridge.py nao@NAO_IP:/home/nao/nao_ws_bridge.py
+scp robotics/drones/nao/onboard/nao_ws_bridge.py nao@NAO_IP:/home/nao/nao_ws_bridge.py
 ```
 
 > **No additional Python packages needed.** The WebSocket client is built into the script (pure Python 2.7).

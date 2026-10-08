@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-humble-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*
 
-# Build context = robotics/motion_engine/ (package root)
+# Build context = robotics/drones/nao/motion_engine/ (package root)
 # Copying here places the motion_engine/ Python package directly under /ros2_ws/
 WORKDIR /ros2_ws
 COPY motion_engine/ ./motion_engine/

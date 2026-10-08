@@ -70,7 +70,7 @@ https://chat.$DOMAIN/oauth/oidc/callback
 
 ### NAO Brain — chat WebUI comme interface du cerveau robotique
 
-Le Pipe `NAO Brain` (`robotics/nao_brain/webui/nao_pipe.py`) connecte le chat Open WebUI au **même pipeline complet** que la parole directe à NAO.
+Le Pipe `NAO Brain` (`robotics/brain/webui/nao_pipe.py`) connecte le chat Open WebUI au **même pipeline complet** que la parole directe à NAO.
 
 Le mot de réveil **« ok nao »** active l'agent IA (Ollama / `BRAIN_MODEL`). Celui-ci répond en langage naturel ET pilote simultanément ses corps physiques (NAO, drones, tout corps dans `BODY_REGISTRY`) via ROS 2.
 
@@ -109,7 +109,7 @@ Chat WebUI  ──"ok nao, [message]"──►  nao_pipe.py (Pipe)
 **Installation du Pipe (une seule fois, compte admin) :**
 
 1. `https://chat.$DOMAIN` → **Workspace → Functions → (+)**
-2. Coller le contenu de `robotics/nao_brain/webui/nao_pipe.py`
+2. Coller le contenu de `robotics/brain/webui/nao_pipe.py`
 3. Sélectionner le type **Pipe** → Enregistrer sous **NAO Brain**
 4. Le modèle **NAO Brain** apparaît dans la liste des modèles du chat
 

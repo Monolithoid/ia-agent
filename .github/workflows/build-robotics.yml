@@ -15,9 +15,8 @@ on:
     branches:
       - main
     paths:
-      - 'robotics/nao_brain/**'
-      - 'robotics/motion_engine/**'
-      - 'robotics/nao_core/**'
+      - 'robotics/brain/**'
+      - 'robotics/drones/nao/**'
       - '.github/workflows/build-robotics.yml'
 
   workflow_dispatch:
@@ -34,23 +33,23 @@ jobs:
         include:
           - name: naoqi-bridge
             image: monolithoid/naoqi-bridge
-            context: ./robotics/nao_brain/naoqi_bridge
-            dockerfile: ./robotics/nao_brain/naoqi_bridge/Dockerfile
+            context: ./robotics/drones/nao/bridge
+            dockerfile: ./robotics/drones/nao/bridge/Dockerfile
 
           - name: nao-core
             image: monolithoid/nao-core
-            context: ./robotics
-            dockerfile: ./robotics/nao_core/Dockerfile
+            context: ./robotics/drones/nao
+            dockerfile: ./robotics/drones/nao/core/Dockerfile
 
           - name: body-gateway
             image: monolithoid/body-gateway
-            context: ./robotics/nao_brain/body_gateway
-            dockerfile: ./robotics/nao_brain/body_gateway/Dockerfile
+            context: ./robotics/brain/body_gateway
+            dockerfile: ./robotics/brain/body_gateway/Dockerfile
 
           - name: ros2-bridge
             image: monolithoid/ros2-bridge
-            context: ./robotics/nao_brain/ros2_bridge
-            dockerfile: ./robotics/nao_brain/ros2_bridge/Dockerfile
+            context: ./robotics/brain/ros2_bridge
+            dockerfile: ./robotics/brain/ros2_bridge/Dockerfile
 
     steps:
       - name: Checkout
