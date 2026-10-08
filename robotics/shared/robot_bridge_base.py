@@ -48,7 +48,7 @@ Flask / HTTP usage example
 
 Python 2.7 reference (naoqi_bridge)
 ────────────────────────────────────
-naoqi_bridge/app.py implements the same pattern without this base class
+drones/nao/bridge/app.py implements the same pattern without this base class
 because the qi SDK requires Python 2.7 which cannot import this module.
 The logic is identical: _connect_once(), _disconnect(), _reconnect_loop().
 """

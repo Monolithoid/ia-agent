@@ -91,16 +91,21 @@ flowchart TB
 ia-agent/
 ├── core/bitterbot/          → Dockerfile + config template de l'agent Bitterbot
 ├── robotics/
-│   ├── motion_engine/       → Package ROS 2 : synthèse biomécanique (émotion → mouvement)
-│   ├── nao_core/            → Dockerfile + entrypoint du container nao-core
+│   ├── brain/               → Cerveau générique, indépendant du type de drone
+│   │   ├── body_gateway/    → Cerveau ROS 2 : LLM ↔ corps robotiques
+│   │   ├── ros2_bridge/     → Dockerfile rosbridge_server WebSocket
+│   │   └── webui/           → Pipe Open WebUI (nao_pipe.py)
 │   ├── shared/              → Classes partagées (RobotBridgeBase)
-│   └── nao_brain/
-│       ├── naoqi_bridge/    → HTTP bridge Python 2.7 (NAOqi SDK)
-│       ├── naoqi_driver/    → Nœud ROS 2 : topics → HTTP vers naoqi_bridge
-│       ├── cognitive_renderer/ → Nœud ROS 2 : état cognitif → LEDs / tête
-│       ├── ros2_bridge/     → Dockerfile rosbridge_server WebSocket
-│       ├── body_gateway/    → Cerveau ROS 2 : LLM ↔ corps robotiques
-│       └── webui/           → Pipe Open WebUI (nao_pipe.py)
+│   └── drones/
+│       ├── nao/
+│       │   ├── onboard/     → nao_ws_bridge.py (script exécuté SUR le robot)
+│       │   ├── bridge/      → HTTP bridge Flask vers NAO (container naoqi-bridge)
+│       │   ├── driver/      → Nœud ROS 2 : topics → HTTP vers naoqi-bridge
+│       │   ├── cognitive_renderer/ → Nœud ROS 2 : état cognitif → LEDs / tête
+│       │   ├── motion_engine/ → Package ROS 2 : synthèse biomécanique (émotion → mouvement)
+│       │   └── core/        → Dockerfile + entrypoint du container nao-core
+│       ├── static/          → Drone statique Raspberry Pi (micros, caméra, haut-parleur) — à venir
+│       └── quadcopter/      → Réservé
 ├── docs/
 │   ├── coolify-vps.md
 │   ├── ia-stack.md

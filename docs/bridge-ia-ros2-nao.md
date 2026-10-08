@@ -126,7 +126,7 @@ Also handles:
 
 ### nao_pipe (Open WebUI Pipe)
 
-**File:** `robotics/nao_brain/webui/nao_pipe.py`
+**File:** `robotics/brain/webui/nao_pipe.py`
 **Installation:** Open WebUI → Settings → Admin Settings → Functions → (+) → paste file → Save. Then select "NAO Brain" as the chat model.
 
 **Valves (configurable in Open WebUI):**
