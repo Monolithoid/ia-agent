@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /ros2_ws
-COPY cognitive_renderer_node.py .
+COPY cognitive_renderer_node.py speaking_animation.py ./
 
 CMD ["/bin/bash", "-c", \
      "source /opt/ros/humble/setup.bash && python3 /ros2_ws/cognitive_renderer_node.py"]

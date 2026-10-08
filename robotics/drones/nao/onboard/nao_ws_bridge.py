@@ -23,6 +23,8 @@ Module filtering:
                                    Available: led, speech, audio_out, gesture,
                                    motion, move, stop (default: all active).
     --no-audio-capture             Disable wake word detection and VAD capture.
+    The "bridge" section of the --provision file can set the same two options
+    ({"modules": [...], "audio_capture": false}); command-line flags win.
 
 TTS method:
     --tts-method auto|mp3|text
@@ -31,6 +33,9 @@ TTS method:
         auto : mp3 if NAOqi is available, otherwise text (default).
 
 Examples:
+    # Emotive-only NAO (ADR 004: the static drone speaks, listens and sees):
+    python nao_ws_bridge.py --vps ws://rosbridge.DOMAIN/ --token TOKEN --modules led,motion,stiffness,gesture,stop --no-audio-capture
+
     # LEDs + speech only, no audio capture:
     python nao_ws_bridge.py --vps ws://rosbridge.DOMAIN/ --token TOKEN --modules led,speech --no-audio-capture
 
@@ -362,6 +367,26 @@ class _WebSocketApp(object):
 # ======================================================================
 # Bridge NAO ↔ rosbridge
 # ======================================================================
+
+def _bridge_config(config_path):
+    """Return the "bridge" section of the provisioning file ({} if absent).
+
+    Keys: "modules" (list of module names) and "audio_capture" (bool).
+    """
+    try:
+        with open(config_path, "r") as f:
+            config = json.load(f)
+    except Exception:
+        return {}  # already reported by _provision()
+    section = config.get("bridge", {})
+    if not isinstance(section, dict):
+        return {}
+    if "modules" in section and not isinstance(section["modules"], list):
+        print("[provision] bridge.modules must be a list — ignored.", file=sys.stderr)
+        section = dict(section)
+        del section["modules"]
+    return section
+
 
 def _provision(config_path):
     """Apply post-flash configuration from config_path (JSON file)."""
@@ -1277,7 +1302,8 @@ if __name__ == "__main__":
         metavar="CONFIG_FILE",
         help=(
             "Apply post-flash configuration (autonomous life, language, volume) "
-            "before starting the bridge. "
+            "before starting the bridge; its \"bridge\" section sets the default "
+            "--modules and audio capture. "
             "Without argument, uses nao_provision.json next to this script. "
             "Without --vps, exits after provisioning."
         ),
@@ -1300,7 +1326,7 @@ if __name__ == "__main__":
         "--no-audio-capture",
         dest="audio_capture",
         action="store_false",
-        default=True,
+        default=None,
         help="Disable wake word detection and VAD capture (enabled by default)."
     )
     parser.add_argument(
@@ -1339,9 +1365,18 @@ if __name__ == "__main__":
         if not args.vps:
             sys.exit(0)
 
+    # "bridge" section of the provisioning file, overridden by the CLI flags.
+    bridge_cfg = _bridge_config(args.provision) if args.provision else {}
+    modules_arg = args.modules
+    if modules_arg is None and "modules" in bridge_cfg:
+        modules_arg = ",".join(str(m) for m in bridge_cfg["modules"])
+    audio_capture = args.audio_capture
+    if audio_capture is None:
+        audio_capture = bool(bridge_cfg.get("audio_capture", True))
+
     # Validate and parse the requested module list.
-    if args.modules is not None:
-        requested = set(m.strip().lower() for m in args.modules.split(",") if m.strip())
+    if modules_arg is not None:
+        requested = set(m.strip().lower() for m in modules_arg.split(",") if m.strip())
         unknown = requested - ALL_MODULES
         # Reject unknown module names early rather than silently ignoring them.
         if unknown:
@@ -1355,7 +1390,7 @@ if __name__ == "__main__":
     else:
         active_modules = None  # None means all modules (default)
 
-    bridge = NaoBridge(args.vps, modules=active_modules, audio_capture=args.audio_capture,
+    bridge = NaoBridge(args.vps, modules=active_modules, audio_capture=audio_capture,
                        tts_method=args.tts_method, token=args.token)
     try:
         bridge.run()

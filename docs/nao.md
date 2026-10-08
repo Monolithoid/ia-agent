@@ -48,7 +48,8 @@ Once connected the bridge subscribes to command topics and executes them via the
 - **Wake word detection** — "ok nao" / "okay nao" via ALSpeechRecognition
 - **VAD audio capture** — records speech after wake word, publishes WAV on `/nao/audio`
 - **TTS method negotiation** — announces `mp3` or `text` to the VPS on connect
-- **Post-flash provisioning** — applies autonomous life state, language, volume from JSON
+- **Post-flash provisioning** — applies autonomous life state, language, volume from JSON,
+  plus the bridge's default modules and audio capture (`"bridge"` section)
 
 ### CLI options
 
@@ -61,14 +62,60 @@ python /home/nao/nao_ws_bridge.py --vps ws://rosbridge.$DOMAIN/ --token TOKEN [o
 --nao-ip IP           NAOqi IP address (default: 127.0.0.1)
 --nao-port PORT       NAOqi port (default: 9559)
 --modules MOD,...     Comma-separated modules to enable (default: all)
-                      Available: audio_out, gesture, led, motion, move, speech, stop
+                      Available: audio_out, gesture, led, motion, move, speech, stiffness, stop
 --no-audio-capture    Disable wake word and VAD capture
+                      (both default to the "bridge" section of the --provision file;
+                      the command-line flags win)
 --tts-method METHOD   auto | mp3 | text (default: auto)
                         mp3  → VPS generates audio via edge-tts, sends on /nao/audio_out
                         text → VPS sends raw text, NAOqi TTS speaks it
                         auto → mp3 if NAOqi available, otherwise text
 --provision [FILE]    Apply post-flash config before starting (default: nao_provision.json)
 ```
+
+### Recommended configuration: emotive-only NAO (ADR 004)
+
+Since [ADR 004](decisions/004-drone-statique.md) the static drone handles voice,
+listening and the camera. The NAO only renders emotions with its motors and LEDs:
+
+| Module / feature | Emotive-only NAO | Why |
+|---|---|---|
+| `led`, `motion`, `stiffness` | **on** | eyes, head and arms driven by `cognitive_renderer` and `motion_engine` |
+| `gesture`, `stop` | **on** | postures (`/nao/gesture`) and the safety stop |
+| `speech`, `audio_out` | off | the static drone's speaker talks |
+| audio capture (wake word ASR + VAD) | off (`--no-audio-capture`) | the static drone's microphones listen, `body-gateway` checks "ok nao" |
+| `move` | off | the NAO stays in place; add it back if it must walk |
+
+```bash
+python nao_ws_bridge.py --vps ws://rosbridge.$DOMAIN/ --token TOKEN \
+    --modules led,motion,stiffness,gesture,stop --no-audio-capture
+```
+
+or, with the same values in the `"bridge"` section of `nao_provision.json`
+(as in `nao_provision.json.example`):
+
+```bash
+python nao_ws_bridge.py --vps ws://rosbridge.$DOMAIN/ --token TOKEN --provision
+```
+
+While the static drone speaks, `cognitive_renderer` makes the NAO move its eyes,
+head and arms so it looks like the one talking (see
+[cognitive_renderer](#cognitive_renderer)).
+
+**Back to the NAO's own voice** (no static drone): nothing to change on the VPS,
+`body-gateway` already sends the speech to the NAO when no static drone is
+connected. On the robot, restore the audio modules, either by removing the
+`"bridge"` section from `nao_provision.json` (all modules, audio capture on) or with:
+
+```json
+"bridge": {
+  "modules": ["led", "motion", "stiffness", "gesture", "stop", "speech", "audio_out"],
+  "audio_capture": true
+}
+```
+
+then restart the bridge. The NAO audio code (TTS, MP3 playback, wake word, VAD)
+is still in `nao_ws_bridge.py`.
 
 ### Usage examples
 
@@ -165,6 +212,20 @@ The `cognitive_renderer_node.py` runs an animation loop (1 tick/minute) that map
 | `uncertain` | yellow pulsing | slow yaw |
 | `excited` | bright white | look up |
 
+**Speaking sync (ADR 004).** `cognitive_renderer` listens to
+`/bodies/{DRONE_ID}/sensors/speaking` (relayed by `static_driver` from
+`/drones/{DRONE_ID}/speaking`). While it is `true`, every 1.5 s it blinks the
+eyes (`FaceLeds`, bright/dim white), nods the head slightly (`HeadPitch`) and
+raises one forearm then the other, so the NAO looks like it is the one speaking.
+When it turns `false`, the NAO goes back to its cognitive state profile. Arm
+gestures only play when arm stiffness is on (energy `medium` or above).
+
+| Variable (container `nao-core`) | Default | Role |
+|---|---|---|
+| `DRONE_ID` | `static_01` (`STATIC_DRONE_ID`) | static drone to mimic; empty = no sync |
+| `SPEAKING_SYNC` | `1` (`NAO_SPEAKING_SYNC`) | `0` disables the speaking animation |
+| `SPEAKING_TIMEOUT` | `120` | stop after this many seconds without `speaking=false` (0 = never) |
+
 ### Dream engine
 
 `body_gateway` enters DREAMING state between 02:00-06:00 when battery ≥ 80%. Soft micro-actions (head, LEDs, whisper) are triggered every 5 minutes via the `_DREAM_SYSTEM` prompt.
@@ -200,13 +261,19 @@ Successful connection logs:
 
 ### 3. Automatic start on boot
 
-Create `/home/nao/autostart.sh`:
+Copy `nao_provision.json.example` to `/home/nao/nao_provision.json` (its
+`"bridge"` section holds the [recommended emotive-only configuration](#recommended-configuration-emotive-only-nao-adr-004)),
+then create `/home/nao/autostart.sh`:
 ```bash
 #!/bin/bash
 sleep 10   # wait for network
 export ROSBRIDGE_TOKEN=...   # same value as in Coolify; keep this file chmod 600
-python /home/nao/nao_ws_bridge.py --vps ws://rosbridge.your-domain.com/ &
+# Emotive-only NAO: modules and audio capture come from nao_provision.json ("bridge").
+python /home/nao/nao_ws_bridge.py --vps ws://rosbridge.your-domain.com/ --provision &
 ```
+
+Without a provisioning file, pass the options directly:
+`--modules led,motion,stiffness,gesture,stop --no-audio-capture`.
 
 > Replace `rosbridge.your-domain.com` with `rosbridge.$DOMAIN` (your actual domain).
 
@@ -295,9 +362,17 @@ Create `nao_provision.json` next to the script (see `nao_provision.json.example`
     "tts": "French",
     "asr": "French"
   },
-  "system": {"volume": 70}
+  "system": {"volume": 70},
+  "bridge": {
+    "modules": ["led", "motion", "stiffness", "gesture", "stop"],
+    "audio_capture": false
+  }
 }
 ```
+
+The `"bridge"` section is optional: it gives the default `--modules` and audio
+capture (emotive-only NAO here). Without it, all modules are on and the NAO
+listens and speaks itself.
 
 Apply on first boot:
 ```bash

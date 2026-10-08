@@ -13,6 +13,8 @@ Usage (sur le VPS, depuis la racine du dépôt) :
 Étapes :
   1. /drones/{id}/status            → /bodies/{id}/connected = true
   2. /drones/{id}/speaking = true   → /bodies/{id}/sensors/speaking = true
+                                    → yeux du NAO « speaking » (/naoqi/leds FaceLeds,
+                                      cognitive_renderer), puis retour au profil (AllLeds)
   3. /drones/{id}/image             → /bodies/{id}/sensors/image (même JSON)
   4. /bodies/{id}/actuators/say     → edge-tts → /drones/{id}/audio_out (MP3)
   5. /drones/{id}/audio (le MP3 de l'étape 4, angle -30°)
@@ -224,7 +226,8 @@ def main():
                         (f"{body}/sensors/sound_direction", "std_msgs/String"),
                         (f"{body}/sensors/speech", "std_msgs/String"),
                         (f"{drone}/audio_out", "std_msgs/String"),
-                        (f"/bodies/{args.nao}/actuators/motion", "std_msgs/String")]:
+                        (f"/bodies/{args.nao}/actuators/motion", "std_msgs/String"),
+                        ("/naoqi/leds", "std_msgs/String")]:
         rb.subscribe(topic, kind)
     for topic, kind in [(f"{drone}/status", "std_msgs/String"),
                         (f"{drone}/audio", "std_msgs/String"),
@@ -243,10 +246,22 @@ def main():
     result(m is not None, f"/drones/{args.id}/status → {body}/connected = true")
 
     # 2. speaking relayé
+    def led_group(m):
+        try:
+            d = json.loads(m.get("data", "{}"))
+        except ValueError:
+            return None
+        return d.get("group") or d.get("name")
+
+    rb.drain("/naoqi/leds")
     rb.publish(f"{drone}/speaking", {"data": True})
     m = rb.wait(f"{body}/sensors/speaking", lambda m: m.get("data") is True)
     result(m is not None, f"/drones/{args.id}/speaking → {body}/sensors/speaking")
+    m = rb.wait("/naoqi/leds", lambda m: led_group(m) == "FaceLeds")
+    result(m is not None, "speaking → yeux du NAO animés (cognitive_renderer)")
     rb.publish(f"{drone}/speaking", {"data": False})
+    m = rb.wait("/naoqi/leds", lambda m: led_group(m) == "AllLeds")
+    result(m is not None, "fin de parole → NAO revient à son profil")
 
     # 3. image relayée telle quelle
     image = {"jpeg": base64.b64encode(b"\xff\xd8fake-jpeg\xff\xd9").decode(),
