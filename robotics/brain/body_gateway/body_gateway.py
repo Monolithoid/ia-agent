@@ -40,7 +40,7 @@ Dream flow (02:00-06:00 + battery ≥ threshold):
 
 Environment variables:
   BRAIN_URL                  default http://localhost:11434
-  BRAIN_MODEL                default qwen2.5:7b
+  BRAIN_MODEL                default qwen3:1.7b
   BRAIN_API_KEY              Ollama API key
   BRAIN_TIMEOUT              Ollama request timeout in seconds, default 120
   BODY_REGISTRY              comma-separated body IDs, default "nao_01"
@@ -262,10 +262,10 @@ class BodyGatewayNode(Node):
         super().__init__("body_gateway")
 
         self._state = "IDLE"
+        # Last valid battery reading (>= 0) per body. Empty until a body reports one:
+        # no reading means no robot connected, so no dreaming (see _check_state).
         # Static drones have no battery: they are left out of the dreaming threshold.
-        self._batteries: dict[str, float] = {
-            b: 100.0 for b in BODY_REGISTRY if body_rules.body_type(b) != "static"
-        }
+        self._batteries: dict[str, float] = {}
         self._voice_direction: dict[str, tuple[float | None, float]] = {}  # body → (deg, t)
         self._wake_gate = body_rules.WakeWordGate(WAKE_WORD, WAKE_WINDOW_S)
         self._sensor_state: dict[str, dict] = {}   # body_id → latest sensor state JSON
@@ -359,6 +359,9 @@ class BodyGatewayNode(Node):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _on_battery(self, body_id: str, msg: Float32):
+        # -1 (or any negative value) means "no reading": keep the last valid one.
+        if msg.data < 0 or body_rules.body_type(body_id) == "static":
+            return
         self._batteries[body_id] = msg.data
 
     def _on_sensor_state(self, body_id: str, msg: String):
@@ -1027,13 +1030,15 @@ class BodyGatewayNode(Node):
         Called every 60 s by the ROS 2 timer.
         Conditions for DREAMING: within the configured hour window AND
         all batteries above the minimum threshold (robot must be charging).
+        Without any valid battery reading (no robot connected) there is no dream,
+        so the LLM is not called for nothing.
         """
         hour = datetime.datetime.now().hour
-        # Use the minimum battery across all registered bodies — weakest link.
-        min_bat = min(self._batteries.values()) if self._batteries else 100.0
+        # Use the minimum battery across bodies that reported one — weakest link.
         should_dream = (
-            DREAMING_HOUR_START <= hour < DREAMING_HOUR_END
-            and min_bat >= DREAMING_BATTERY_THRESHOLD
+            bool(self._batteries)
+            and DREAMING_HOUR_START <= hour < DREAMING_HOUR_END
+            and min(self._batteries.values()) >= DREAMING_BATTERY_THRESHOLD
         )
         # Transition into DREAMING only if not already dreaming (avoid re-entry).
         if should_dream and self._state != "DREAMING":
