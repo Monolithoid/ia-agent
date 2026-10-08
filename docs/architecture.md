@@ -31,7 +31,7 @@ ia-agent/
 │       │   ├── cognitive_renderer/ → Nœud ROS 2 : état cognitif → LEDs / tête
 │       │   ├── motion_engine/ → Package ROS 2 : synthèse biomécanique (émotion → mouvement)
 │       │   └── core/        → Dockerfile + entrypoint du container nao-core
-│       ├── static/          → Drone statique Raspberry Pi (micros, caméra, haut-parleur) — à venir
+│       ├── static/          → Drone statique Raspberry Pi (micros, caméra, haut-parleur) — à venir, voir ADR 004
 │       └── quadcopter/      → Réservé
 ├── docs/
 │   ├── architecture.md      → ce fichier
@@ -45,7 +45,7 @@ ia-agent/
 - [Récapitulatif des containers](containers-overview.md) — tableau détaillé des échanges entre containers
 - [Stack IA](ia-stack.md) — configuration de chaque service IA
 - [Bridge IA / ROS 2 / NAO](bridge-ia-ros2-nao.md) — couche robotique
-- [ADR 001](decisions/001-ros2-over-ros1.md) · [ADR 002](decisions/002-nao-websocket-bridge.md) · [ADR 003](decisions/003-ollama-direct-sans-bitterbot.md)
+- [ADR 001](decisions/001-ros2-over-ros1.md) · [ADR 002](decisions/002-nao-websocket-bridge.md) · [ADR 003](decisions/003-ollama-direct-sans-bitterbot.md) · [ADR 004](decisions/004-drone-statique.md)
 
 ---
 
@@ -131,3 +131,5 @@ NAO robot
 L'architecture rosbridge est directement extensible aux drones.
 PX4, DJI (ROS 2 SDK) et Parrot (Anafi SDK) ont tous des drivers ROS 2.
 Il suffit d'ajouter un script bridge côté drone et un nouvel ID dans `BODY_REGISTRY`.
+
+Premier cas : le drone statique Raspberry Pi 5 (capture audio, vidéo, sortie audio), qui laisse au NAO le seul rendu émotif — voir [ADR 004](decisions/004-drone-statique.md).

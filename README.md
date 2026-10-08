@@ -21,6 +21,7 @@ Stack IA auto-hébergée sur VPS Ubuntu, déployée via Docker Compose et géré
 | [ADR 001](docs/decisions/001-ros2-over-ros1.md) | ROS 2 plutôt que ROS 1 |
 | [ADR 002](docs/decisions/002-nao-websocket-bridge.md) | Bridge WebSocket embarqué sur NAO (sans VPN ni Raspberry Pi) |
 | [ADR 003](docs/decisions/003-ollama-direct-sans-bitterbot.md) | Ollama direct sans Bitterbot pour body-gateway |
+| [ADR 004](docs/decisions/004-drone-statique.md) | Drone statique Raspberry Pi pour les sens, NAO réduit au rendu émotif |
 
 ---
 
