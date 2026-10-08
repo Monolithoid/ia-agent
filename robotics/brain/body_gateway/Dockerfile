@@ -17,7 +17,7 @@ WORKDIR /ros2_ws
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-COPY body_gateway.py .
+COPY body_gateway.py body_rules.py ./
 
 CMD ["/bin/bash", "-c", \
      "source /opt/ros/humble/setup.bash && python3 /ros2_ws/body_gateway.py"]

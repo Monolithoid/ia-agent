@@ -42,6 +42,19 @@ naoqi-bridge  (:8090, exposé sur 127.0.0.1)
 NAO  (éteint → réponse mock)
 ```
 
+Maillon 9, drone statique simulé ([ADR 004](decisions/004-drone-statique.md)) :
+
+```
+tests/fake-static-drone.py  (faux drone, WebSocket ws://localhost:9090)
+  │  /drones/static_01/status, image, speaking, audio
+  ▼
+ros2-bridge → nao-core/static_driver → whisper-asr
+  ▼
+body-gateway  (mot de réveil, direction, tête du NAO, routage de la parole)
+  ▼
+nao-core/static_driver → edge-tts → /drones/static_01/audio_out
+```
+
 > **n8n** est dans `ai-network` et peut appeler `body-gateway` directement, mais il n'est **pas** dans la chaîne de chat décrite ici — voir [Maillon 7](#maillon-7--n8n-hors-chaîne-directe).
 
 ---
@@ -235,6 +248,32 @@ ssh -L 5678:localhost:5678 $VPS_USER@$DOMAIN
 # puis ouvrir http://localhost:5678
 ```
 
+### Maillon 9 — Drone statique simulé (faux messages rosbridge)
+
+Lance `tests/fake-static-drone.py`, qui joue le rôle du Raspberry Pi : il se
+connecte à rosbridge comme `static_drone.py` et vérifie chaque relais. Aucun
+matériel n'est nécessaire, mais il faut `whisper-asr`, Ollama et l'accès
+internet d'edge-tts.
+
+| Étape | Envoyé par le faux drone | Attendu |
+|---|---|---|
+| 1 | `/drones/static_01/status` | `/bodies/static_01/connected` = `true` |
+| 2 | `/drones/static_01/speaking` = `true` | `/bodies/static_01/sensors/speaking` = `true` |
+| 3 | `/drones/static_01/image` | `/bodies/static_01/sensors/image` (même JSON) |
+| 4 | `/bodies/static_01/actuators/say` « OK Nao, bonjour… » | MP3 sur `/drones/static_01/audio_out` |
+| 5 | `/drones/static_01/audio` (ce MP3, angle -30°) | `sound_direction`, `HeadYaw` sur `/bodies/nao_01/actuators/motion`, texte sur `/bodies/static_01/sensors/speech` |
+| 6 | — | réponse du LLM prononcée sur `/drones/static_01/audio_out` |
+
+```bash
+# Seul, sans le reste de test-chain.sh
+python3 tests/fake-static-drone.py
+# Par le chemin public (Traefik + rosbridge-proxy), avec le jeton
+python3 tests/fake-static-drone.py --url ws://rosbridge.$DOMAIN --token "$ROSBRIDGE_TOKEN"
+```
+
+Si un vrai drone `static_01` est branché pendant le test, il prononce les
+phrases du test et le NAO tourne la tête.
+
 ---
 
 ## Résultats attendus (tout NAO éteint)
@@ -250,6 +289,7 @@ ssh -L 5678:localhost:5678 $VPS_USER@$DOMAIN
 | 5 | `naoqi-bridge /health` et `/say` retournent `{"ok": true}` |
 | 6 | `connected: false` dans `/health`, logs `MOCK` présents |
 | 7 | n8n accessible sur localhost:5678 (si démarré) |
+| 9 | Toutes les étapes du faux drone statique en `PASS` (si edge-tts est injoignable, l'étape 4 échoue et les étapes 5 et 6 sont sautées) |
 
 ---
 
@@ -267,4 +307,7 @@ ssh -L 5678:localhost:5678 $VPS_USER@$DOMAIN
 | Topics ROS 2 absents | 4 | DDS domain incorrect ou body-gateway/nao-core crashé | `docker logs body-gateway` ; `docker logs nao-core` ; vérifier `ROS_DOMAIN_ID=42` |
 | `Connection refused` sur localhost:8090 | 5 | naoqi-bridge non démarré | `docker compose up -d naoqi-bridge` |
 | `connected: true` avec NAO éteint | 6 | Ancienne connexion TCP non fermée | Redémarrer `naoqi-bridge` |
+| `/bodies/static_01/connected` jamais vu | 9 | static-driver non démarré | `docker logs nao-core` : ligne `static-driver(…) pour static_01` ? `STATIC_DRONE_ID` vide ? |
+| Pas de `HeadYaw` | 9 | `static_01` absent de `BODY_REGISTRY` | Vérifier l'environnement de body-gateway |
+| Pas de réponse prononcée | 9 | Mot de réveil absent de la transcription, ou LLM lent | `docker logs body-gateway` (`Sans mot de réveil, ignoré`) |
 | Pas de ligne `MOCK` dans les logs | 6 | Le SDK qi a été trouvé et NAO_IP est défini | Normal si NAO était allumé lors du démarrage |

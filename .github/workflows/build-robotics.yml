@@ -3,6 +3,7 @@ name: Build & Push — Images robotiques
 # Publie quatre images sur Docker Hub :
 #   monolithoid/naoqi-bridge  → Python 3.12 Alpine, HTTP bridge Flask vers NAO
 #   monolithoid/nao-core      → ROS2 Humble, naoqi-driver + cognitive-renderer + motion-engine
+#                               + static-driver (drone statique, ADR 004)
 #   monolithoid/body-gateway  → ROS2 Humble, pont LLM ↔ bus ROS2
 #   monolithoid/ros2-bridge   → ROS2 Humble + rosbridge_server WebSocket :9090
 #
@@ -17,6 +18,8 @@ on:
     paths:
       - 'robotics/brain/**'
       - 'robotics/drones/nao/**'
+      - 'robotics/drones/static/driver/**'
+      - 'robotics/shared/**'
       - '.github/workflows/build-robotics.yml'
 
   workflow_dispatch:
@@ -38,7 +41,7 @@ jobs:
 
           - name: nao-core
             image: monolithoid/nao-core
-            context: ./robotics/drones/nao
+            context: ./robotics
             dockerfile: ./robotics/drones/nao/core/Dockerfile
 
           - name: body-gateway

@@ -1,6 +1,6 @@
 # Bridge IA / ROS 2 / NAO
 
-Translation layer between the AI stack (Ollama, Open WebUI) and the NAO robot, via ROS 2 Humble and the rosbridge WebSocket protocol.
+Translation layer between the AI stack (Ollama, Open WebUI) and the robot bodies, via ROS 2 Humble and the rosbridge WebSocket protocol: the NAO (gestures, head, LEDs) and the static drone (microphones, camera, speaker — [ADR 004](decisions/004-drone-statique.md)).
 
 ---
 
@@ -15,12 +15,19 @@ Open WebUI (chat / voice)
                     ├─► Ollama /v1/chat/completions  (LLM inference)
                     ├─► /cognitive_state → cognitive_renderer (LED + head)
                     └─► /bodies/{id}/actuators/*
-                          └─► naoqi_driver (ROS 2 node)
-                                └─► /nao/speech, /nao/leds, /nao/motion, ...
+                          ├─► naoqi_driver (ROS 2 node)
+                          │     └─► /nao/speech, /nao/leds, /nao/motion, ...
+                          │           └─► ros2-bridge (rosbridge_suite, port 9090)
+                          │                 └─► nao_ws_bridge.py (NAO, Python 2.7)
+                          │                       └─► NAOqi SDK → speaker, LEDs, motors
+                          └─► static_driver (ROS 2 node)
+                                └─► /drones/{id}/audio_out (edge-tts MP3)
                                       └─► ros2-bridge (rosbridge_suite, port 9090)
-                                            └─► nao_ws_bridge.py (NAO, Python 2.7)
-                                                  └─► NAOqi SDK → speaker, LEDs, motors
+                                            └─► static_drone.py (Raspberry Pi / PC)
+                                                  └─► speaker
 ```
+
+The static drone connects the same way as the NAO (outbound WebSocket, same token).
 
 The NAO robot establishes an **outbound WebSocket connection** to `ws://rosbridge.$DOMAIN` (port 80, proxied via Traefik; TLS clients use `wss://` on 443). Every connection must carry `Authorization: Bearer $ROSBRIDGE_TOKEN`. No inbound connection to the robot is required.
 
@@ -61,6 +68,8 @@ Caddy only proxies requests whose `Authorization` header equals `Bearer $ROSBRID
 Also handles:
 - TTS method negotiation (mp3 via edge-tts vs. native NAOqi text)
 - Whisper ASR transcription of `/nao/audio` → `/bodies/{id}/sensors/speech`
+
+Whisper and edge-tts calls live in `robotics/shared/speech_services.py`, shared with `static_driver`.
 - Connection heartbeat monitoring (`/nao/status` timeout = 90 s)
 
 **Environment variables:**
@@ -71,6 +80,32 @@ Also handles:
 | `WHISPER_URL` | Whisper ASR service URL (empty = disabled) |
 | `TTS_VOICE` | edge-tts voice, default `fr-FR-DeniseNeural` |
 | `NAO_STATUS_TIMEOUT` | Seconds without heartbeat before marking disconnected, default 90 |
+
+---
+
+### static_driver
+
+**Container:** `nao-core` (fourth node, started when `DRONE_ID` is not empty)
+**File:** `robotics/drones/static/driver/static_driver_node.py`
+**Role:** ROS 2 bridge node for the static drone ([ADR 004](decisions/004-drone-statique.md)) — translates the `/drones/{id}/*` topics published by `static_drone.py` into `/bodies/{id}/*`.
+
+| From | To | Processing |
+|---|---|---|
+| `/drones/{id}/audio` | `/bodies/{id}/sensors/sound_direction` | `{"azimuth_deg", "source"}`, published at once |
+| `/drones/{id}/audio` | `/bodies/{id}/sensors/speech` | Whisper ASR (same filter as the NAO: > 3 characters) |
+| `/drones/{id}/image` | `/bodies/{id}/sensors/image` | relayed as-is (no vision analysis yet) |
+| `/drones/{id}/speaking` | `/bodies/{id}/sensors/speaking` | relayed as-is |
+| `/drones/{id}/status` (and any other message) | `/bodies/{id}/connected` | `true` on first message, `false` after `DRONE_STATUS_TIMEOUT` s of silence |
+| `/bodies/{id}/actuators/say` | `/drones/{id}/audio_out` | edge-tts → MP3 base64 (no text fallback: the drone has no local TTS) |
+
+**Environment variables:**
+
+| Variable | Description |
+|---|---|
+| `DRONE_ID` | Body identifier, default `static_01` (compose: `STATIC_DRONE_ID`) |
+| `WHISPER_URL` | Whisper ASR service URL (empty = disabled) |
+| `TTS_VOICE` | edge-tts voice, default `fr-FR-DeniseNeural` |
+| `DRONE_STATUS_TIMEOUT` | Seconds without message before marking disconnected, default 90 |
 
 ---
 
@@ -117,11 +152,22 @@ Also handles:
 | `BRAIN_MODEL` | LLM model, default `qwen3:1.7b` |
 | `BRAIN_API_KEY` | Ollama API key |
 | `BRAIN_TIMEOUT` | Ollama timeout in seconds, default 120 |
-| `BODY_REGISTRY` | Comma-separated body IDs, default `nao_01` |
+| `BODY_REGISTRY` | Comma-separated body IDs, default `nao_01` (compose: `nao_01,static_01`). IDs starting with `static` are static drones, all others are NAOs |
+| `WAKE_WORD` | Wake word required in the static drone's speech, default `ok nao` |
+| `WAKE_WINDOW_S` | Seconds during which a lone wake word stays valid for the next sentence, default 10 |
+| `NAO_HEAD_YAW_OFFSET` | Degrees added when turning the NAO head toward a voice (manual calibration), default 0 |
 | `DREAMING_HOUR_START/END` | Dream window, default 2 / 6 |
 | `DREAMING_BATTERY_THRESHOLD` | Minimum battery % to dream, default 80.0 |
 | `WEBUI_URL` | Open WebUI URL for voice notifications |
 | `WEBUI_API_KEY` | Open WebUI API key |
+
+**Several bodies (static drone + NAO)** — rules in `robotics/brain/body_gateway/body_rules.py`:
+
+- **Routing table by action type.** `speech` goes to the static drone when it is connected, otherwise to the NAO named by the LLM; `motion`, `leds`, `move`, `look` always go to a NAO, even if the LLM names the static drone. Without a connected static drone, the NAO behaves as before.
+- **System prompt.** Lists each body with its capabilities (`static_01`: speak, hear, see; `nao_01`: gestures, head, LEDs) and the body to use for `speech`.
+- **Wake word.** The NAO detects "ok nao" on board; the static drone sends everything it hears, so its transcription must contain `WAKE_WORD` (normalised: case, accents, punctuation, "okay"). The text after the wake word triggers inference; a lone "ok nao" accepts the next sentence for `WAKE_WINDOW_S` seconds.
+- **Voice direction.** The last `sound_direction` (less than 30 s old) is added to the LLM context as `[voix : 30° à gauche]`.
+- **NAO head.** Each `sound_direction` with an angle turns the head of every NAO: `HeadYaw = −angle + NAO_HEAD_YAW_OFFSET` (degrees → radians), clamped to the joint limits (±2.0857 rad, `motion_engine/nao_joints.py`). The minus sign converts the drone convention (positive = right) to NAO's (positive = left). Published on `/bodies/{nao}/actuators/motion` as `{"joint": "HeadYaw", "angle", "speed": 0.15}`.
 
 ---
 
@@ -165,6 +211,19 @@ Also handles:
 | `/nao/audio` | `std_msgs/String` (base64 WAV) | Captured speech after wake word |
 | `/nao/capabilities` | `std_msgs/String` (JSON) | `{"tts_method": "mp3"}` — on connect |
 
+### Static drone ↔ VPS
+
+Formats defined by `robotics/drones/static/onboard/` (see its [README](../robotics/drones/static/onboard/README.md)). Angles in degrees, 0 = camera axis, positive = right.
+
+| Topic | Direction | Type | Content |
+|---|---|---|---|
+| `/drones/{id}/status` | → VPS | `std_msgs/String` (JSON) | heartbeat every 30 s (`capabilities`, `direction_mode`, …) |
+| `/drones/{id}/audio` | → VPS | `std_msgs/String` (JSON) | `{"wav": base64, "azimuth_deg": angle or null, "direction_source"}` — every speech segment, no wake word on board |
+| `/drones/{id}/image` | → VPS | `std_msgs/String` (JSON) | `{"jpeg": base64, "width", "height", "reason"}` |
+| `/drones/{id}/speaking` | → VPS | `std_msgs/Bool` | `true` while the speaker plays |
+| `/drones/{id}/audio_out` | ← VPS | `std_msgs/String` | MP3 base64 |
+| `/drones/{id}/image_request` | ← VPS | `std_msgs/Empty` | ask for an image now (not used by the VPS yet) |
+
 ### Internal ROS 2 topics
 
 | Topic | Publisher | Subscriber | Description |
@@ -174,14 +233,17 @@ Also handles:
 | `/dream_state` | body_gateway | cognitive_renderer | Dream phase |
 | `/naoqi/leds` | cognitive_renderer | naoqi_driver | LED command |
 | `/naoqi/motion` | cognitive_renderer | naoqi_driver | Head joint command |
-| `/bodies/{id}/actuators/say` | body_gateway | naoqi_driver | TTS text |
+| `/bodies/{id}/actuators/say` | body_gateway | naoqi_driver / static_driver | TTS text |
 | `/bodies/{id}/actuators/leds` | body_gateway | naoqi_driver | LED color |
 | `/bodies/{id}/actuators/motion` | body_gateway | naoqi_driver | Joint motion |
 | `/bodies/{id}/actuators/posture` | body_gateway | naoqi_driver | Posture preset |
 | `/bodies/{id}/actuators/move` | body_gateway | naoqi_driver | Walking command |
-| `/bodies/{id}/sensors/speech` | naoqi_driver | body_gateway | STT transcription |
+| `/bodies/{id}/sensors/speech` | naoqi_driver / static_driver | body_gateway | STT transcription |
+| `/bodies/{id}/sensors/sound_direction` | static_driver | body_gateway | `{"azimuth_deg", "source"}` (JSON) |
+| `/bodies/{id}/sensors/image` | static_driver | *(none yet)* | camera image (JSON, as sent by the drone) |
+| `/bodies/{id}/sensors/speaking` | static_driver | *(none yet)* | speaker playing (Bool) |
 | `/bodies/{id}/sensors/battery` | naoqi_driver | body_gateway | Battery level |
-| `/bodies/{id}/connected` | naoqi_driver | body_gateway | Connection state |
+| `/bodies/{id}/connected` | naoqi_driver / static_driver | body_gateway | Connection state |
 
 ---
 
@@ -215,6 +277,20 @@ Robot hears "ok nao"
           → displayed in WebUI chat
 ```
 
+### Path 3 — Voice heard by the static drone
+
+```
+Static drone detects speech (VAD) and its direction
+  → /drones/{id}/audio {wav, azimuth_deg}
+    → static_driver
+      → /bodies/{id}/sensors/sound_direction → body_gateway turns the NAO head
+      → Whisper → /bodies/{id}/sensors/speech
+        → body_gateway: wake word "ok nao" required, then same as Path 2
+          with "[voix : 30° à gauche]" in the context
+          → speech action → static_driver → edge-tts → /drones/{id}/audio_out
+          → gestures / LEDs → NAO
+```
+
 ---
 
 ---
@@ -235,10 +311,13 @@ curl -X POST http://localhost:8095/say \
 
 # 4. Stream ROS 2 bridge logs
 docker logs ros2-bridge -f
+
+# 5. Static drone path end to end, with fake rosbridge messages (no Raspberry Pi)
+python3 tests/fake-static-drone.py
 ```
 
 ---
 
 ## Extensibility
 
-The rosbridge architecture is directly extensible to other robots or drones. PX4, DJI (ROS 2 SDK), and Parrot (Anafi SDK) all have ROS 2 drivers. Adding a new robot requires a new bridge script on the robot side, new topics, and a new entry in `BODY_REGISTRY`.
+The rosbridge architecture is directly extensible to other robots or drones. PX4, DJI (ROS 2 SDK), and Parrot (Anafi SDK) all have ROS 2 drivers. Adding a new robot requires a new bridge script on the robot side, a driver node on the VPS, new topics, and a new entry in `BODY_REGISTRY` (plus a type in `body_rules.py` if its capabilities differ). The static drone (`robotics/drones/static/`) is the example.
