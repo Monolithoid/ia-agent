@@ -8,5 +8,9 @@
   },
   "system": {
     "volume": 50
+  },
+  "bridge": {
+    "modules": ["led", "motion", "stiffness", "gesture", "stop"],
+    "audio_capture": false
   }
 }

@@ -258,7 +258,7 @@ internet d'edge-tts.
 | Étape | Envoyé par le faux drone | Attendu |
 |---|---|---|
 | 1 | `/drones/static_01/status` | `/bodies/static_01/connected` = `true` |
-| 2 | `/drones/static_01/speaking` = `true` | `/bodies/static_01/sensors/speaking` = `true` |
+| 2 | `/drones/static_01/speaking` = `true` puis `false` | `/bodies/static_01/sensors/speaking` = `true`, yeux du NAO animés (`/naoqi/leds` `FaceLeds`), puis retour au profil (`AllLeds`) |
 | 3 | `/drones/static_01/image` | `/bodies/static_01/sensors/image` (même JSON) |
 | 4 | `/bodies/static_01/actuators/say` « OK Nao, bonjour… » | MP3 sur `/drones/static_01/audio_out` |
 | 5 | `/drones/static_01/audio` (ce MP3, angle -30°) | `sound_direction`, `HeadYaw` sur `/bodies/nao_01/actuators/motion`, texte sur `/bodies/static_01/sensors/speech` |

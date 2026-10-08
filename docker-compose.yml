@@ -44,6 +44,8 @@ version: "3.8"
 #   STATIC_DRONE_ID          : static_01 (identifiant ROS2 du drone statique, ADR 004)
 #   NAO_HEAD_YAW_OFFSET      : décalage en degrés pour tourner la tête du NAO vers la voix
 #                              entendue par le drone statique (défaut: 0)
+#   NAO_SPEAKING_SYNC        : 1 = le NAO s'anime pendant que le drone statique parle,
+#                              0 = désactivé (défaut: 1)
 #   LISTEN_DURATION          : durée d'écoute après wake word en secondes (défaut: 4.0)
 #   ASR_MODEL                : modèle Whisper — tiny/base/small (défaut: small)
 #
@@ -289,6 +291,7 @@ services:
       - TTS_VOICE=${TTS_VOICE:-fr-FR-DeniseNeural}
       - DRONE_ID=${STATIC_DRONE_ID:-static_01}
       - DRONE_STATUS_TIMEOUT=${DRONE_STATUS_TIMEOUT:-90}
+      - SPEAKING_SYNC=${NAO_SPEAKING_SYNC:-1}
     depends_on:
       whisper-asr:
         condition: service_started
