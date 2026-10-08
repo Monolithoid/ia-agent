@@ -27,6 +27,14 @@ Voice flow (Path 2 — wake word):
   → notify WebUI (POST /api/chat/completions, nao_voice=True)
   → Pipe retrieves pre-computed result via GET /voice-pop (avoids double inference).
 
+Static drone (ADR 004):
+  /bodies/static_*/sensors/speech is everything the drone heard: only text
+  containing WAKE_WORD triggers inference, like the NAO voice.
+  /bodies/static_*/sensors/sound_direction adds "[voix : 30° à gauche]" to the
+  LLM context and turns the NAO head toward the voice.
+  Actions are routed by type (body_rules.route_action): "speech" goes to the
+  static drone when it is connected, gestures/head/LEDs to the NAO.
+
 Dream flow (02:00-06:00 + battery ≥ threshold):
   Periodic dream ticks → soft micro-actions (head, LEDs, whisper).
 
@@ -36,6 +44,10 @@ Environment variables:
   BRAIN_API_KEY              Ollama API key
   BRAIN_TIMEOUT              Ollama request timeout in seconds, default 120
   BODY_REGISTRY              comma-separated body IDs, default "nao_01"
+                             (ids starting with "static" are static drones, ADR 004)
+  WAKE_WORD                  wake word required in static drone speech, default "ok nao"
+  WAKE_WINDOW_S              seconds a lone wake word stays valid, default 10
+  NAO_HEAD_YAW_OFFSET        degrees added to turn the NAO head toward a voice, default 0
   DREAMING_HOUR_START/END    default 2 / 6
   DREAMING_BATTERY_THRESHOLD default 80.0
   DREAM_TICK_INTERVAL        seconds between dream ticks, default 300
@@ -61,6 +73,8 @@ from rclpy.node import Node
 from sensor_msgs.msg import Range
 from std_msgs.msg import Bool, Float32, String
 
+import body_rules
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
@@ -81,6 +95,10 @@ PROXIMITY_THRESHOLD        = float(os.environ.get("PROXIMITY_THRESHOLD",      "1
 CHAT_PORT     = int(os.environ.get("CHAT_PORT",     "8095"))
 WAKE_WORD     = os.environ.get("WAKE_WORD",     "ok nao").lower()
 BRAIN_TIMEOUT = int(os.environ.get("BRAIN_TIMEOUT", "120"))
+WAKE_WINDOW_S = float(os.environ.get("WAKE_WINDOW_S", "10"))
+NAO_HEAD_YAW_OFFSET = float(os.environ.get("NAO_HEAD_YAW_OFFSET", "0"))
+# A voice direction older than this is not added to the LLM context.
+VOICE_DIRECTION_MAX_AGE = 30.0
 
 WEBUI_URL           = os.environ.get("WEBUI_URL",           "")
 WEBUI_API_KEY       = os.environ.get("WEBUI_API_KEY",       "")
@@ -93,7 +111,8 @@ WEBUI_VOICE_CHAT_ID = os.environ.get("WEBUI_VOICE_CHAT_ID", "")
 
 _AWAKE_SYSTEM = """\
 Tu es le système nerveux central d'un réseau de corps robotiques.
-Corps disponibles : {body_ids}
+Corps disponibles et capacités :
+{bodies}
 
 Réponds UNIQUEMENT en JSON strict — aucun texte en dehors du JSON :
 {{
@@ -101,26 +120,28 @@ Réponds UNIQUEMENT en JSON strict — aucun texte en dehors du JSON :
   "emotion": "curious|neutral|excited|uncertain",
   "energy": "very-low|low|medium|high|very-high",
   "actions": [
-    {{"body": "nao_01", "type": "speech",  "text": "ce que tu dis à voix haute"}},
-    {{"body": "nao_01", "type": "motion",  "name": "wave|bow|sit|stand"}},
-    {{"body": "nao_01", "type": "leds",    "color": "blue|green|white|red|yellow|purple|off"}},
-    {{"body": "nao_01", "type": "move",    "x": 0.0, "y": 0.0, "theta": 0.0}},
-    {{"body": "nao_01", "type": "look",    "yaw": 0.0}}
+    {{"body": "{speaker}", "type": "speech",  "text": "ce que tu dis à voix haute"}},
+    {{"body": "{nao}", "type": "motion",  "name": "wave|bow|sit|stand"}},
+    {{"body": "{nao}", "type": "leds",    "color": "blue|green|white|red|yellow|purple|off"}},
+    {{"body": "{nao}", "type": "move",    "x": 0.0, "y": 0.0, "theta": 0.0}},
+    {{"body": "{nao}", "type": "look",    "yaw": 0.0}}
   ]
 }}
 Le champ "energy" reflète ton niveau d'énergie physique :
   very-low = épuisé, somnolent — very-high = hyperactif, électrisé.
-Inclure toujours au moins une action "speech". Les autres actions sont optionnelles.\
+Inclure toujours au moins une action "speech" (body "{speaker}"). Les autres actions sont optionnelles.
+Une ligne "[voix : 30° à gauche]" indique d'où vient la voix entendue.\
 """
 
 _DREAM_SYSTEM = """\
 Tu rêves. Tes corps sont en veille passive — expressions oniriques légères uniquement :
 mouvements de tête très doux, LEDs en pulsation lente, murmure à volume minimal.
-Corps disponibles : {body_ids}
+Corps disponibles et capacités :
+{bodies}
 PAS de mouvements de bras, de jambes ou de déplacement.
 
 Réponds UNIQUEMENT en JSON strict :
-{{"actions": [{{"body": "nao_01", "type": "motion", "joint": "HeadYaw", "angle": 0.05, "speed": 0.02}}]}}\
+{{"actions": [{{"body": "{nao}", "type": "motion", "joint": "HeadYaw", "angle": 0.05, "speed": 0.02}}]}}\
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -241,7 +262,12 @@ class BodyGatewayNode(Node):
         super().__init__("body_gateway")
 
         self._state = "IDLE"
-        self._batteries: dict[str, float] = {b: 100.0 for b in BODY_REGISTRY}
+        # Static drones have no battery: they are left out of the dreaming threshold.
+        self._batteries: dict[str, float] = {
+            b: 100.0 for b in BODY_REGISTRY if body_rules.body_type(b) != "static"
+        }
+        self._voice_direction: dict[str, tuple[float | None, float]] = {}  # body → (deg, t)
+        self._wake_gate = body_rules.WakeWordGate(WAKE_WORD, WAKE_WINDOW_S)
         self._sensor_state: dict[str, dict] = {}   # body_id → latest sensor state JSON
         self._infer_lock = threading.Lock()
         self._running = True
@@ -319,7 +345,14 @@ class BodyGatewayNode(Node):
             String, f"{ns}/sensors/state",
             lambda msg, bid=body_id: self._on_sensor_state(bid, msg), 10
         )
-        self.get_logger().info(f"Corps enregistré : {body_id}")
+        if body_rules.body_type(body_id) == "static":
+            self.create_subscription(
+                String, f"{ns}/sensors/sound_direction",
+                lambda msg, bid=body_id: self._on_sound_direction(bid, msg), 10
+            )
+        self.get_logger().info(
+            f"Corps enregistré : {body_id} ({body_rules.body_type(body_id)})"
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Sensor callbacks
@@ -379,6 +412,9 @@ class BodyGatewayNode(Node):
 
     def _user_content(self, body_id: str, user_input: str) -> str:
         ctx = self._build_context(body_id)
+        voice = self._voice_label(body_id)
+        if voice:
+            ctx = f"{ctx} {voice}".strip()
         if ctx:
             return f"{ctx}\n[{body_id}] {user_input}"
         return f"[{body_id}] {user_input}"
@@ -414,15 +450,58 @@ class BodyGatewayNode(Node):
         if msg.data:
             self._trigger_inference(body_id, f"[bumper] Contact physique sur {body_id}.")
 
+    def _on_sound_direction(self, body_id: str, msg: String):
+        """Direction of the last speech segment heard by a static drone.
+
+        Kept for the LLM context, and turns the NAO head toward the voice
+        right away (before the transcription comes back).
+        """
+        try:
+            azimuth = json.loads(msg.data).get("azimuth_deg")
+            azimuth = None if azimuth is None else float(azimuth)
+        except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
+            return
+        self._voice_direction[body_id] = (azimuth, time.monotonic())
+        if azimuth is None:
+            return
+        yaw = body_rules.head_yaw_rad(azimuth, NAO_HEAD_YAW_OFFSET)
+        out = String()
+        out.data = json.dumps({"joint": "HeadYaw", "angle": round(yaw, 3), "speed": 0.15})
+        for nao_id in body_rules.bodies_of_type(BODY_REGISTRY, "nao"):
+            self._pub_motion[nao_id].publish(out)
+        self.get_logger().info(
+            f"[{body_id}] Voix à {azimuth:+.0f}° → HeadYaw {yaw:+.2f} rad"
+        )
+
+    def _voice_label(self, body_id: str) -> str:
+        """'[voix : 30° à gauche]' if a recent direction is known for this body."""
+        azimuth, t = self._voice_direction.get(body_id, (None, 0.0))
+        if time.monotonic() - t > VOICE_DIRECTION_MAX_AGE:
+            return ""
+        return body_rules.direction_label(azimuth)
+
     def _on_speech(self, body_id: str, msg: String):
         """Path 2 — transcription received after wake word detection.
 
         Runs Ollama inference → dispatches actions (TTS + physical)
         → stores result in voice_queue → notifies WebUI if configured.
+
+        The NAO detects the wake word on board; a static drone sends all it
+        hears, so its text goes through the wake word gate first.
         """
         text = msg.data.strip()
         if not text:
             return
+        if body_rules.body_type(body_id) == "static":
+            heard = text
+            text = self._wake_gate.filter(body_id, heard)
+            if text is None:
+                if self._wake_gate.armed(body_id):
+                    self.get_logger().info(f"[{body_id}] Mot de réveil — j'écoute")
+                    self._publish_cognitive("listening")
+                else:
+                    self.get_logger().info(f"[{body_id}] Sans mot de réveil, ignoré : {heard!r}")
+                return
         self._state = "AWAKE"
         threading.Thread(
             target=self._infer_voice,
@@ -449,7 +528,7 @@ class BodyGatewayNode(Node):
             return
 
         try:
-            system_prompt = _AWAKE_SYSTEM.format(body_ids=", ".join(BODY_REGISTRY))
+            system_prompt = self._system_prompt(_AWAKE_SYSTEM)
             raw = self._ollama_chat(
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -707,7 +786,7 @@ class BodyGatewayNode(Node):
             return {"speech": "Je suis occupé, réessaie dans un instant.", "error": "busy"}
 
         try:
-            system_prompt = _AWAKE_SYSTEM.format(body_ids=", ".join(BODY_REGISTRY))
+            system_prompt = self._system_prompt(_AWAKE_SYSTEM)
             raw = self._ollama_chat(
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -766,9 +845,7 @@ class BodyGatewayNode(Node):
 
         try:
             # Dream mode uses a restricted system prompt (no walking, no arm gestures).
-            system_prompt = (
-                _DREAM_SYSTEM if is_dream else _AWAKE_SYSTEM
-            ).format(body_ids=", ".join(BODY_REGISTRY))
+            system_prompt = self._system_prompt(_DREAM_SYSTEM if is_dream else _AWAKE_SYSTEM)
 
             raw = self._ollama_chat(
                 messages=[
@@ -803,6 +880,19 @@ class BodyGatewayNode(Node):
             # robot is ready to receive the next wake word or sensor event.
             if not is_dream:
                 self._publish_cognitive("listening")
+
+    def _system_prompt(self, template: str) -> str:
+        """Fill the prompt with each body's capabilities and the body that speaks."""
+        nao_bodies = body_rules.bodies_of_type(BODY_REGISTRY, "nao")
+        nao = nao_bodies[0] if nao_bodies else BODY_REGISTRY[0]
+        speaker = self._speech_body(nao)
+        return template.format(
+            bodies=body_rules.describe_bodies(BODY_REGISTRY, speaker),
+            speaker=speaker, nao=nao,
+        )
+
+    def _speech_body(self, default: str) -> str:
+        return body_rules.speech_body(BODY_REGISTRY, self._body_connected, default)
 
     def _parse_json(self, raw: str) -> dict:
         """Extract the structured JSON from the LLM response.
@@ -841,11 +931,17 @@ class BodyGatewayNode(Node):
         action — the driver will queue it for when the robot reconnects.
         """
         for action in actions:
-            body_id = action.get("body", BODY_REGISTRY[0])
+            requested = action.get("body", BODY_REGISTRY[0])
+            # Routing table: speech → static drone if connected, gestures → NAO.
+            body_id = body_rules.route_action(action, BODY_REGISTRY, self._body_connected)
             # Skip actions targeting a body not registered at startup.
-            if body_id not in BODY_REGISTRY:
-                self.get_logger().warn(f"Corps inconnu '{body_id}' — ignoré")
+            if body_id is None:
+                self.get_logger().warn(f"Corps inconnu '{requested}' — ignoré")
                 continue
+            if body_id != requested:
+                self.get_logger().info(
+                    f"Action '{action.get('type', '')}' : {requested} → {body_id}"
+                )
             # Warn but still forward — the robot may reconnect mid-action
             # and the action is better sent than silently dropped.
             if not self._body_connected.get(body_id, False):
@@ -916,6 +1012,7 @@ class BodyGatewayNode(Node):
         self._publish_cognitive("uncertain")
         msg = String()
         msg.data = "Je réfléchis, un instant s'il vous plaît."
+        body_id = self._speech_body(body_id)
         if body_id in self._pub_say:
             self._pub_say[body_id].publish(msg)
         time.sleep(2.0)

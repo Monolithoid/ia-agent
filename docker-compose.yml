@@ -41,6 +41,9 @@ version: "3.8"
 #   ROSBRIDGE_TOKEN          : openssl rand -hex 32 (jeton exigé par rosbridge-proxy,
 #                              à passer aussi au NAO : nao_ws_bridge.py --token)
 #   NAO_ROBOT_ID             : nao_01 (identifiant ROS2 du corps)
+#   STATIC_DRONE_ID          : static_01 (identifiant ROS2 du drone statique, ADR 004)
+#   NAO_HEAD_YAW_OFFSET      : décalage en degrés pour tourner la tête du NAO vers la voix
+#                              entendue par le drone statique (défaut: 0)
 #   LISTEN_DURATION          : durée d'écoute après wake word en secondes (défaut: 4.0)
 #   ASR_MODEL                : modèle Whisper — tiny/base/small (défaut: small)
 #
@@ -197,6 +200,9 @@ services:
   #                         /naoqi/* vers /nao/* (rosbridge → nao_ws_bridge).
   #                         NAO initie la connexion WebSocket sortante —
   #                         aucune adresse IP ni port du robot requis côté VPS.
+  #   static-driver      → Nœud ROS2 (même conteneur nao-core), relaie
+  #                         /drones/{id}/* (drone statique, ADR 004) ↔ /bodies/{id}/*
+  #                         avec Whisper STT et edge-tts.
   #   cognitive-renderer → Nœud ROS2, /cognitive_state → LEDs + tête en continu
   #   body-gateway       → Nœud ROS2, pont Ollama ↔ bus ROS2
   #                         Injecte un system prompt JSON lors de chaque appel
@@ -204,8 +210,9 @@ services:
   #
   # Réseau : network_mode host pour les nœuds ROS2 (DDS domain 42)
   #
-  # Multi-corps : ajouter un naoqi-driver par robot/drone avec un ROBOT_ID
-  # distinct, et ajouter l'ID dans BODY_REGISTRY.
+  # Multi-corps : ajouter un driver par robot/drone avec un identifiant
+  # distinct, et ajouter l'ID dans BODY_REGISTRY (les ID « static… » sont
+  # des drones statiques, les autres des NAO).
   # ----------------------------------------------------------
 
   # ----------------------------------------------------------
@@ -280,6 +287,8 @@ services:
       - LISTEN_DURATION=${LISTEN_DURATION:-4.0}
       - NAO_STATUS_TIMEOUT=${NAO_STATUS_TIMEOUT:-90}
       - TTS_VOICE=${TTS_VOICE:-fr-FR-DeniseNeural}
+      - DRONE_ID=${STATIC_DRONE_ID:-static_01}
+      - DRONE_STATUS_TIMEOUT=${DRONE_STATUS_TIMEOUT:-90}
     depends_on:
       whisper-asr:
         condition: service_started
@@ -296,7 +305,7 @@ services:
       - BRAIN_URL=http://localhost:11434
       - BRAIN_MODEL=${BRAIN_MODEL:-qwen3:1.7b}
       - BRAIN_API_KEY=${OLLAMA_API_KEYS}
-      - BODY_REGISTRY=${NAO_ROBOT_ID:-nao_01}
+      - BODY_REGISTRY=${NAO_ROBOT_ID:-nao_01},${STATIC_DRONE_ID:-static_01}
       - DREAMING_HOUR_START=${DREAMING_HOUR_START:-2}
       - DREAMING_HOUR_END=${DREAMING_HOUR_END:-6}
       - DREAMING_BATTERY_THRESHOLD=${DREAMING_BATTERY_THRESHOLD:-80.0}
@@ -304,6 +313,8 @@ services:
       - BRAIN_TIMEOUT=${BRAIN_TIMEOUT:-60}
       - CHAT_PORT=8095
       - WAKE_WORD=${WAKE_WORD:-ok nao}
+      - WAKE_WINDOW_S=${WAKE_WINDOW_S:-10}
+      - NAO_HEAD_YAW_OFFSET=${NAO_HEAD_YAW_OFFSET:-0}
       - WEBUI_URL=${WEBUI_URL:-http://localhost:3000}
       - WEBUI_API_KEY=${WEBUI_API_KEY:-}
       - WEBUI_PIPE_MODEL=${WEBUI_PIPE_MODEL:-nao_brain}
@@ -437,7 +448,7 @@ services:
 # robotics-net (bridge, accès internet) :
 #   rosbridge-proxy — proxy WebSocket Caddy vers ros2-bridge (host)
 #
-# Nœuds ROS2 (ros2-bridge, naoqi-driver, cognitive-renderer, body-gateway) :
+# Nœuds ROS2 (ros2-bridge, nao-core, body-gateway) :
 #   network_mode: host — DDS ROS2 Humble (domain 42) sur le réseau hôte.
 # ============================================================
 networks:

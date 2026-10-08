@@ -29,6 +29,10 @@
 #     │  qi SDK → tcp://NAO_IP:9559   [MOCK si NAO éteint]
 #     ▼
 #   NAO (éteint → réponse mock)
+#
+#   Maillon 9 — drone statique simulé (tests/fake-static-drone.py) :
+#   faux messages rosbridge /drones/static_01/* → nao-core/static-driver
+#   → whisper-asr → body-gateway → ollama → /drones/static_01/audio_out
 
 set -uo pipefail
 
@@ -315,6 +319,30 @@ else
                content=d['choices'][0]['message']['content']; \
                assert 'body-gateway joignable' in content or 'opérationnel' in content, repr(content); \
                print(content)\""
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAILLON 9 — Drone statique simulé via rosbridge (ADR 004)
+# ─────────────────────────────────────────────────────────────────────────────
+_head 9 "Drone statique simulé → rosbridge → static-driver → body-gateway"
+
+echo -e "  ${BLUE}→${NC} Faux drone ${STATIC_DRONE_ID:-static_01} : status, image, audio (angle -30°), parole"
+_info "Si un vrai drone ${STATIC_DRONE_ID:-static_01} est branché, il prononcera les phrases du test."
+
+if _container_running "ros2-bridge" && _container_running "nao-core"; then
+    # Connexion directe à rosbridge sur le host (port 9090, non filtré en local).
+    _static_out=$(python3 "$(dirname "$0")/fake-static-drone.py" \
+        --url "ws://localhost:9090" \
+        --id "${STATIC_DRONE_ID:-static_01}" --nao "${NAO_ROBOT_ID:-nao_01}" 2>&1)
+    _static_rc=$?
+    echo "$_static_out" | sed 's/^/  /'
+    if [ "$_static_rc" -eq 0 ]; then
+        _pass "chemin drone statique de bout en bout"
+    else
+        _fail "chemin drone statique : $_static_rc étape(s) en échec"
+    fi
+else
+    _skip "ros2-bridge ou nao-core absent — drone statique non testé"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────

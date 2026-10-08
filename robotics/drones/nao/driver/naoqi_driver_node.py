@@ -35,16 +35,24 @@ Environment variables:
 import base64
 import json
 import os
+import sys
 import threading
 import time
 
-import requests
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import Range
 from std_msgs.msg import Bool, Float32, String
+
+try:
+    import speech_services
+except ImportError:
+    # Lancé depuis le dépôt : le module partagé est dans robotics/shared/.
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "..", "..", "..", "shared"))
+    import speech_services
 
 ROBOT_ID = os.environ.get("ROBOT_ID", "nao_01")
 WHISPER_URL = os.environ.get("WHISPER_URL", "")
@@ -213,19 +221,13 @@ class NAOqiDriverNode(Node):
     def _transcribe_and_publish(self, b64_audio: str):
         try:
             audio_bytes = base64.b64decode(b64_audio)
-            resp = requests.post(
-                f"{WHISPER_URL}/asr?task=transcribe&language=fr&output=json",
-                files={"audio_file": ("audio.wav", audio_bytes, "audio/wav")},
-                timeout=30,
-            )
-            # Whisper returned an HTTP error — log and abort without crashing.
-            if not resp.ok:
-                self.get_logger().warn(f"Whisper erreur {resp.status_code}")
+            try:
+                text = speech_services.transcribe(WHISPER_URL, audio_bytes)
+            except speech_services.WhisperError as e:
+                # Whisper returned an HTTP error — log and abort without crashing.
+                self.get_logger().warn(str(e))
                 return
-            text = resp.json().get("text", "").strip()
-            # Accept transcription only if it contains meaningful content
-            # (> 3 chars filters out noise artefacts like "." or "ok").
-            if text and len(text) > 3:
+            if speech_services.is_meaningful(text):
                 self.get_logger().info(f"STT [{ROBOT_ID}]: {text}")
                 out = String()
                 out.data = text
@@ -276,10 +278,8 @@ class NAOqiDriverNode(Node):
             self.pub_nao_speech.publish(msg)
 
     def _tts_and_publish(self, text: str):
-        import asyncio
-        import io
         try:
-            import edge_tts
+            audio_mp3 = speech_services.synthesize_mp3(text, TTS_VOICE)
         except ImportError:
             # edge-tts not available in this environment — fall back to native TTS.
             self.get_logger().warn("edge-tts non installé — fallback texte NAOqi")
@@ -287,29 +287,17 @@ class NAOqiDriverNode(Node):
             out.data = text
             self.pub_nao_speech.publish(out)
             return
-        try:
-            async def _gen():
-                communicate = edge_tts.Communicate(text, TTS_VOICE)
-                buf = io.BytesIO()
-                async for chunk in communicate.stream():
-                    # Only audio chunks contain binary data — skip metadata events.
-                    if chunk["type"] == "audio":
-                        buf.write(chunk["data"])
-                return buf.getvalue()
-
-            loop = asyncio.new_event_loop()
-            audio_mp3 = loop.run_until_complete(_gen())
-            loop.close()
-            b64 = base64.b64encode(audio_mp3).decode()
-            out = String()
-            out.data = b64
-            self.pub_nao_audio_out.publish(out)
-            self.get_logger().info(f"TTS audio envoyé ({len(audio_mp3)} octets MP3)")
         except Exception as e:
             self.get_logger().warn(f"edge-tts erreur: {e} — fallback texte NAOqi")
             out = String()
             out.data = text
             self.pub_nao_speech.publish(out)
+            return
+        b64 = base64.b64encode(audio_mp3).decode()
+        out = String()
+        out.data = b64
+        self.pub_nao_audio_out.publish(out)
+        self.get_logger().info(f"TTS audio envoyé ({len(audio_mp3)} octets MP3)")
 
     def _on_motion(self, msg: String):
         self.get_logger().info(f"[{ROBOT_ID}] → /nao/motion : {msg.data[:80]!r}")
