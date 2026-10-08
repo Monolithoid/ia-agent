@@ -27,7 +27,7 @@ Avant : body-gateway → Bitterbot :19001 → Ollama :11434
 Après : body-gateway → Ollama :11434
 ```
 
-Le modèle est configurable via `BRAIN_MODEL` (défaut `qwen2.5:7b`).
+Le modèle est configurable via `BRAIN_MODEL` (défaut `qwen3:1.7b`).
 L'authentification utilise `BRAIN_API_KEY` (même valeur que `OLLAMA_API_KEYS`).
 
 ## Ce qu'on perd

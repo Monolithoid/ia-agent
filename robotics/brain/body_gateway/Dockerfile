@@ -8,6 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-pip \
+        tzdata \
         ros-humble-std-msgs \
         ros-humble-sensor-msgs \
         ros-humble-rmw-cyclonedds-cpp \

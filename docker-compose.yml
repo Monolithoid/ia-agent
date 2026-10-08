@@ -306,6 +306,7 @@ services:
       - ROS_LOCALHOST_ONLY=1
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       - BRAIN_URL=http://localhost:11434
+      - TZ=${TZ:-Europe/Paris}
       - BRAIN_MODEL=${BRAIN_MODEL:-qwen3:1.7b}
       - BRAIN_API_KEY=${OLLAMA_API_KEYS}
       - BODY_REGISTRY=${NAO_ROBOT_ID:-nao_01},${STATIC_DRONE_ID:-static_01}
