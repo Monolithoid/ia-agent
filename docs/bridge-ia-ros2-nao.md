@@ -152,6 +152,7 @@ Whisper and edge-tts calls live in `robotics/shared/speech_services.py`, shared 
 | `BRAIN_MODEL` | LLM model, default `qwen3:1.7b` |
 | `BRAIN_API_KEY` | Ollama API key |
 | `BRAIN_TIMEOUT` | Ollama timeout in seconds, default 120 |
+| `BRAIN_PROVIDER` | `ollama` (default), `openai` or `anthropic` — see `docs/ia-stack.md` |
 | `BODY_REGISTRY` | Comma-separated body IDs, default `nao_01` (compose: `nao_01,static_01`). IDs starting with `static` are static drones, all others are NAOs |
 | `WAKE_WORD` | Wake word required in the static drone's speech, default `ok nao` |
 | `WAKE_WINDOW_S` | Seconds during which a lone wake word stays valid for the next sentence, default 10 |

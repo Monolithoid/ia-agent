@@ -45,6 +45,84 @@ docker exec -it ollama ollama pull qwen3:8b
 
 ---
 
+## Fournisseur du cerveau (body-gateway)
+
+`body-gateway` peut faire appel à trois fournisseurs de LLM. Le choix se fait par
+la variable `BRAIN_PROVIDER`, dans Coolify. Le code est dans
+`robotics/brain/body_gateway/brain_client.py`. Quel que soit le fournisseur, le LLM
+doit répondre en JSON strict, qui est ensuite lu par `_parse_json()`.
+
+| `BRAIN_PROVIDER` | Appel | Défaut `BRAIN_URL` | Défaut `BRAIN_MODEL` |
+|---|---|---|---|
+| `ollama` (défaut) | `POST {BRAIN_URL}/v1/chat/completions` en streaming, avec `"options": {"think": false}` | `http://localhost:11434` | `qwen3:1.7b` |
+| `openai` | le même endpoint, sans le champ `options` | `https://api.openai.com` | `gpt-4o-mini` |
+| `anthropic` | SDK officiel `anthropic`, `messages.stream()` | URL du SDK (`https://api.anthropic.com`) | `claude-haiku-4-5` |
+
+| Variable | Description |
+|---|---|
+| `BRAIN_PROVIDER` | `ollama`, `openai` ou `anthropic` |
+| `BRAIN_URL` | Laisser vide pour prendre le défaut du fournisseur |
+| `BRAIN_MODEL` | Laisser vide pour prendre le défaut du fournisseur |
+| `BRAIN_API_KEY` | Clé du fournisseur. Sans valeur, c'est `OLLAMA_API_KEYS` qui est utilisée : pour `openai` ou `anthropic`, il faut donc la renseigner (`sk-...` de platform.openai.com, `sk-ant-...` de console.anthropic.com) |
+| `BRAIN_TIMEOUT` | Délai maximal en secondes entre deux morceaux du flux (défaut 120, 60 dans le compose) |
+| `BRAIN_EFFORT` | Anthropic uniquement, optionnel : `low`, `medium`, `high`… Rien n'est envoyé si la variable est vide |
+
+Sans `BRAIN_PROVIDER`, rien ne change : Ollama local et `qwen3:1.7b`, comme avant.
+
+Un abonnement ChatGPT ou Claude.ai ne donne pas accès à l'API. Il faut une clé API,
+facturée à l'usage.
+
+### Paramètres Anthropic
+
+Ce qui est envoyé dépend du modèle. Les règles ci-dessous viennent de la documentation Anthropic d'octobre 2026.
+
+- **temperature** : elle n'est envoyée qu'aux modèles qui l'acceptent (Haiku 4.5,
+  Sonnet 4.5 / 4.6, Opus 4.x jusqu'à 4.6). Opus 4.7 et suivants, Sonnet 5 / 5.5 et
+  Haiku 5.5 renvoient une erreur 400 avec une température non par défaut. Pour ces
+  modèles, et pour tout modèle inconnu, la valeur par défaut de l'API s'applique.
+- **thinking** : le paramètre n'est jamais envoyé. Haiku 4.5 répond alors sans
+  réflexion, ce qui équivaut au `think: false` d'Ollama. Sur Opus 5.5 et Sonnet 5.5,
+  la réflexion ne peut pas être désactivée (`disabled` renvoie une 400). Pour limiter
+  la latence, mettre `BRAIN_EFFORT=low`.
+- **effort** : Haiku 4.5 le refuse, d'où l'envoi uniquement si `BRAIN_EFFORT` est
+  renseigné. Avec Opus 5.5 et Haiku 5.5, l'effort par défaut est `medium`.
+- **structured outputs** (`output_config.format`) : non utilisés. Le format des
+  `actions` varie selon leur type, et un schéma strict imposerait de figer chaque
+  variante. La consigne JSON du prompt système et `_parse_json()` suffisent.
+- Un refus du modèle (`stop_reason: "refusal"`) est traité comme une erreur : le
+  robot passe sur sa réponse de secours.
+
+Un modèle plus récent, `claude-haiku-5-5`, coûte 0,10 $ / 0,50 $ par million de
+tokens, contre 1 $ / 5 $ pour Haiku 4.5. Sa réflexion est active par défaut : à
+essayer avec `BRAIN_EFFORT=low`.
+
+### Coût
+
+La boucle des rêves (02 h – 06 h, un tick toutes les 300 s) fait au plus
+**48 appels par nuit**. En comptant environ 1 000 tokens d'entrée (prompt système
+et contexte capteurs) et 300 tokens de sortie par appel, l'ordre de grandeur est le
+suivant :
+
+| Modèle | Prix entrée / sortie (par million de tokens) | Par appel | Par nuit (48) | Par mois |
+|---|---|---|---|---|
+| `claude-haiku-4-5` | 1 $ / 5 $ | ≈ 0,0025 $ | ≈ 0,12 $ | ≈ 3,60 $ |
+| `claude-haiku-5-5` | 0,10 $ / 0,50 $ | ≈ 0,00025 $ | ≈ 0,012 $ | ≈ 0,36 $ |
+| `claude-opus-5-5` | 4 $ / 20 $, plus les tokens de réflexion | ≈ 0,01 $ ou plus | ≈ 0,50 $ ou plus | ≈ 15 $ ou plus |
+
+Les conversations de jour (chat, voix, sonar, bumper) s'ajoutent à ce total, un
+appel par interaction. Ces chiffres sont des estimations, pas des mesures : le coût
+réel s'affiche dans la console du fournisseur.
+
+### Confidentialité
+
+Avec `openai` ou `anthropic`, **les données quittent le VPS**. Chaque appel envoie
+au fournisseur le prompt système, le message de l'utilisateur (le texte du chat ou
+la transcription de ce qui a été dit au robot) et le contexte des capteurs
+(batterie, sonar, direction de la voix, températures moteur). Ces données suivent
+alors la politique de conservation du fournisseur. Avec `ollama`, tout reste sur le VPS.
+
+---
+
 ## Open WebUI — interface de chat
 
 **Image :** `ghcr.io/open-webui/open-webui:main`  

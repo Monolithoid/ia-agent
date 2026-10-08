@@ -43,6 +43,9 @@ Environment variables:
   BRAIN_MODEL                default qwen2.5:7b
   BRAIN_API_KEY              Ollama API key
   BRAIN_TIMEOUT              Ollama request timeout in seconds, default 120
+  BRAIN_PROVIDER             ollama | openai | anthropic, default ollama (see brain_client.py)
+                             BRAIN_URL / BRAIN_MODEL defaults depend on the provider
+  BRAIN_EFFORT               Anthropic effort (low/medium/high...), not sent when empty
   BODY_REGISTRY              comma-separated body IDs, default "nao_01"
                              (ids starting with "static" are static drones, ADR 004)
   WAKE_WORD                  wake word required in static drone speech, default "ok nao"
@@ -74,14 +77,14 @@ from sensor_msgs.msg import Range
 from std_msgs.msg import Bool, Float32, String
 
 import body_rules
+import brain_client
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 
-BRAIN_URL   = os.environ.get("BRAIN_URL",   "http://localhost:11434")
-BRAIN_MODEL = os.environ.get("BRAIN_MODEL", "qwen3:1.7b")
-BRAIN_API_KEY = os.environ.get("BRAIN_API_KEY", "")
+# BRAIN_PROVIDER, BRAIN_URL, BRAIN_MODEL, BRAIN_API_KEY, BRAIN_TIMEOUT, BRAIN_EFFORT
+BRAIN = brain_client.BrainClient.from_env(os.environ)
 BODY_REGISTRY = [
     b.strip()
     for b in os.environ.get("BODY_REGISTRY", "nao_01").split(",")
@@ -94,7 +97,6 @@ DREAM_TICK_INTERVAL        = int(os.environ.get("DREAM_TICK_INTERVAL",        "3
 PROXIMITY_THRESHOLD        = float(os.environ.get("PROXIMITY_THRESHOLD",      "1.5"))
 CHAT_PORT     = int(os.environ.get("CHAT_PORT",     "8095"))
 WAKE_WORD     = os.environ.get("WAKE_WORD",     "ok nao").lower()
-BRAIN_TIMEOUT = int(os.environ.get("BRAIN_TIMEOUT", "120"))
 WAKE_WINDOW_S = float(os.environ.get("WAKE_WINDOW_S", "10"))
 NAO_HEAD_YAW_OFFSET = float(os.environ.get("NAO_HEAD_YAW_OFFSET", "0"))
 # A voice direction older than this is not added to the LLM context.
@@ -301,6 +303,7 @@ class BodyGatewayNode(Node):
 
         self._publish_cognitive("idle")
         self.get_logger().info(f"body_gateway démarré — corps : {', '.join(BODY_REGISTRY)}")
+        self.get_logger().info(f"Cerveau : {BRAIN.provider} / {BRAIN.model}")
         if WEBUI_URL and WEBUI_API_KEY:
             self.get_logger().info(f"Notification WebUI voix activée → {WEBUI_URL}")
         else:
@@ -529,7 +532,7 @@ class BodyGatewayNode(Node):
 
         try:
             system_prompt = self._system_prompt(_AWAKE_SYSTEM)
-            raw = self._ollama_chat(
+            raw = self._brain_chat(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": self._user_content(body_id, user_input)},
@@ -567,7 +570,7 @@ class BodyGatewayNode(Node):
             if WEBUI_URL and WEBUI_API_KEY:
                 self._notify_webui(user_input)
 
-        except requests.RequestException as e:
+        except brain_client.BRAIN_ERRORS as e:
             self.get_logger().error(f"[{body_id}] Voice API error: {e}")
             self._fallback(body_id)
         except Exception as e:
@@ -734,43 +737,12 @@ class BodyGatewayNode(Node):
         )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Ollama streaming call (avoids timeouts on long generations)
+    # LLM streaming call (avoids timeouts on long generations)
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _ollama_chat(self, messages: list, temperature: float) -> str:
-        """Stream the Ollama API and accumulate the full response.
-
-        timeout=(10, BRAIN_TIMEOUT): 10 s to establish the connection,
-        BRAIN_TIMEOUT s maximum between two chunks — guards against a total
-        stall without cutting an active generation mid-stream.
-        """
-        response = requests.post(
-            f"{BRAIN_URL}/v1/chat/completions",
-            headers={"Authorization": f"Bearer {BRAIN_API_KEY}"},
-            json={
-                "model":       BRAIN_MODEL,
-                "messages":    messages,
-                "stream":      True,
-                "temperature": temperature,
-                "options":     {"think": False},
-            },
-            timeout=(10, BRAIN_TIMEOUT),
-            stream=True,
-        )
-        response.raise_for_status()
-        chunks = []
-        for line in response.iter_lines():
-            # Skip blank lines and non-SSE lines (e.g. HTTP headers in chunked encoding).
-            if not line or not line.startswith(b"data: "):
-                continue
-            data = line[6:]
-            # OpenAI-compatible streaming API terminates with a [DONE] sentinel.
-            if data == b"[DONE]":
-                break
-            delta = json.loads(data)["choices"][0]["delta"].get("content", "")
-            if delta:
-                chunks.append(delta)
-        return "".join(chunks)
+    def _brain_chat(self, messages: list, temperature: float) -> str:
+        """Stream the configured LLM (BRAIN_PROVIDER) and return the full response."""
+        return BRAIN.chat(messages, temperature)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Synchronous inference (Path 1 — /chat endpoint)
@@ -787,7 +759,7 @@ class BodyGatewayNode(Node):
 
         try:
             system_prompt = self._system_prompt(_AWAKE_SYSTEM)
-            raw = self._ollama_chat(
+            raw = self._brain_chat(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": self._user_content(body_id, user_input)},
@@ -813,8 +785,8 @@ class BodyGatewayNode(Node):
                 "actions":  parsed.get("actions", []),
             }
 
-        except requests.RequestException as e:
-            self.get_logger().error(f"Ollama error (chat): {e}")
+        except brain_client.BRAIN_ERRORS as e:
+            self.get_logger().error(f"LLM error (chat): {e}")
             self._fallback(body_id)
             return {"speech": "Je réfléchis, un instant.", "error": str(e)}
         except Exception as e:
@@ -847,7 +819,7 @@ class BodyGatewayNode(Node):
             # Dream mode uses a restricted system prompt (no walking, no arm gestures).
             system_prompt = self._system_prompt(_DREAM_SYSTEM if is_dream else _AWAKE_SYSTEM)
 
-            raw = self._ollama_chat(
+            raw = self._brain_chat(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": self._user_content(body_id, user_input)},
@@ -865,8 +837,8 @@ class BodyGatewayNode(Node):
 
             self._dispatch_actions(parsed.get("actions", []))
 
-        except requests.RequestException as e:
-            self.get_logger().error(f"Ollama error: {e}")
+        except brain_client.BRAIN_ERRORS as e:
+            self.get_logger().error(f"LLM error: {e}")
             # On dream tick errors, swallow silently — the next tick will retry.
             if not is_dream:
                 self._fallback(body_id)

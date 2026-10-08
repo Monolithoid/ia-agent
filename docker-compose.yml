@@ -47,6 +47,13 @@ version: "3.8"
 #   LISTEN_DURATION          : durée d'écoute après wake word en secondes (défaut: 4.0)
 #   ASR_MODEL                : modèle Whisper — tiny/base/small (défaut: small)
 #
+# Cerveau de body-gateway (voir docs/ia-stack.md, « Fournisseur du cerveau ») :
+#   BRAIN_PROVIDER           : ollama (défaut) | openai | anthropic
+#   BRAIN_URL                : vide = défaut du fournisseur (Ollama : http://localhost:11434)
+#   BRAIN_MODEL              : vide = qwen3:1.7b / gpt-4o-mini / claude-haiku-4-5
+#   BRAIN_API_KEY            : clé du fournisseur (défaut : OLLAMA_API_KEYS)
+#   BRAIN_EFFORT             : Anthropic uniquement, optionnel (low/medium/high)
+#
 # Firewall (ports exposés publiquement) :
 #   ufw allow 22
 #   ufw allow 80
@@ -302,9 +309,12 @@ services:
       - ROS_DOMAIN_ID=42
       - ROS_LOCALHOST_ONLY=1
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - BRAIN_URL=http://localhost:11434
-      - BRAIN_MODEL=${BRAIN_MODEL:-qwen3:1.7b}
-      - BRAIN_API_KEY=${OLLAMA_API_KEYS}
+      - BRAIN_PROVIDER=${BRAIN_PROVIDER:-ollama}
+      # Vides par défaut : body-gateway prend alors les valeurs du fournisseur.
+      - BRAIN_URL=${BRAIN_URL:-}
+      - BRAIN_MODEL=${BRAIN_MODEL:-}
+      - BRAIN_API_KEY=${BRAIN_API_KEY:-${OLLAMA_API_KEYS}}
+      - BRAIN_EFFORT=${BRAIN_EFFORT:-}
       - BODY_REGISTRY=${NAO_ROBOT_ID:-nao_01},${STATIC_DRONE_ID:-static_01}
       - DREAMING_HOUR_START=${DREAMING_HOUR_START:-2}
       - DREAMING_HOUR_END=${DREAMING_HOUR_END:-6}
