@@ -1,0 +1,26 @@
+# Service systemd du drone statique (prévu pour plus tard ; lancement manuel
+# pour l'instant). Adapter User et les chemins, puis :
+#   sudo cp static-drone.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now static-drone
+#   journalctl -u static-drone -f
+
+[Unit]
+Description=Drone statique ia-agent (micros, caméra, haut-parleur)
+Wants=network-online.target sound.target
+After=network-online.target sound.target
+
+[Service]
+Type=simple
+User=pi
+# Accès au son, à la caméra et à l'USB
+SupplementaryGroups=audio video plugdev
+WorkingDirectory=/home/pi/ia-agent/robotics/drones/static/onboard
+EnvironmentFile=/home/pi/ia-agent/robotics/drones/static/onboard/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/pi/ia-agent/robotics/drones/static/onboard/.venv/bin/python static_drone.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
