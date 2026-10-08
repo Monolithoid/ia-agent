@@ -62,7 +62,7 @@ if docker exec naoqi-driver which ros2 >/dev/null 2>&1; then
     else
         _fail "/nao/status : aucun message en 10 s"
         _info "Le NAO n'envoie pas de heartbeat — vérifier nao_ws_bridge.py sur le robot"
-        _info "et que rosbridge est joignable depuis le NAO (wss://rosbridge.DOMAIN)"
+        _info "et que rosbridge est joignable depuis le NAO (ws://rosbridge.DOMAIN avec --token)"
     fi
 else
     _fail "ros2 introuvable dans naoqi-driver"

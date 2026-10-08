@@ -10,7 +10,13 @@ No external Python dependencies — uses a built-in pure Python 2.7 WebSocket cl
 The naoqi module is available natively on the robot (OpenNAO firmware).
 
 Usage:
-    python /home/nao/nao_ws_bridge.py --vps ws://VPS_IP:9090 [options]
+    python /home/nao/nao_ws_bridge.py --vps ws://rosbridge.DOMAIN/ --token TOKEN [options]
+
+Authentication:
+    --token TOKEN                  Secret sent as "Authorization: Bearer TOKEN" during
+                                   the WebSocket handshake (rosbridge-proxy rejects
+                                   connections without it). Defaults to the
+                                   ROSBRIDGE_TOKEN environment variable.
 
 Module filtering:
     --modules led,speech,gesture   Enable only the listed modules.
@@ -26,13 +32,13 @@ TTS method:
 
 Examples:
     # LEDs + speech only, no audio capture:
-    python nao_ws_bridge.py --vps ws://IP:9090 --modules led,speech --no-audio-capture
+    python nao_ws_bridge.py --vps ws://rosbridge.DOMAIN/ --token TOKEN --modules led,speech --no-audio-capture
 
     # All modules active (default behaviour):
-    python nao_ws_bridge.py --vps ws://IP:9090
+    python nao_ws_bridge.py --vps ws://rosbridge.DOMAIN/ --token TOKEN
 
     # Apply post-flash config then start bridge:
-    python nao_ws_bridge.py --vps ws://IP:9090 --provision
+    python nao_ws_bridge.py --vps ws://rosbridge.DOMAIN/ --token TOKEN --provision
 """
 
 from __future__ import print_function
@@ -147,8 +153,9 @@ class _WebSocketApp(object):
     _GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
     def __init__(self, url, on_open=None, on_message=None,
-                 on_error=None, on_close=None):
+                 on_error=None, on_close=None, token=None):
         self.url = url
+        self.token = token
         self.on_open = on_open
         self.on_message = on_message
         self.on_error = on_error
@@ -231,6 +238,8 @@ class _WebSocketApp(object):
         self._sock.settimeout(None)
 
         raw_key = base64.b64encode(os.urandom(16)).decode("ascii")
+        # rosbridge-proxy only upgrades connections carrying the shared token.
+        auth = "Authorization: Bearer {}\r\n".format(self.token) if self.token else ""
         req = (
             "GET {path} HTTP/1.1\r\n"
             "Host: {host}:{port}\r\n"
@@ -238,8 +247,9 @@ class _WebSocketApp(object):
             "Connection: Upgrade\r\n"
             "Sec-WebSocket-Key: {key}\r\n"
             "Sec-WebSocket-Version: 13\r\n"
+            "{auth}"
             "\r\n"
-        ).format(path=path, host=host, port=port, key=raw_key)
+        ).format(path=path, host=host, port=port, key=raw_key, auth=auth)
         self._sock.sendall(req.encode("ascii"))
 
         resp = b""
@@ -588,15 +598,18 @@ class NaoBridge(object):
     """Main bridge class: manages the WebSocket connection and dispatches commands.
 
     Args:
-        vps_url       : rosbridge WebSocket URL (e.g. ws://VPS_IP:9090).
+        vps_url       : rosbridge WebSocket URL (e.g. ws://rosbridge.DOMAIN/).
+        token         : shared secret expected by rosbridge-proxy (None = no header).
         modules       : set of module names to enable (None = all modules).
         audio_capture : enable wake word detection and VAD capture.
         tts_method    : "mp3" | "text" | "auto".
                         "auto" → mp3 if NAOqi available, otherwise text.
     """
 
-    def __init__(self, vps_url, modules=None, audio_capture=True, tts_method="auto"):
+    def __init__(self, vps_url, modules=None, audio_capture=True, tts_method="auto",
+                 token=None):
         self.vps_url = vps_url
+        self._token = token
         self._modules = ALL_MODULES if modules is None else frozenset(modules)
         self._audio_capture_enabled = audio_capture
         self._tts_method_override = tts_method
@@ -642,6 +655,7 @@ class NaoBridge(object):
                     on_message=self._on_message,
                     on_error=self._on_error,
                     on_close=self._on_close,
+                    token=self._token,
                 )
                 self.ws.run_forever()
             except Exception as e:
@@ -1244,15 +1258,17 @@ if __name__ == "__main__":
             "Modules disponibles : {}\n\n"
             "Exemples :\n"
             "  Tout actif (defaut) :\n"
-            "    python nao_ws_bridge.py --vps ws://IP:9090\n\n"
+            "    python nao_ws_bridge.py --vps ws://rosbridge.DOMAIN/ --token TOKEN\n\n"
             "  LED + parole seulement, sans capture audio :\n"
-            "    python nao_ws_bridge.py --vps ws://IP:9090 --modules led,speech --no-audio-capture\n\n"
+            "    python nao_ws_bridge.py --vps ws://rosbridge.DOMAIN/ --token TOKEN --modules led,speech --no-audio-capture\n\n"
             "  Gestes + LED uniquement :\n"
-            "    python nao_ws_bridge.py --vps ws://IP:9090 --modules gesture,led"
+            "    python nao_ws_bridge.py --vps ws://rosbridge.DOMAIN/ --token TOKEN --modules gesture,led"
         ).format(",".join(sorted(ALL_MODULES)))
     )
     parser.add_argument("--vps", default=None,
-                        help="Rosbridge URL (e.g. ws://VPS_IP:9090). Required unless using --provision only.")
+                        help="Rosbridge URL (e.g. ws://rosbridge.DOMAIN/). Required unless using --provision only.")
+    parser.add_argument("--token", default=os.environ.get("ROSBRIDGE_TOKEN"),
+                        help="Token expected by rosbridge-proxy (default: $ROSBRIDGE_TOKEN).")
     parser.add_argument(
         "--provision",
         nargs="?",
@@ -1306,6 +1322,13 @@ if __name__ == "__main__":
     if not args.provision and not args.vps:
         parser.error("--vps is required unless using --provision only.")
 
+    # The token is written verbatim into an HTTP header line.
+    if args.token and ("\r" in args.token or "\n" in args.token):
+        parser.error("--token must not contain line breaks.")
+    if args.vps and not args.token:
+        print("[bridge] WARNING: no --token / ROSBRIDGE_TOKEN, rosbridge-proxy will reject the connection",
+              file=sys.stderr)
+
     NAO_IP = args.nao_ip
     NAO_PORT = args.nao_port
 
@@ -1333,7 +1356,7 @@ if __name__ == "__main__":
         active_modules = None  # None means all modules (default)
 
     bridge = NaoBridge(args.vps, modules=active_modules, audio_capture=args.audio_capture,
-                       tts_method=args.tts_method)
+                       tts_method=args.tts_method, token=args.token)
     try:
         bridge.run()
     except KeyboardInterrupt:

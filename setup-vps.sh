@@ -97,17 +97,22 @@ configure_firewall() {
     ufw allow 80    comment "HTTP (Coolify / Traefik)"
     ufw allow 443   comment "HTTPS (Coolify / Traefik)"
     ufw allow 8000  comment "Coolify UI"
-    ufw allow 9090  comment "rosbridge WebSocket (NAO)"
 
     # body-gateway : autorisé depuis le subnet Docker bridge (chat-relay → host:8095)
     # Docker crée typiquement des bridges en 172.16-31.x.x ou 10.x.x.x selon le daemon
     ufw allow from 172.16.0.0/12 to any port 8095 comment "body-gateway depuis Docker bridge (ai-network)"
     ufw allow from 10.0.0.0/8    to any port 8095 comment "body-gateway depuis Docker bridge (ai-network, alt)"
 
+    # rosbridge : uniquement depuis rosbridge-proxy (Docker bridge), qui vérifie le jeton.
+    # Le NAO passe par Traefik (ws://rosbridge.DOMAIN, port 80), jamais en direct sur 9090.
+    ufw allow from 172.16.0.0/12 to any port 9090 comment "rosbridge depuis rosbridge-proxy (Docker bridge)"
+    ufw allow from 10.0.0.0/8    to any port 9090 comment "rosbridge depuis rosbridge-proxy (Docker bridge, alt)"
+
     # Ports internes — non exposés publiquement
     ufw deny 11434  comment "Ollama (reverse proxy uniquement)"
     ufw deny 3000   comment "Open WebUI (reverse proxy uniquement)"
     ufw deny 5678   comment "n8n (SSH tunnel uniquement)"
+    ufw deny 9090   comment "rosbridge (via rosbridge-proxy + jeton uniquement)"
     ufw deny 8095   comment "body-gateway (Docker bridge uniquement, voir règles allow ci-dessus)"
 
     ufw --force enable
@@ -144,6 +149,9 @@ configure_bitterbot() {
     echo -e "  Valeur   : ${GREEN}${token}${NC}"
     echo ""
     warn "Copie cette valeur dans Coolify → Environment Variables avant de déployer."
+    echo ""
+    echo -e "  Variable : ${CYAN}ROSBRIDGE_TOKEN${NC} (à donner aussi au NAO : --token)"
+    echo -e "  Valeur   : ${GREEN}$(openssl rand -hex 32)${NC}"
 }
 
 # ============================================================
@@ -249,6 +257,7 @@ main() {
     echo ""
     echo "  → Déployer le bridge NAO (si robot présent) :"
     echo "    scp robotics/drones/nao/onboard/nao_ws_bridge.py nao@NAO_IP:/home/nao/"
+    echo "    puis sur le NAO : python nao_ws_bridge.py --vps ws://rosbridge.DOMAIN/ --token \$ROSBRIDGE_TOKEN"
 }
 
 main "$@"

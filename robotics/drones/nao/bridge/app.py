@@ -18,6 +18,8 @@ Environment variables:
   BRIDGE_PORT            HTTP port to listen on, default 8090
   RECONNECT_INTERVAL     Seconds between reconnection attempts, default 15
   ROSBRIDGE_URL          ws:// URL of rosbridge (e.g. ws://rosbridge-proxy:80)
+  ROSBRIDGE_TOKEN        Token sent as "Authorization: Bearer ..." in the WS
+                         handshake; required by rosbridge-proxy
                          When set, the bridge subscribes to /nao/status and
                          forwards commands to the real NAO via ROS topics.
   NAO_STATUS_TIMEOUT     Seconds without /nao/status before marking disconnected,
@@ -39,6 +41,7 @@ from flask import Flask, Response, jsonify, request
 BRIDGE_PORT        = int(os.environ.get("BRIDGE_PORT", "8090"))
 RECONNECT_INTERVAL = int(os.environ.get("RECONNECT_INTERVAL", "15"))
 ROSBRIDGE_URL      = os.environ.get("ROSBRIDGE_URL", "")
+ROSBRIDGE_TOKEN    = os.environ.get("ROSBRIDGE_TOKEN", "")
 NAO_STATUS_TIMEOUT = float(os.environ.get("NAO_STATUS_TIMEOUT", "90"))
 
 app = Flask(__name__)
@@ -99,6 +102,9 @@ class _WS(object):
         self._sock = s
 
         key = base64.b64encode(os.urandom(16)).decode("ascii")
+        # rosbridge-proxy only upgrades connections carrying the shared token.
+        auth = ("Authorization: Bearer {}\r\n".format(ROSBRIDGE_TOKEN)
+                if ROSBRIDGE_TOKEN else "")
         req = (
             "GET {path} HTTP/1.1\r\n"
             "Host: {host}:{port}\r\n"
@@ -106,8 +112,10 @@ class _WS(object):
             "Connection: Upgrade\r\n"
             "Sec-WebSocket-Key: {key}\r\n"
             "Sec-WebSocket-Version: 13\r\n"
+            "{auth}"
             "\r\n"
-        ).format(path=self._path, host=self._host, port=self._port, key=key)
+        ).format(path=self._path, host=self._host, port=self._port, key=key,
+                 auth=auth)
         s.sendall(req.encode("ascii"))
 
         resp = b""

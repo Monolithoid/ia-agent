@@ -41,14 +41,16 @@ sudo bash /opt/ia-agent/setup-vps.sh
 ufw allow 22
 ufw allow 80
 ufw allow 443
-ufw allow from NAO_PUBLIC_IP to any port 9090  # rosbridge ws:// — accès réservé à l'IP publique du NAO
+ufw allow from 172.16.0.0/12 to any port 9090  # rosbridge-proxy (Docker bridge) → ros2-bridge
+ufw allow from 10.0.0.0/8 to any port 9090     # idem, autre plage Docker
+ufw deny 9090   # rosbridge n'est joignable que via Traefik + rosbridge-proxy (jeton)
 ufw deny 11434
 ufw deny 3000
 ufw deny 5678
 ufw enable
 ```
 
-> Le port 19001 (Bitterbot) n'est pas exposé directement. Le port 9090 est restreint à l'IP publique du NAO (Python 2.7, OpenSSL trop vieux pour TLS 1.2) ; les clients WebSocket passent par `wss://rosbridge.$DOMAIN` via Traefik sur le port 443. Si l'IP du NAO est dynamique, la mettre à jour avec `ufw delete` + `ufw allow from NEW_IP to any port 9090`.
+> Le port 19001 (Bitterbot) n'est pas exposé directement. Le port 9090 (rosbridge) n'est plus exposé : tout passe par `rosbridge-proxy`, qui exige l'en-tête `Authorization: Bearer $ROSBRIDGE_TOKEN`. Les clients TLS utilisent `wss://rosbridge.$DOMAIN` (443) ; le NAO (Python 2.7, OpenSSL trop vieux pour TLS 1.2) utilise `ws://rosbridge.$DOMAIN` (80). Si une ancienne règle `ufw allow from NAO_PUBLIC_IP to any port 9090` existe, la supprimer avec `ufw delete`.
 
 ---
 
@@ -76,6 +78,7 @@ Toutes les variables sensibles sont injectées par Coolify. Aucun secret n'est c
 | `OAUTH_CLIENT_SECRET` | Idem, même credential |
 | `N8N_BASIC_AUTH_PASSWORD` | Mot de passe fort de ton choix |
 | `BITTERBOT_GATEWAY_TOKEN` | `openssl rand -hex 32` — doit correspondre à `gateway.auth.token` dans `bitterbot.json` |
+| `ROSBRIDGE_TOKEN` | `openssl rand -hex 32` — jeton exigé par `rosbridge-proxy` ; même valeur à passer au NAO (`nao_ws_bridge.py --token`). Sans lui, `rosbridge-proxy` refuse de démarrer |
 
 **URI de callback à déclarer dans Google Cloud Console :**
 ```
