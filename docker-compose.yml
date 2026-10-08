@@ -38,6 +38,8 @@ version: "3.8"
 #   OAUTH_CLIENT_ID          : Google Cloud Console → OAuth 2.0
 #   OAUTH_CLIENT_SECRET      : idem
 #   BITTERBOT_GATEWAY_TOKEN  : openssl rand -hex 32
+#   ROSBRIDGE_TOKEN          : openssl rand -hex 32 (jeton exigé par rosbridge-proxy,
+#                              à passer aussi au NAO : nao_ws_bridge.py --token)
 #   NAO_ROBOT_ID             : nao_01 (identifiant ROS2 du corps)
 #   LISTEN_DURATION          : durée d'écoute après wake word en secondes (défaut: 4.0)
 #   ASR_MODEL                : modèle Whisper — tiny/base/small (défaut: small)
@@ -49,7 +51,8 @@ version: "3.8"
 #   ufw deny 11434
 #   ufw deny 3000
 #   ufw deny 5678
-#   ufw deny 9090    # rosbridge passe par Traefik (wss://), port 9090 non exposé
+#   ufw allow from 172.16.0.0/12 to any port 9090   # rosbridge-proxy (Docker bridge) → ros2-bridge
+#   ufw deny 9090    # rosbridge passe par Traefik + rosbridge-proxy (jeton), jamais en direct
 #   ufw enable
 # ============================================================
 
@@ -257,6 +260,7 @@ services:
       - BRIDGE_PORT=8090
       - RECONNECT_INTERVAL=15
       - ROSBRIDGE_URL=ws://rosbridge-proxy:80
+      - ROSBRIDGE_TOKEN=${ROSBRIDGE_TOKEN:-}
     networks:
       - ai-network
       - robotics-net
@@ -324,14 +328,28 @@ services:
       - ROS_LOCALHOST_ONLY=1
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 
+  # Seul point d'entrée public de rosbridge. Caddy n'accepte une connexion
+  # que si elle porte l'en-tête « Authorization: Bearer $ROSBRIDGE_TOKEN »,
+  # sinon il répond 401. Sans jeton configuré, le conteneur refuse de démarrer.
+  #
+  # Deux routeurs Traefik vers le même service :
+  #   rosbridge     → wss://rosbridge.${DOMAIN} (443, TLS)
+  #   rosbridge-ws  → ws://rosbridge.${DOMAIN}  (80, sans TLS) pour le NAO,
+  #                   dont le Python 2.7 embarqué ne sait pas faire de TLS.
   rosbridge-proxy:
     image: caddy:alpine
     container_name: rosbridge-proxy
     restart: unless-stopped
+    environment:
+      - ROSBRIDGE_TOKEN=${ROSBRIDGE_TOKEN:-}
     command:
       - sh
       - -c
       - |-
+          if [ -z "$$ROSBRIDGE_TOKEN" ]; then
+            echo "[rosbridge-proxy] ERREUR : ROSBRIDGE_TOKEN non défini" >&2
+            exit 1
+          fi
           hex=$$(awk 'NR>1 && $$2=="00000000" {print $$3; exit}' /proc/net/route)
           if [ -z "$$hex" ]; then
             echo "[rosbridge-proxy] ERREUR : aucune route par défaut dans /proc/net/route" >&2
@@ -340,12 +358,31 @@ services:
           gw=$$(printf '%d.%d.%d.%d' \
             "0x$${hex:6:2}" "0x$${hex:4:2}" "0x$${hex:2:2}" "0x$${hex:0:2}")
           echo "[rosbridge-proxy] gateway hôte détecté : $$gw"
-          exec caddy reverse-proxy --from :80 --to "$$gw:9090"
+          export ROSBRIDGE_UPSTREAM="$$gw:9090"
+          cat > /etc/caddy/Caddyfile <<'EOF'
+          {
+          	admin off
+          }
+          :80 {
+          	@authorized header Authorization "Bearer {$$ROSBRIDGE_TOKEN}"
+          	handle @authorized {
+          		reverse_proxy {$$ROSBRIDGE_UPSTREAM}
+          	}
+          	handle {
+          		respond 401
+          	}
+          }
+          EOF
+          exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.rosbridge.rule=Host(`rosbridge.${DOMAIN}`)"
       - "traefik.http.routers.rosbridge.entrypoints=https"
       - "traefik.http.routers.rosbridge.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.rosbridge.service=rosbridge"
+      - "traefik.http.routers.rosbridge-ws.rule=Host(`rosbridge.${DOMAIN}`)"
+      - "traefik.http.routers.rosbridge-ws.entrypoints=http"
+      - "traefik.http.routers.rosbridge-ws.service=rosbridge"
       - "traefik.http.services.rosbridge.loadbalancer.server.port=80"
     networks:
       - robotics-net

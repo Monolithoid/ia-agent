@@ -107,7 +107,7 @@ body-gateway (ROS 2 Humble, host network, :8095)
 
 NAO robot
   └── nao_ws_bridge.py (Python 2.7)
-        └─► WebSocket sortant wss://rosbridge.$DOMAIN:443
+        └─► WebSocket sortant ws://rosbridge.$DOMAIN:80 (jeton Authorization: Bearer)
               └─► rosbridge-proxy (Caddy) → ros2-bridge (host :9090)
                     └─► ROS 2 DDS domain 42
 ```
