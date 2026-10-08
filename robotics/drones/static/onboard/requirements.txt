@@ -1,0 +1,6 @@
+# Drone statique — dépendances Python 3 (Ubuntu ou Raspberry Pi OS 64 bits)
+numpy>=1.24
+websocket-client>=1.6
+sounddevice>=0.4.6        # nécessite libportaudio2 (apt)
+opencv-python-headless>=4.8
+pyusb>=1.2                # ReSpeaker USB ; nécessite libusb-1.0-0 (apt)
