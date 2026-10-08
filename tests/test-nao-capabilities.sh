@@ -10,6 +10,9 @@
 # Options :
 #   --nao     Active les tests physiques (NAO doit être allumé et connecté)
 #             Par défaut : mock mode uniquement
+#   --emotive NAO en mode émotif seul (ADR 004, docs/nao.md) : il ne parle
+#             pas, les tests de parole sont ignorés (SKIP). Équivaut à
+#             NAO_EMOTIVE=1 dans l'environnement.
 #
 # Sections :
 #   health        /health — état de connexion
@@ -21,21 +24,26 @@
 #   move          /move + /move/stop — déplacement (ALMotion.moveToward)
 #   events        /events — flux SSE (bumper, sonar, batterie)
 #   robustness    cas d'erreur et endpoints invalides
+#   stiffness     /stiffness — rigidité tête / bras
+#   emotions      rendu émotions (speech + LEDs + tête + bras)
+#   speaking      animation « je parle » du NAO quand le drone statique parle
 
 set -uo pipefail
 
 # ─── Parsing des arguments ────────────────────────────────────────────────────
 PHYSICAL=0
+EMOTIVE="${NAO_EMOTIVE:-0}"
 SECTIONS=()
 
 for arg in "$@"; do
     case "$arg" in
         --nao) PHYSICAL=1 ;;
-        health|battery|say|leds|posture|motion|move|events|robustness|stiffness|emotions)
+        --emotive) EMOTIVE=1 ;;
+        health|battery|say|leds|posture|motion|move|events|robustness|stiffness|emotions|speaking)
             SECTIONS+=("$arg") ;;
         *)
             echo "Argument inconnu : '$arg'" >&2
-            echo "Sections valides : health battery say leds posture motion move events robustness stiffness emotions" >&2
+            echo "Sections valides : health battery say leds posture motion move events robustness stiffness emotions speaking" >&2
             exit 1
             ;;
     esac
@@ -43,7 +51,7 @@ done
 
 # Par défaut : toutes les sections
 if [ ${#SECTIONS[@]} -eq 0 ]; then
-    SECTIONS=(health battery say leds posture motion move events robustness stiffness emotions)
+    SECTIONS=(health battery say leds posture motion move events robustness stiffness emotions speaking)
 fi
 
 # ─── Configuration ────────────────────────────────────────────────────────────
@@ -130,6 +138,11 @@ _section_battery() {
 
 _section_say() {
     _head "2 — Synthèse vocale  (POST /say)"
+
+    if [ "$EMOTIVE" = "1" ]; then
+        _skip "NAO émotif seul : module speech désactivé, le drone statique parle"
+        return
+    fi
 
     _sub "Texte vide → erreur 400"
     out=$(curl -s --max-time 5 -X POST "${BRIDGE}/say" \
@@ -500,6 +513,18 @@ _section_stiffness() {
     fi
 }
 
+# Parole d'une émotion : ignorée quand le NAO est en mode émotif seul.
+_emotion_say() {
+    local emotion="$1" body="$2" out
+    if [ "$EMOTIVE" = "1" ]; then
+        _skip "$emotion: speech (NAO émotif seul)"
+        return
+    fi
+    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/say" \
+          -H "Content-Type: application/json" -d "$body" 2>&1)
+    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "$emotion: speech" || _fail "$emotion: speech"
+}
+
 _section_emotions() {
     _head "10 — Rendu émotions (speech + LEDs + tête + bras)"
 
@@ -530,10 +555,7 @@ _section_emotions() {
           -d '{"joint":"RShoulderPitch","angle":0.4,"speed":0.12}' 2>&1)
     [[ "$out" =~ '"ok"'.*'true' ]] && _pass "excited: bras droit levé" || _fail "excited: bras droit levé"
     # 4. Speech
-    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/say" \
-          -H "Content-Type: application/json" \
-          -d '{"text":"Super ! Je suis vraiment excite !"}' 2>&1)
-    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "excited: speech" || _fail "excited: speech"
+    _emotion_say "excited" '{"text":"Super ! Je suis vraiment excite !"}'
 
     _sub "Émotion CURIOUS : speech + LEDs bleues + tête inclinée + bras repos"
     out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/leds" \
@@ -552,10 +574,7 @@ _section_emotions() {
           -H "Content-Type: application/json" \
           -d '{"joint":"RShoulderPitch","angle":1.50,"speed":0.06}' 2>&1)
     [[ "$out" =~ '"ok"'.*'true' ]] && _pass "curious: bras droit repos" || _fail "curious: bras droit repos"
-    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/say" \
-          -H "Content-Type: application/json" \
-          -d '{"text":"Hmm, je me pose des questions..."}' 2>&1)
-    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "curious: speech" || _fail "curious: speech"
+    _emotion_say "curious" '{"text":"Hmm, je me pose des questions..."}'
 
     _sub "Émotion UNCERTAIN : speech + LEDs jaunes + yaw lent + haussement d'épaules"
     out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/leds" \
@@ -574,10 +593,7 @@ _section_emotions() {
           -H "Content-Type: application/json" \
           -d '{"joint":"RElbowRoll","angle":0.80,"speed":0.07}' 2>&1)
     [[ "$out" =~ '"ok"'.*'true' ]] && _pass "uncertain: bras droit haussement" || _fail "uncertain: bras droit haussement"
-    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/say" \
-          -H "Content-Type: application/json" \
-          -d '{"text":"Je ne suis pas sur de comprendre..."}' 2>&1)
-    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "uncertain: speech" || _fail "uncertain: speech"
+    _emotion_say "uncertain" '{"text":"Je ne suis pas sur de comprendre..."}'
 
     _sub "Émotion NEUTRAL : speech + LEDs sombres + tête droite + bras repos"
     out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/leds" \
@@ -596,10 +612,7 @@ _section_emotions() {
           -H "Content-Type: application/json" \
           -d '{"joint":"RShoulderPitch","angle":1.50,"speed":0.06}' 2>&1)
     [[ "$out" =~ '"ok"'.*'true' ]] && _pass "neutral: bras droit repos" || _fail "neutral: bras droit repos"
-    out=$(curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/say" \
-          -H "Content-Type: application/json" \
-          -d '{"text":"Bonjour. Comment puis-je vous aider ?"}' 2>&1)
-    [[ "$out" =~ '"ok"'.*'true' ]] && _pass "neutral: speech" || _fail "neutral: speech"
+    _emotion_say "neutral" '{"text":"Bonjour. Comment puis-je vous aider ?"}'
 
     # Fin : remettre les bras au repos et désactiver stiffness
     _sub "Remise au repos + désactivation stiffness bras"
@@ -613,6 +626,47 @@ _section_emotions() {
           -H "Content-Type: application/json" \
           -d '{"groups":["larm","rarm"],"value":0.0}' 2>&1)
     [[ "$out" =~ '"ok"'.*'true' ]] && _pass "remise au repos OK" || _fail "remise au repos échouée"
+}
+
+_section_speaking() {
+    _head "11 — Animation « je parle » (drone statique qui parle)"
+
+    # Mêmes images que cognitive_renderer (speaking_animation.py), en commandes
+    # mono-articulation pour l'API HTTP de naoqi-bridge.
+    local anim_dir
+    anim_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../robotics/drones/nao/cognitive_renderer" && pwd)"
+    local cmds
+    cmds=$(python3 - "$anim_dir" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from speaking_animation import speaking_frame
+for tick in range(4):
+    leds, motions = speaking_frame(tick)
+    print("/leds " + json.dumps(leds))
+    for m in motions:
+        pairs = zip(m["joints"], m["angles"]) if "joints" in m else [(m["joint"], m["angle"])]
+        for joint, angle in pairs:
+            print("/motion " + json.dumps({"joint": joint, "angle": angle, "speed": m["speed"]}))
+PY
+    ) || { _fail "speaking_animation.py illisible"; return; }
+
+    _sub "Prérequis : activer stiffness tête + bras"
+    curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/stiffness" \
+         -H "Content-Type: application/json" \
+         -d '{"groups":["head","larm","rarm"],"value":1.0}' > /dev/null
+
+    _sub "Yeux qui clignotent + hochements + avant-bras gauche puis droit (4 images)"
+    local endpoint body
+    while read -r endpoint body; do
+        _post "speaking ${endpoint} $(echo "$body" | cut -c1-50)" "$body" "$endpoint"
+        [ "$endpoint" = "/leds" ] && [ "$PHYSICAL" -eq 1 ] && sleep 1.5
+    done <<< "$cmds"
+
+    _sub "Retour au repos"
+    _post "tête droite" '{"joint":"HeadPitch","angle":0.0,"speed":0.08}' "/motion"
+    curl -s --max-time "$TIMEOUT" -X POST "${BRIDGE}/stiffness" \
+         -H "Content-Type: application/json" \
+         -d '{"groups":["larm","rarm"],"value":0.0}' > /dev/null
 }
 
 # ─── En-tête ──────────────────────────────────────────────────────────────────
@@ -640,6 +694,7 @@ for section in "${SECTIONS[@]}"; do
         robustness)  _section_robustness ;;
         stiffness)   _section_stiffness ;;
         emotions)    _section_emotions ;;
+        speaking)    _section_speaking ;;
     esac
 done
 

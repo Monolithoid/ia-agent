@@ -31,6 +31,7 @@ WORKDIR /ros2_ws
 COPY shared/speech_services.py                               ./speech_services.py
 COPY drones/nao/driver/naoqi_driver_node.py                  ./naoqi_driver_node.py
 COPY drones/nao/cognitive_renderer/cognitive_renderer_node.py ./cognitive_renderer_node.py
+COPY drones/nao/cognitive_renderer/speaking_animation.py      ./speaking_animation.py
 COPY drones/nao/motion_engine/motion_engine/                 ./motion_engine/
 COPY drones/static/driver/static_driver_node.py              ./static_driver_node.py
 

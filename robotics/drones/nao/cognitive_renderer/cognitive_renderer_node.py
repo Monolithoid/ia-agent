@@ -11,21 +11,41 @@ Subscribed topics:
                                        idle|uncertain|excited)
   /dream_state       std_msgs/String  (phase name from DreamEngine)
   /emotion_state     std_msgs/String  (curious|neutral|excited|uncertain)
+  /bodies/{DRONE_ID}/sensors/speaking  std_msgs/Bool
+                     true while the static drone's speaker plays (ADR 004):
+                     the NAO then animates its eyes and makes light gestures
+                     so that it looks like the one speaking
 
 Published topics (forwarded to naoqi_driver):
   /naoqi/leds        std_msgs/String  JSON {group, r, g, b, duration}
   /naoqi/motion      std_msgs/String  JSON {joint, angle, speed}
                                       or   {joints:[...], angles:[...], speed}
+
+Environment variables:
+  DRONE_ID          static drone whose voice the NAO mimics, default "static_01"
+                    (same variable as static_driver; empty = no speaking sync)
+  SPEAKING_SYNC     "0" disables the speaking animation, default "1"
+  SPEAKING_TIMEOUT  seconds after which the animation stops if no
+                    speaking=false arrives, default 120 (0 = never)
 """
 
 import json
 import math
+import os
+import sys
 import threading
 import time
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from speaking_animation import SPEAKING_PERIOD, speaking_expired, speaking_frame  # noqa: E402
+
+DRONE_ID = os.environ.get("DRONE_ID", "static_01")
+SPEAKING_SYNC = os.environ.get("SPEAKING_SYNC", "1") != "0"
+SPEAKING_TIMEOUT = float(os.environ.get("SPEAKING_TIMEOUT", "120"))
 
 # ──────────────────────────────────────────────────────────────────────────────
 # State → rendering profile
@@ -112,12 +132,18 @@ class CognitiveRendererNode(Node):
         self._lock = threading.Lock()
         self._running = True
         self._phase = 0.0  # animation phase accumulator
+        self._speaking = False          # static drone speaker playing
+        self._speaking_since = 0.0
+        self._speaking_event = threading.Event()
 
         # ── Subscribers ────────────────────────────────────────────────────────
         self.create_subscription(String, "/cognitive_state", self._on_cognitive, 10)
         self.create_subscription(String, "/dream_state", self._on_dream, 10)
         self.create_subscription(String, "/emotion_state", self._on_emotion, 10)
         self.create_subscription(String, "/energy_state", self._on_energy, 10)
+        if SPEAKING_SYNC and DRONE_ID:
+            self.create_subscription(Bool, f"/bodies/{DRONE_ID}/sensors/speaking",
+                                     self._on_speaking, 10)
 
         # ── Publishers ─────────────────────────────────────────────────────────
         self.pub_leds      = self.create_publisher(String, "/naoqi/leds",      10)
@@ -127,8 +153,11 @@ class CognitiveRendererNode(Node):
         # ── Animation loop (runs in background thread) ─────────────────────────
         self._anim_thread = threading.Thread(target=self._animation_loop, daemon=True)
         self._anim_thread.start()
+        self._speaking_thread = threading.Thread(target=self._speaking_loop, daemon=True)
+        self._speaking_thread.start()
 
-        self.get_logger().info("CognitiveRenderer started")
+        sync = f"speaking sync on {DRONE_ID}" if SPEAKING_SYNC and DRONE_ID else "speaking sync off"
+        self.get_logger().info(f"CognitiveRenderer started ({sync})")
 
     # ──────────────────────────────────────────────────────────────────────────
     # State updates
@@ -196,6 +225,19 @@ class CognitiveRendererNode(Node):
             f"Energy → {level} : head={head_v} larm={larm_v} rarm={rarm_v}"
         )
 
+    def _on_speaking(self, msg: Bool):
+        """Static drone speaker on/off: start or stop the speaking animation."""
+        with self._lock:
+            was_speaking = self._speaking
+            self._speaking = bool(msg.data)
+            if self._speaking:
+                self._speaking_since = time.monotonic()
+        if self._speaking and not was_speaking:
+            self.get_logger().info(f"{DRONE_ID} parle → animation « speaking »")
+            self._speaking_event.set()
+        elif was_speaking and not self._speaking:
+            self.get_logger().info(f"{DRONE_ID} a fini de parler")
+
     # ──────────────────────────────────────────────────────────────────────────
     # Animation loop
     # ──────────────────────────────────────────────────────────────────────────
@@ -203,17 +245,53 @@ class CognitiveRendererNode(Node):
     def _animation_loop(self):
         while self._running:
             with self._lock:
-                state = self._state
-
-            profile = _PROFILES.get(state, _PROFILES["idle"])
-            r, g, b, pulse, head_mode, arm_mode = profile
-
-            self._render_leds(r, g, b, pulse)
-            self._render_head(head_mode)
-            self._render_arms(arm_mode)
+                speaking = self._speaking
+            # The speaking loop owns LEDs and motion while the drone talks.
+            if not speaking:
+                self._render_profile()
 
             self._phase += _ANIM_PERIOD
             time.sleep(_ANIM_PERIOD)
+
+    def _render_profile(self):
+        """Render the current cognitive state once (LEDs + head + arms)."""
+        with self._lock:
+            state = self._state
+        r, g, b, pulse, head_mode, arm_mode = _PROFILES.get(state, _PROFILES["idle"])
+        self._render_leds(r, g, b, pulse)
+        self._render_head(head_mode)
+        self._render_arms(arm_mode)
+
+    def _speaking_loop(self):
+        """While the static drone speaks: eyes + light gestures every
+        SPEAKING_PERIOD seconds, then back to the cognitive state profile."""
+        while self._running:
+            self._speaking_event.wait()
+            self._speaking_event.clear()
+            tick = 0
+            while self._running:
+                with self._lock:
+                    speaking = self._speaking
+                    since = self._speaking_since
+                if not speaking:
+                    break
+                if speaking_expired(since, time.monotonic(), SPEAKING_TIMEOUT):
+                    self.get_logger().warning(
+                        f"Pas de speaking=false de {DRONE_ID} après {SPEAKING_TIMEOUT:.0f} s"
+                        " — fin de l'animation")
+                    with self._lock:
+                        self._speaking = False
+                    break
+                leds, motions = speaking_frame(tick)
+                self.pub_leds.publish(String(data=json.dumps(leds)))
+                for m in motions:
+                    self.pub_motion.publish(String(data=json.dumps(m)))
+                tick += 1
+                time.sleep(SPEAKING_PERIOD)
+            # Head back level (idle profiles only drive HeadYaw), then the profile.
+            self.pub_motion.publish(String(data=json.dumps(
+                {"joint": "HeadPitch", "angle": 0.0, "speed": 0.08})))
+            self._render_profile()
 
     def _render_leds(self, r: float, g: float, b: float, pulse: bool):
         """Publish an LED colour command, optionally with sinusoidal pulsing.

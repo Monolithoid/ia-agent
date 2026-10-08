@@ -59,6 +59,7 @@ _usage() {
     echo -e "    ${GREEN}nao:move${NC}         /move + /move/stop — déplacement locomotion"
     echo -e "    ${GREEN}nao:events${NC}       /events — flux SSE (bumper, sonar, batterie)"
     echo -e "    ${GREEN}nao:robustness${NC}   cas d'erreur et endpoints invalides"
+    echo -e "    ${GREEN}nao:speaking${NC}     animation « je parle » (yeux, tête, bras) du NAO émotif"
     echo -e "    ${GREEN}nao:all${NC}          toutes les sections nao:* ci-dessus"
     echo ""
     echo -e "  ${CYAN}Raccourcis :${NC}"
@@ -102,7 +103,7 @@ _run_suite() {
             for s in "${NAO_SECTIONS[@]}"; do _run_suite "nao:$s"; done
             return
             ;;
-        nao:health|nao:battery|nao:say|nao:leds|nao:posture|nao:motion|nao:move|nao:events|nao:robustness)
+        nao:health|nao:battery|nao:say|nao:leds|nao:posture|nao:motion|nao:move|nao:events|nao:robustness|nao:speaking)
             nao_section="${suite#nao:}"
             script="$SCRIPT_DIR/test-nao-capabilities.sh"
             args=("$nao_section")

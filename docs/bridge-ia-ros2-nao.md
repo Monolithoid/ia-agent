@@ -242,7 +242,7 @@ Formats defined by `robotics/drones/static/onboard/` (see its [README](../roboti
 | `/bodies/{id}/sensors/speech` | naoqi_driver / static_driver | body_gateway | STT transcription |
 | `/bodies/{id}/sensors/sound_direction` | static_driver | body_gateway | `{"azimuth_deg", "source"}` (JSON) |
 | `/bodies/{id}/sensors/image` | static_driver | *(none yet)* | camera image (JSON, as sent by the drone) |
-| `/bodies/{id}/sensors/speaking` | static_driver | *(none yet)* | speaker playing (Bool) |
+| `/bodies/{id}/sensors/speaking` | static_driver | cognitive_renderer (NAO mimics the voice) | speaker playing (Bool) |
 | `/bodies/{id}/sensors/battery` | naoqi_driver | body_gateway | Battery level |
 | `/bodies/{id}/connected` | naoqi_driver / static_driver | body_gateway | Connection state |
 
