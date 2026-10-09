@@ -38,7 +38,7 @@ Tous ces services tournent dans `ai-network`, sauf Bitterbot qui est isolé dans
 
 **Télécharger un modèle :**
 ```bash
-docker exec -it ollama ollama pull qwen3:8b
+docker exec -it ollama ollama pull qwen3:1.7b   # modèle par défaut de body-gateway
 ```
 
 **Changer le modèle utilisé par body-gateway :** variable d'environnement `BRAIN_MODEL` dans Coolify.
@@ -150,35 +150,34 @@ https://chat.$DOMAIN/oauth/oidc/callback
 
 Le Pipe `NAO Brain` (`robotics/brain/webui/nao_pipe.py`) connecte le chat Open WebUI au **même pipeline complet** que la parole directe à NAO.
 
-Le mot de réveil **« ok nao »** active l'agent IA (Ollama / `BRAIN_MODEL`). Celui-ci répond en langage naturel ET pilote simultanément ses corps physiques (NAO, drones, tout corps dans `BODY_REGISTRY`) via ROS 2.
+Chaque message du chat est envoyé au cerveau (`BRAIN_PROVIDER` / `BRAIN_MODEL`), sans mot de réveil : « ok nao » ne sert qu'à la voix. Le cerveau répond en langage naturel ET pilote simultanément ses corps physiques (NAO, voix de la pièce et du stream, tout corps dans `BODY_REGISTRY`) via ROS 2. Le tchat Twitch (`twitch-input`, [ADR 005](decisions/005-avatar-twitch.md)) arrive par le même endpoint `/chat`.
 
 ```
-ok nao, comment tu vas ?
-ok nao, dis bonjour et fais une révérence
-ok nao, avance vers la fenêtre
-ok nao, mets les LEDs en violet et assieds-toi
+comment tu vas ?
+dis bonjour et fais une révérence
+mets les LEDs en violet et assieds-toi
 ```
 
 **Flux :**
 
 ```
-Chat WebUI  ──"ok nao, [message]"──►  nao_pipe.py (Pipe)
+Chat WebUI  ──"[message]"──►  nao_pipe.py (Pipe)
                                             │
-                              POST http://host-gateway:8095/chat
+                              POST http://chat-relay:8095/chat
                                             │
                                      body-gateway (_infer_sync)
                                             │
-                                  Ollama (BRAIN_MODEL)
+                                  LLM (BRAIN_MODEL)
                                             │
                                JSON { thoughts, emotion, actions }
                                             │
                     ┌───────────────────────┘
                     │
               ROS 2 topics
-              ├─ /bodies/nao_01/actuators/say    → NAO parle
+              ├─ /bodies/{static_01,obs_01}/actuators/say → voix connectées
+              │    (sinon /bodies/nao_01/actuators/say : le NAO parle)
               ├─ /bodies/nao_01/actuators/motion → geste
-              ├─ /bodies/nao_01/actuators/leds   → LEDs
-              └─ /bodies/drone_01/actuators/...  → drone, etc.
+              └─ /bodies/nao_01/actuators/leds   → LEDs
                     │
               Réponse JSON retournée au chat
               (speech + actions affichées)
@@ -191,7 +190,7 @@ Chat WebUI  ──"ok nao, [message]"──►  nao_pipe.py (Pipe)
 3. Sélectionner le type **Pipe** → Enregistrer sous **NAO Brain**
 4. Le modèle **NAO Brain** apparaît dans la liste des modèles du chat
 
-Le Pipe communique avec `body-gateway` via `host-gateway:8095` (port HTTP ouvert sur l'hôte Docker par le service `body-gateway` en `network_mode: host`).
+Le Pipe communique avec `body-gateway` via `chat-relay:8095` (valve `body_gateway_url`) : `chat-relay` est un proxy Caddy sur `ai-network` qui relaie vers le port 8095 de l'hôte, où écoute `body-gateway` en `network_mode: host`.
 
 ---
 
@@ -235,7 +234,7 @@ Utilisé par Open WebUI pour le RAG (Retrieval-Augmented Generation). Stocke les
 > Voir [ADR 003](decisions/003-ollama-direct-sans-bitterbot.md) pour le contexte complet.
 
 Bitterbot est commenté dans `docker-compose.yml`. `body-gateway` appelle
-**Ollama directement** (`BRAIN_URL=http://localhost:11434`, `BRAIN_MODEL=qwen2.5:7b`).
+**le fournisseur choisi** par `BRAIN_PROVIDER` (par défaut Ollama local, `qwen3:1.7b` — voir [Fournisseur du cerveau](#fournisseur-du-cerveau-body-gateway)).
 
 Ce qu'on perd sans Bitterbot : mémoire long-terme SQLite, dream engine.  
 Ce qu'on garde : tout le pipeline de contrôle physique et le chat WebUI.
@@ -252,11 +251,11 @@ Ce qu'on garde : tout le pipeline de contrôle physique et le chat WebUI.
 
 ```
 ai-network (bridge, internet)
-  └── ollama, open-webui, n8n, chromadb, naoqi-bridge, chat-relay
+  └── ollama, open-webui, n8n, chromadb, whisper-asr, naoqi-bridge, chat-relay, twitch-input
 
 bitterbot-net (bridge, internal — aucun accès internet)
   └── (réservé pour Bitterbot — voir ADR 003)
 
 robotics-net (bridge, internet)
-  └── rosbridge-proxy
+  └── rosbridge-proxy, naoqi-bridge, obs-agent
 ```

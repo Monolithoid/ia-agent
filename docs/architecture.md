@@ -33,13 +33,15 @@ ia-agent/
 │       │   ├── cognitive_renderer/ → Nœud ROS 2 : état cognitif → LEDs / tête
 │       │   ├── motion_engine/ → Package ROS 2 : synthèse biomécanique (émotion → mouvement)
 │       │   └── core/        → Dockerfile + entrypoint du container nao-core
-│       ├── static/          → Drone statique Raspberry Pi (micros, caméra, haut-parleur) — à venir, voir ADR 004
+│       ├── static/          → Drone statique (ADR 004) : onboard/ (Raspberry Pi / PC) + driver/ (nœud ROS 2 VPS)
 │       ├── obs/             → Voix de NAO sur le stream : overlay OBS (ADR 005)
 │       └── quadcopter/      → Réservé
 ├── docs/
 │   ├── architecture.md      → ce fichier
 │   └── decisions/           → ADR (Architecture Decision Records)
+├── tests/                   → test-chain.sh, diagnostics NAO, faux drone statique
 ├── .github/workflows/       → CI/CD GitHub Actions
+├── setup-vps.sh             → préparation du VPS
 └── docker-compose.yml       → composition complète
 ```
 
@@ -62,7 +64,7 @@ ia-agent/
 | `chromadb` | Mémoire vectorielle | 8000 | Interne uniquement |
 | `whisper-asr` | Transcription vocale (STT) | 9000 | Interne uniquement |
 | `naoqi-bridge` | HTTP bridge Python 2.7 → SDK NAOqi | 8090 | Interne (host) |
-| `nao-core` | ROS 2 Humble : naoqi_driver + cognitive_renderer + motion_engine | — | host network |
+| `nao-core` | ROS 2 Humble : naoqi_driver + cognitive_renderer + motion_engine + static_driver (×2 : drone statique et voix OBS) | — | host network |
 | `body-gateway` | Cerveau ROS 2 : LLM ↔ corps robotiques | 8095 | host network |
 | `ros2-bridge` | rosbridge_server WebSocket | 9090 | host network |
 | `rosbridge-proxy` | Proxy Caddy : Traefik → ros2-bridge | 80 | robotics-net |
@@ -75,13 +77,13 @@ ia-agent/
 
 ```
 ai-network (bridge, internet)
-  └── ollama, open-webui, n8n, chromadb, whisper-asr, naoqi-bridge, chat-relay
+  └── ollama, open-webui, n8n, chromadb, whisper-asr, naoqi-bridge, chat-relay, twitch-input
 
 bitterbot-net (bridge, internal — aucun accès internet)
   └── (réservé bitterbot-gateway — voir ADR 003)
 
 robotics-net (bridge, internet)
-  └── rosbridge-proxy
+  └── rosbridge-proxy, naoqi-bridge, obs-agent
 
 host network
   └── nao-core, body-gateway, ros2-bridge  (DDS ROS 2 domaine 42)
@@ -89,9 +91,13 @@ host network
 
 ## Architecture robotique NAO
 
+Toutes les entrées suivent la même boucle (voir [ADR 005](decisions/005-avatar-twitch.md)) :
+voix « ok nao », Open WebUI, tchat Twitch et capteurs produisent un texte ;
+`body-gateway` appelle le LLM et répartit la liste d'actions sur les corps.
+
 ```
-Open WebUI (chat)
-  │  POST http://chat-relay:8095/chat
+Open WebUI (chat)          twitch-input (« !nao … » du tchat Twitch)
+  │  POST http://chat-relay:8095/chat  ◄──┘
   ▼
 chat-relay (Caddy, ai-network → host)
   │
@@ -102,6 +108,8 @@ body-gateway (ROS 2 Humble, host network, :8095)
   │
   │  ROS 2 DDS domain 42
   ├─► /cognitive_state → nao-core/cognitive_renderer (LEDs + tête)
+  ├─► /bodies/{static_01,obs_01}/actuators/say → nao-core/static_driver (edge-tts)
+  │         └─► /drones/{id}/audio_out → haut-parleur de la pièce / overlay OBS (obs-agent)
   └─► /bodies/{id}/actuators/* → nao-core/naoqi_driver
                                         │  HTTP localhost:8090
                                         ▼
@@ -135,6 +143,6 @@ NAO robot
 
 L'architecture rosbridge est directement extensible aux drones.
 PX4, DJI (ROS 2 SDK) et Parrot (Anafi SDK) ont tous des drivers ROS 2.
-Il suffit d'ajouter un script bridge côté drone et un nouvel ID dans `BODY_REGISTRY`.
+Il suffit d'ajouter un script bridge côté drone et un nouvel ID dans `BODY_REGISTRY` (le préfixe de l'ID donne le type : `static…`, `obs…`, sinon NAO — voir `body_rules.py`).
 
-Premier cas : le drone statique Raspberry Pi 5 (capture audio, vidéo, sortie audio), qui laisse au NAO le seul rendu émotif — voir [ADR 004](decisions/004-drone-statique.md).
+Premier cas : le drone statique Raspberry Pi 5 (capture audio, vidéo, sortie audio), qui laisse au NAO le seul rendu émotif — voir [ADR 004](decisions/004-drone-statique.md). Deuxième cas : la voix du stream `obs_01`, un corps « parole » joué dans le mixer OBS — voir [ADR 005](decisions/005-avatar-twitch.md).

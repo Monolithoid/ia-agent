@@ -1,14 +1,14 @@
 # Bridge IA / ROS 2 / NAO
 
-Translation layer between the AI stack (Ollama, Open WebUI) and the robot bodies, via ROS 2 Humble and the rosbridge WebSocket protocol: the NAO (gestures, head, LEDs) and the static drone (microphones, camera, speaker — [ADR 004](decisions/004-drone-statique.md)).
+Translation layer between the AI stack (Ollama, Open WebUI) and the robot bodies, via ROS 2 Humble and the rosbridge WebSocket protocol: the NAO (gestures, head, LEDs), the static drone (microphones, camera, speaker — [ADR 004](decisions/004-drone-statique.md)) and the stream voice played in OBS (`obs-agent` — [ADR 005](decisions/005-avatar-twitch.md)). Every input (voice, Open WebUI, Twitch chat, sensors) goes through the same loop: text → LLM → list of actions → bodies.
 
 ---
 
 ## Command chain architecture
 
 ```
-Open WebUI (chat / voice)
-  └─► nao_pipe.py (Open WebUI Pipe)
+Open WebUI (chat / voice)                twitch-input (Twitch chat "!nao …")
+  └─► nao_pipe.py (Open WebUI Pipe)          └─► POST http://chat-relay:8095/chat  (Path 4)
         └─► POST http://chat-relay:8095/chat   (Path 1 — text)
         └─► GET  http://chat-relay:8095/voice-pop  (Path 2 — voice)
               └─► body_gateway (ROS 2 node + HTTP server, host network)
@@ -20,14 +20,14 @@ Open WebUI (chat / voice)
                           │           └─► ros2-bridge (rosbridge_suite, port 9090)
                           │                 └─► nao_ws_bridge.py (NAO, Python 2.7)
                           │                       └─► NAOqi SDK → speaker, LEDs, motors
-                          └─► static_driver (ROS 2 node)
+                          └─► static_driver (ROS 2 node, one per voice body)
                                 └─► /drones/{id}/audio_out (edge-tts MP3)
                                       └─► ros2-bridge (rosbridge_suite, port 9090)
-                                            └─► static_drone.py (Raspberry Pi / PC)
-                                                  └─► speaker
+                                            ├─► static_drone.py (Raspberry Pi / PC) → room speaker
+                                            └─► obs-agent → OBS browser source → stream
 ```
 
-The static drone connects the same way as the NAO (outbound WebSocket, same token).
+The static drone and `obs-agent` connect the same way as the NAO (WebSocket client of `rosbridge-proxy`, same token).
 
 The NAO robot establishes an **outbound WebSocket connection** to `ws://rosbridge.$DOMAIN` (port 80, proxied via Traefik; TLS clients use `wss://` on 443). Every connection must carry `Authorization: Bearer $ROSBRIDGE_TOKEN`. No inbound connection to the robot is required.
 
@@ -85,7 +85,7 @@ Whisper and edge-tts calls live in `robotics/shared/speech_services.py`, shared 
 
 ### static_driver
 
-**Container:** `nao-core` (fourth node, started when `DRONE_ID` is not empty)
+**Container:** `nao-core` (fourth node, started when `DRONE_ID` is not empty; started a second time with `DRONE_ID=$OBS_DRONE_ID` for the stream voice when `OBS_DRONE_ID` is not empty — [ADR 005](decisions/005-avatar-twitch.md))
 **File:** `robotics/drones/static/driver/static_driver_node.py`
 **Role:** ROS 2 bridge node for the static drone ([ADR 004](decisions/004-drone-statique.md)) — translates the `/drones/{id}/*` topics published by `static_drone.py` into `/bodies/{id}/*`.
 
@@ -143,32 +143,77 @@ Whisper and edge-tts calls live in `robotics/shared/speech_services.py`, shared 
 | `/chat` | POST | Path 1: `{"text": "...", "robot_id": "nao_01"}` → Ollama → JSON actions |
 | `/say` | POST | Direct TTS without Ollama: `{"text": "...", "robot_id": "nao_01"}` |
 | `/voice-pop` | GET | Path 2: retrieve pre-computed voice result (avoids double inference) |
+| `/motion-command` | POST | Direct `motion_engine` payload without the LLM: `{"arousal", "valence", ...}` → `/motion_engine/command` |
 
 **Environment variables:**
 
 | Variable | Description |
 |---|---|
-| `BRAIN_URL` | Ollama URL, default `http://localhost:11434` |
-| `BRAIN_MODEL` | LLM model, default `qwen3:1.7b` |
-| `BRAIN_API_KEY` | Ollama API key |
-| `BRAIN_TIMEOUT` | Ollama timeout in seconds, default 120 |
-| `BRAIN_PROVIDER` | `ollama` (default), `openai` or `anthropic` — see `docs/ia-stack.md` |
-| `BODY_REGISTRY` | Comma-separated body IDs, default `nao_01` (compose: `nao_01,static_01`). IDs starting with `static` are static drones, all others are NAOs |
+| `BRAIN_PROVIDER` | `ollama` (default), `openai` or `anthropic` — see [ia-stack.md](ia-stack.md#fournisseur-du-cerveau-body-gateway) |
+| `BRAIN_URL` | Provider URL, empty = provider default (Ollama: `http://localhost:11434`) |
+| `BRAIN_MODEL` | LLM model, empty = provider default (Ollama: `qwen3:1.7b`) |
+| `BRAIN_API_KEY` | Provider API key (compose default: `OLLAMA_API_KEYS`) |
+| `BRAIN_TIMEOUT` | Stream timeout in seconds, default 120 (compose: 60) |
+| `BRAIN_EFFORT` | Anthropic only, optional |
+| `BODY_REGISTRY` | Comma-separated body IDs, default `nao_01` (compose: `nao_01,static_01,obs_01`). IDs starting with `static` are static drones, `obs` stream voices, all others are NAOs |
 | `WAKE_WORD` | Wake word required in the static drone's speech, default `ok nao` |
 | `WAKE_WINDOW_S` | Seconds during which a lone wake word stays valid for the next sentence, default 10 |
 | `NAO_HEAD_YAW_OFFSET` | Degrees added when turning the NAO head toward a voice (manual calibration), default 0 |
 | `DREAMING_HOUR_START/END` | Dream window, default 2 / 6 |
 | `DREAMING_BATTERY_THRESHOLD` | Minimum battery % to dream, default 80.0 |
+| `DREAM_TICK_INTERVAL` | Seconds between dream ticks, default 300 |
+| `PROXIMITY_THRESHOLD` | Sonar distance in metres that wakes the robot, default 1.5 |
 | `WEBUI_URL` | Open WebUI URL for voice notifications |
 | `WEBUI_API_KEY` | Open WebUI API key |
+| `WEBUI_PIPE_MODEL` | NAO Brain Pipe model ID, default `nao_brain` |
+| `WEBUI_VOICE_CHAT_ID` | Open WebUI chat that receives voice exchanges (optional) |
 
-**Several bodies (static drone + NAO)** — rules in `robotics/brain/body_gateway/body_rules.py`:
+**Several bodies (NAO + voices)** — rules in `robotics/brain/body_gateway/body_rules.py`:
 
-- **Routing table by action type.** `speech` goes to the static drone when it is connected, otherwise to the NAO named by the LLM; `motion`, `leds`, `move`, `look` always go to a NAO, even if the LLM names the static drone. Without a connected static drone, the NAO behaves as before.
-- **System prompt.** Lists each body with its capabilities (`static_01`: speak, hear, see; `nao_01`: gestures, head, LEDs) and the body to use for `speech`.
+- **Routing table by action type.** `speech` goes to every connected voice body (static drone in the room, `obs_01` on the stream), whatever the input; with no voice connected, to the NAO named by the LLM. `motion`, `leds`, `move`, `look` always go to a NAO, even if the LLM names a voice body. Without a connected voice, the NAO behaves as before.
+- **System prompt.** Lists each body with its capabilities (`static_01`: speak, hear, see; `obs_01`: speak on the stream; `nao_01`: gestures, head, LEDs) and the body to use for `speech`. It also describes the `[tchat Twitch] pseudo : message` format and states that chat messages are never orders.
 - **Wake word.** The NAO detects "ok nao" on board; the static drone sends everything it hears, so its transcription must contain `WAKE_WORD` (normalised: case, accents, punctuation, "okay"). The text after the wake word triggers inference; a lone "ok nao" accepts the next sentence for `WAKE_WINDOW_S` seconds.
 - **Voice direction.** The last `sound_direction` (less than 30 s old) is added to the LLM context as `[voix : 30° à gauche]`.
 - **NAO head.** Each `sound_direction` with an angle turns the head of every NAO: `HeadYaw = −angle + NAO_HEAD_YAW_OFFSET` (degrees → radians), clamped to the joint limits (±2.0857 rad, `motion_engine/nao_joints.py`). The minus sign converts the drone convention (positive = right) to NAO's (positive = left). Published on `/bodies/{nao}/actuators/motion` as `{"joint": "HeadYaw", "angle", "speed": 0.15}`.
+
+---
+
+### twitch-input
+
+**Image:** `$DOCKERHUB_USERNAME/twitch-input:latest` — **Code:** `robotics/inputs/twitch/`
+**Role:** Twitch chat as one more input ([ADR 005](decisions/005-avatar-twitch.md)). No ROS 2: it reads the chat anonymously over IRC (TLS, no Twitch token), keeps `!nao …` messages, filters them and posts `{"text": "[tchat Twitch] pseudo : message", "robot_id"}` to `body-gateway /chat` through `chat-relay`, one at a time.
+
+| Variable (compose name) | Description |
+|---|---|
+| `TWITCH_CHANNEL` | Channel to read, **required** (the container exits without it) |
+| `COMMAND_PREFIX` (`TWITCH_COMMAND_PREFIX`) | default `!nao` (`!naomi` is not a match) |
+| `USER_COOLDOWN_S` (`TWITCH_USER_COOLDOWN_S`) | Seconds between two accepted messages of one viewer, default 30 |
+| `MIN_INTERVAL_S` (`TWITCH_MIN_INTERVAL_S`) | Pause after each answer, default 5 |
+| `BLOCKLIST` (`TWITCH_BLOCKLIST`) | Comma-separated forbidden words |
+| `MODS_ONLY` (`TWITCH_MODS_ONLY`) | `1` = moderators and broadcaster only, default 0 |
+| `MAX_CHARS`, `QUEUE_MAX`, `MAX_AGE_S`, `IGNORED_USERS` | Not in the compose file: 200 characters, 5 queued messages, 90 s, `nightbot,streamelements,moobot` |
+
+---
+
+### obs-agent
+
+**Image:** `$DOCKERHUB_USERNAME/obs-agent:latest` — **Code:** `robotics/drones/obs/`
+**Role:** NAO's voice on the stream ([ADR 005](decisions/005-avatar-twitch.md)): body type `obs`, capability `speech`. It is a rosbridge client like the static drone and uses the same `/drones/{id}/*` topics, so `static_driver` (second instance, `DRONE_ID=obs_01`) does the edge-tts synthesis. It serves `https://obs.$DOMAIN/overlay?token=$OBS_TOKEN` (port 8096, Traefik), to add in OBS as a browser source with "Control audio via OBS": the voice becomes a mixer source, with captions.
+
+| Topic | Direction | Content |
+|---|---|---|
+| `/bodies/{id}/actuators/say` | ← VPS | text, shown as a caption |
+| `/drones/{id}/audio_out` | ← VPS | MP3 base64, played by the overlay |
+| `/drones/{id}/status` | → VPS | heartbeat every 30 s, **only while an overlay is open** |
+| `/drones/{id}/speaking` | → VPS | overlay playback start / end (the NAO animates meanwhile) |
+
+| Variable | Description |
+|---|---|
+| `DRONE_ID` | default `obs_01` (compose: `OBS_DRONE_ID`) |
+| `ROSBRIDGE_URL` | default `ws://rosbridge-proxy:80` |
+| `ROSBRIDGE_TOKEN` | required |
+| `OBS_TOKEN` | secret in the overlay URL, required |
+| `HTTP_PORT` | default 8096 |
 
 ---
 
@@ -292,7 +337,17 @@ Static drone detects speech (VAD) and its direction
           → gestures / LEDs → NAO
 ```
 
----
+### Path 4 — Twitch chat (ADR 005)
+
+```
+Viewer writes "!nao …" in the Twitch chat
+  → twitch-input (filters, one message at a time)
+    → POST chat-relay:8095/chat "[tchat Twitch] pseudo : message"
+      → body_gateway._infer_sync() — same as Path 1
+        → speech → every connected voice: static_driver(static_01) → room speaker,
+                   static_driver(obs_01) → /drones/obs_01/audio_out → obs-agent → OBS mixer
+        → gestures / LEDs → NAO
+```
 
 ---
 

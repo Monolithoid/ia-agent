@@ -211,7 +211,7 @@ services:
   # ----------------------------------------------------------
   # CORPS NAO — couche physique ROS2 Humble
   #
-  # Trois services forment le pont cerveau → corps :
+  # Services du pont cerveau → corps :
   #
   #   naoqi-driver       → Nœud ROS2, relaie /bodies/{id}/actuators/* et
   #                         /naoqi/* vers /nao/* (rosbridge → nao_ws_bridge).
@@ -219,9 +219,10 @@ services:
   #                         aucune adresse IP ni port du robot requis côté VPS.
   #   static-driver      → Nœud ROS2 (même conteneur nao-core), relaie
   #                         /drones/{id}/* (drone statique, ADR 004) ↔ /bodies/{id}/*
-  #                         avec Whisper STT et edge-tts.
+  #                         avec Whisper STT et edge-tts. Lancé une 2e fois
+  #                         avec OBS_DRONE_ID pour la voix du stream (ADR 005).
   #   cognitive-renderer → Nœud ROS2, /cognitive_state → LEDs + tête en continu
-  #   body-gateway       → Nœud ROS2, pont Ollama ↔ bus ROS2
+  #   body-gateway       → Nœud ROS2, pont LLM (BRAIN_PROVIDER) ↔ bus ROS2
   #                         Injecte un system prompt JSON lors de chaque appel
   #                         Gère les ticks oniriques (DREAMING 2h-6h)
   #
@@ -229,7 +230,7 @@ services:
   #
   # Multi-corps : ajouter un driver par robot/drone avec un identifiant
   # distinct, et ajouter l'ID dans BODY_REGISTRY (les ID « static… » sont
-  # des drones statiques, les autres des NAO).
+  # des drones statiques, « obs… » la voix du stream, les autres des NAO).
   # ----------------------------------------------------------
 
   # ----------------------------------------------------------
@@ -521,7 +522,8 @@ services:
 # RÉSEAUX
 #
 # ai-network (bridge, accès internet) :
-#   ollama, open-webui, n8n, chromadb, chat-relay
+#   ollama, open-webui, n8n, chromadb, whisper-asr, naoqi-bridge,
+#   chat-relay, twitch-input
 #
 # bitterbot-net (bridge, internal: true — aucun accès internet) :
 #   bitterbot-gateway, ollama
@@ -529,6 +531,7 @@ services:
 #
 # robotics-net (bridge, accès internet) :
 #   rosbridge-proxy — proxy WebSocket Caddy vers ros2-bridge (host)
+#   naoqi-bridge, obs-agent — clients de rosbridge-proxy (jeton)
 #
 # Nœuds ROS2 (ros2-bridge, nao-core, body-gateway) :
 #   network_mode: host — DDS ROS2 Humble (domain 42) sur le réseau hôte.
