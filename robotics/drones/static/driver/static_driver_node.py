@@ -21,6 +21,9 @@ Sensor flow (drone → brain):
 Command flow (brain → drone):
   /bodies/{id}/actuators/say → edge-tts → /drones/{id}/audio_out (String, MP3 base64)
 
+Also started for obs_* bodies (ADR 005): the OBS stream voice uses the same
+say → edge-tts → audio_out path and the same status / speaking topics.
+
 Environment variables:
   DRONE_ID              body identifier, default "static_01"
   WHISPER_URL           Whisper ASR service URL, empty = disabled
@@ -57,7 +60,7 @@ DRONE_STATUS_TIMEOUT = float(os.environ.get("DRONE_STATUS_TIMEOUT", "90.0"))
 class StaticDriverNode(Node):
 
     def __init__(self):
-        super().__init__("static_driver")
+        super().__init__(f"static_driver_{DRONE_ID}")
 
         ns = f"/bodies/{DRONE_ID}"
         drone = f"/drones/{DRONE_ID}"

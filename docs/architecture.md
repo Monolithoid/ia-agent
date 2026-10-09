@@ -21,8 +21,9 @@ ia-agent/
 │   ├── brain/               → Cerveau générique, indépendant du type de drone
 │   │   ├── body_gateway/    → Cerveau ROS 2 : LLM ↔ corps robotiques
 │   │   ├── ros2_bridge/     → Dockerfile rosbridge_server WebSocket
-│   │   ├── twitch_bridge/   → Tchat Twitch « !nao » → body-gateway → overlay OBS (ADR 005)
 │   │   └── webui/           → Pipe Open WebUI (nao_pipe.py)
+│   ├── inputs/
+│   │   └── twitch/          → Entrée tchat Twitch « !nao » → body-gateway (ADR 005)
 │   ├── shared/              → Classes partagées (RobotBridgeBase)
 │   └── drones/
 │       ├── nao/
@@ -33,6 +34,7 @@ ia-agent/
 │       │   ├── motion_engine/ → Package ROS 2 : synthèse biomécanique (émotion → mouvement)
 │       │   └── core/        → Dockerfile + entrypoint du container nao-core
 │       ├── static/          → Drone statique Raspberry Pi (micros, caméra, haut-parleur) — à venir, voir ADR 004
+│       ├── obs/             → Voix de NAO sur le stream : overlay OBS (ADR 005)
 │       └── quadcopter/      → Réservé
 ├── docs/
 │   ├── architecture.md      → ce fichier
@@ -65,7 +67,8 @@ ia-agent/
 | `ros2-bridge` | rosbridge_server WebSocket | 9090 | host network |
 | `rosbridge-proxy` | Proxy Caddy : Traefik → ros2-bridge | 80 | robotics-net |
 | `chat-relay` | Proxy Caddy : ai-network → body-gateway | 8095 | ai-network |
-| `twitch-bridge` | Tchat Twitch « !nao » → body-gateway, voix de NAO dans OBS | 8096 | Public (`obs.$DOMAIN`, jeton) |
+| `twitch-input` | Entrée tchat Twitch « !nao » → body-gateway | — | ai-network |
+| `obs-agent` | Voix de NAO sur le stream (overlay OBS, corps `obs_01`) | 8096 | Public (`obs.$DOMAIN`, jeton) |
 | `bitterbot-gateway` *(désactivé)* | Agent IA avec mémoire long-terme | 19001 | SSH tunnel |
 
 ## Réseaux Docker

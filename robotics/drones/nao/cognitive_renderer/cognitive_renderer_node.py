@@ -11,8 +11,9 @@ Subscribed topics:
                                        idle|uncertain|excited)
   /dream_state       std_msgs/String  (phase name from DreamEngine)
   /emotion_state     std_msgs/String  (curious|neutral|excited|uncertain)
-  /bodies/{DRONE_ID}/sensors/speaking  std_msgs/Bool
-                     true while the static drone's speaker plays (ADR 004):
+  /bodies/{id}/sensors/speaking  std_msgs/Bool, for each voice body
+                     (DRONE_ID, OBS_DRONE_ID): true while the static drone's
+                     speaker (ADR 004) or the OBS stream voice (ADR 005) plays:
                      the NAO then animates its eyes and makes light gestures
                      so that it looks like the one speaking
 
@@ -24,6 +25,7 @@ Published topics (forwarded to naoqi_driver):
 Environment variables:
   DRONE_ID          static drone whose voice the NAO mimics, default "static_01"
                     (same variable as static_driver; empty = no speaking sync)
+  OBS_DRONE_ID      stream voice body the NAO also mimics (ADR 005), default empty
   SPEAKING_SYNC     "0" disables the speaking animation, default "1"
   SPEAKING_TIMEOUT  seconds after which the animation stops if no
                     speaking=false arrives, default 120 (0 = never)
@@ -44,6 +46,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from speaking_animation import SPEAKING_PERIOD, speaking_expired, speaking_frame  # noqa: E402
 
 DRONE_ID = os.environ.get("DRONE_ID", "static_01")
+OBS_DRONE_ID = os.environ.get("OBS_DRONE_ID", "")
+VOICE_IDS = [b for b in (DRONE_ID, OBS_DRONE_ID) if b]
 SPEAKING_SYNC = os.environ.get("SPEAKING_SYNC", "1") != "0"
 SPEAKING_TIMEOUT = float(os.environ.get("SPEAKING_TIMEOUT", "120"))
 
@@ -132,7 +136,8 @@ class CognitiveRendererNode(Node):
         self._lock = threading.Lock()
         self._running = True
         self._phase = 0.0  # animation phase accumulator
-        self._speaking = False          # static drone speaker playing
+        self._speaking = False          # a voice body (room or stream) playing
+        self._speaking_ids: set[str] = set()
         self._speaking_since = 0.0
         self._speaking_event = threading.Event()
 
@@ -141,9 +146,9 @@ class CognitiveRendererNode(Node):
         self.create_subscription(String, "/dream_state", self._on_dream, 10)
         self.create_subscription(String, "/emotion_state", self._on_emotion, 10)
         self.create_subscription(String, "/energy_state", self._on_energy, 10)
-        if SPEAKING_SYNC and DRONE_ID:
-            self.create_subscription(Bool, f"/bodies/{DRONE_ID}/sensors/speaking",
-                                     self._on_speaking, 10)
+        for voice_id in VOICE_IDS if SPEAKING_SYNC else []:
+            self.create_subscription(Bool, f"/bodies/{voice_id}/sensors/speaking",
+                                     lambda msg, vid=voice_id: self._on_speaking(vid, msg), 10)
 
         # ── Publishers ─────────────────────────────────────────────────────────
         self.pub_leds      = self.create_publisher(String, "/naoqi/leds",      10)
@@ -156,7 +161,8 @@ class CognitiveRendererNode(Node):
         self._speaking_thread = threading.Thread(target=self._speaking_loop, daemon=True)
         self._speaking_thread.start()
 
-        sync = f"speaking sync on {DRONE_ID}" if SPEAKING_SYNC and DRONE_ID else "speaking sync off"
+        sync = (f"speaking sync on {', '.join(VOICE_IDS)}" if SPEAKING_SYNC and VOICE_IDS
+                else "speaking sync off")
         self.get_logger().info(f"CognitiveRenderer started ({sync})")
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -225,18 +231,21 @@ class CognitiveRendererNode(Node):
             f"Energy → {level} : head={head_v} larm={larm_v} rarm={rarm_v}"
         )
 
-    def _on_speaking(self, msg: Bool):
-        """Static drone speaker on/off: start or stop the speaking animation."""
+    def _on_speaking(self, voice_id: str, msg: Bool):
+        """A voice body on/off: the animation runs while at least one plays."""
         with self._lock:
             was_speaking = self._speaking
-            self._speaking = bool(msg.data)
-            if self._speaking:
+            if msg.data:
+                self._speaking_ids.add(voice_id)
                 self._speaking_since = time.monotonic()
+            else:
+                self._speaking_ids.discard(voice_id)
+            self._speaking = bool(self._speaking_ids)
         if self._speaking and not was_speaking:
-            self.get_logger().info(f"{DRONE_ID} parle → animation « speaking »")
+            self.get_logger().info(f"{voice_id} parle → animation « speaking »")
             self._speaking_event.set()
         elif was_speaking and not self._speaking:
-            self.get_logger().info(f"{DRONE_ID} a fini de parler")
+            self.get_logger().info(f"{voice_id} a fini de parler")
 
     # ──────────────────────────────────────────────────────────────────────────
     # Animation loop
@@ -277,9 +286,10 @@ class CognitiveRendererNode(Node):
                     break
                 if speaking_expired(since, time.monotonic(), SPEAKING_TIMEOUT):
                     self.get_logger().warning(
-                        f"Pas de speaking=false de {DRONE_ID} après {SPEAKING_TIMEOUT:.0f} s"
-                        " — fin de l'animation")
+                        f"Pas de speaking=false de {', '.join(VOICE_IDS)} après "
+                        f"{SPEAKING_TIMEOUT:.0f} s — fin de l'animation")
                     with self._lock:
+                        self._speaking_ids.clear()
                         self._speaking = False
                     break
                 leds, motions = speaking_frame(tick)

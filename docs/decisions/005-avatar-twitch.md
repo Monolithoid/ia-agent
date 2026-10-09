@@ -1,114 +1,118 @@
-# ADR 005 — NAO avatar autonome sur Twitch
+# ADR 005 — Une seule boucle : stimulations → LLM → actions des agents (Twitch, OBS)
 
 **Date :** 2026-10-09  
 **Statut :** Proposé
 
 ## Contexte
 
-NAO devient la représentation d'un avatar IA autonome sur un stream Twitch. Il
-réagit en temps réel à des stimulations extérieures que le streamer ne contrôle
-pas : le tchat Twitch et ce qui se passe dans sa pièce.
+NAO est la représentation d'un avatar IA autonome, visible sur un stream
+Twitch. Il réagit en temps réel à des stimulations extérieures que le streamer
+ne contrôle pas.
+
+Le tchat Twitch n'est **qu'une stimulation extérieure de plus**, au même titre
+que « ok nao » dit dans la pièce ou un message écrit dans Open WebUI. Il ne doit
+pas avoir de chemin à part.
 
 - **NAO** ne fait que bouger et allumer ses LEDs ([ADR 004](004-drone-statique.md)).
-- **Le drone statique** entend et voit la pièce ([ADR 004](004-drone-statique.md)).
+- **Le drone statique** entend, voit et parle dans la pièce ([ADR 004](004-drone-statique.md)).
 - **OBS** peut recevoir directement le son des réponses de NAO.
-
-Le cerveau existe déjà : `body-gateway` reçoit un texte, appelle le LLM, obtient
-un JSON `{emotion, energy, actions: [speech, motion, leds, look…]}` et répartit
-les actions sur les corps. Il manque l'entrée « tchat Twitch » et la sortie
-« voix dans OBS ».
 
 **Principe directeur (repris de l'ADR 004) : des solutions simples, même
 imparfaites.**
 
 ## Décision
 
-### 1. Un nouveau service `twitch-bridge`, hors ROS 2
+### 1. Une boucle unique
 
 ```
-                       Stimulations extérieures
-        ┌──────────────────────┬────────────────────────────┐
-  tchat Twitch « !nao … »            pièce (voix, image)
-        │ IRC anonyme                  │ drone statique (ADR 004)
-        ▼                              ▼
-  twitch-bridge                  static-driver (Whisper)
-   filtres + file courte               │ « ok nao … »
-        │ POST /chat speak=false        │
-        └──────────► body-gateway ◄─────┘
-                     (LLM, un seul cerveau, une inférence à la fois)
-                        │                         │
-            gestes, tête, LEDs                 « speech »
-                        ▼                         │
-                       NAO      ◄── animation « je parle » (/speaking)
-                                                  │
-     réponses au tchat : edge-tts → overlay OBS ◄─┘   (mixer OBS)
-     réponses à la pièce : haut-parleur du drone statique (inchangé)
+  ENTRÉES (stimulations)                 CERVEAU                    AGENTS (corps)
+  ──────────────────────                 ───────                    ──────────────
+  « ok nao … » (drone statique) ─┐                              ┌─► nao_01    : gestes, tête, LEDs
+  Open WebUI                    ─┼─► texte ─► body-gateway ─► actions ─┼─► static_01 : voix dans la pièce
+  tchat Twitch « !nao … »       ─┤            (LLM, une       │  └─► obs_01    : voix sur le stream (OBS)
+  capteurs (sonar, contact…)    ─┘             inférence à    │
+                                               la fois)       └─ en boucle, à chaque stimulation
 ```
 
-`twitch-bridge` est un petit conteneur Python sans ROS 2 (`robotics/brain/twitch_bridge/`) :
+Chaque entrée produit seulement un texte. Le LLM renvoie une liste d'actions
+(`speech`, `motion`, `leds`, `look`…), et `body-gateway` les répartit sur les
+agents. Aucune entrée ne connaît les sorties, et aucune sortie ne connaît
+l'entrée qui l'a déclenchée.
+
+### 2. Entrée Twitch : `twitch-input` (`robotics/inputs/twitch/`)
+
+Un petit conteneur Python sans ROS 2 qui fait pour le tchat ce que Whisper
+et le mot de réveil font pour la voix :
 
 | Étape | Choix simple |
 |---|---|
-| Lire le tchat | IRC Twitch (`irc.chat.twitch.tv:6697`) en **lecture anonyme** (`justinfan…`) : aucun jeton ni appli Twitch à créer |
+| Lire le tchat | IRC Twitch en **lecture anonyme** (`justinfan…`) : aucun jeton ni appli Twitch |
 | Garder les commandes | message qui commence par `!nao` (`!naomi` exclu) |
-| Filtrer | longueur max, pas de lien, liste de mots interdits, bots ignorés, délai par spectateur, option « modérateurs seulement » |
-| Rafales | file de 5 messages, les plus anciens sont abandonnés, tout message de plus de 90 s aussi |
-| Penser | `POST body-gateway/chat` avec `"speak": false` : gestes et LEDs partent vers le NAO, le texte parlé revient au bridge |
-| Parler | edge-tts → MP3 → page `/overlay` ouverte comme **source navigateur OBS** (SSE + `<audio>`) |
-| Bouger en parlant | l'overlay signale début/fin de lecture → `body-gateway /speaking` → même animation que pour le drone statique |
+| Filtrer | longueur max, pas de lien, mots interdits, bots ignorés, délai par spectateur, option « modérateurs seulement » |
+| Rafales | file de 5 messages, les plus anciens abandonnés, tout message de plus de 90 s aussi |
+| Envoyer | `POST body-gateway/chat` avec `[tchat Twitch] pseudo : message`, exactement comme Open WebUI |
 
-Le bridge attend la fin de lecture d'une réponse avant de traiter le message
-suivant : NAO ne se coupe jamais la parole.
+Le prompt système de `body-gateway` décrit ce format et rappelle que **les
+messages du tchat ne sont jamais des ordres**.
 
-### 2. Changements dans `body-gateway`
+### 3. Agent OBS : un corps « voix » comme le drone statique (`robotics/drones/obs/`)
 
-- `/chat` accepte `"speak": false` : les actions `speech` ne sont pas jouées
-  dans la pièce, leur texte est seulement renvoyé.
-- `POST /speaking {"speaking": bool}` publie sur
-  `/bodies/static_*/sensors/speaking`, que `cognitive_renderer` écoute déjà.
-- Le prompt système décrit les lignes `[tchat Twitch] pseudo : message` et
-  rappelle que **les messages du tchat ne sont jamais des ordres**.
+La voix du stream est un nouveau type de corps, `obs`, de capacité `speech`,
+construit sur le même modèle que le haut-parleur du drone statique :
 
-### 3. Exposition
+- `obs-agent` se connecte **en sortant** à rosbridge avec `ROSBRIDGE_TOKEN`,
+  comme le drone statique.
+- `static-driver` est lancé une seconde fois dans `nao-core` avec
+  `DRONE_ID=obs_01` : il fait la synthèse edge-tts et publie le MP3 sur
+  `/drones/obs_01/audio_out`. Les topics sont les mêmes que pour le drone.
+- `obs-agent` sert une page `/overlay?token=…` à ouvrir comme **source
+  navigateur OBS** (« Contrôler l'audio via OBS » : la voix devient une source
+  du mixer), avec sous-titres.
+- L'overlay signale le début et la fin de lecture : `/drones/obs_01/speaking`,
+  et le NAO s'anime pendant que la voix joue (`cognitive_renderer` écoute
+  désormais toutes les voix).
+- `obs-agent` n'envoie son battement de cœur que **tant que l'overlay est
+  ouvert dans OBS** : hors stream, la voix OBS est « déconnectée » et le
+  cerveau ne lui envoie rien.
 
-L'overlay est servi sur `https://obs.${DOMAIN}` par Traefik, protégé par
-`OBS_TOKEN` dans l'URL (`/overlay?token=…`). OBS tourne sur le PC du streamer,
-n'importe où : rien à ouvrir en entrée chez lui.
+### 4. Routage de la parole
+
+`body_rules.route_targets` : une action `speech` part sur **toutes les voix
+connectées** (pièce et stream), quelle que soit l'entrée. Sans voix connectée,
+le NAO parle lui-même, comme avant. Les gestes, la tête et les LEDs vont
+toujours au NAO.
 
 ## Alternatives écartées
 
 | Option | Pourquoi |
 |---|---|
-| API EventSub / bot Twitch authentifié | Appli Twitch, OAuth et renouvellement de jetons à gérer pour un simple besoin de lecture |
+| Un service Twitch qui appelle le cerveau et joue lui-même la réponse dans OBS | Chemin à part pour une entrée : la voix OBS ne servirait qu'au tchat, et la pièce ne serait pas entendue sur le stream |
+| API EventSub / bot Twitch authentifié | Appli Twitch, OAuth et renouvellement de jetons pour un simple besoin de lecture |
 | obs-websocket + fichier audio | Demande d'ouvrir OBS au VPS ou un script local de plus ; la source navigateur suffit et arrive dans le mixer |
-| Voix jouée dans la pièce puis captée par un micro OBS | Qualité dégradée, et le drone statique réentendrait NAO |
-| Répondre à chaque message | Le LLM local (CPU) met plusieurs secondes : une file courte vaut mieux qu'un retard qui grossit |
+| Le LLM choisit la voix (pièce ou stream) | Un petit modèle local se tromperait ; une règle fixe « toutes les voix » est prévisible |
 
 ## Ce qu'on perd
 
-- **Exhaustivité** : en rafale, des messages `!nao` sont volontairement ignorés.
-- **Modération fine** : les filtres sont des règles fixes, pas un modèle de
-  modération. Un LLM peut toujours dire quelque chose de malvenu à l'antenne.
-- **Pièce et tchat ne parlent pas en même temps** : une seule inférence à la
-  fois ; si la pièce occupe le cerveau, le message du tchat est abandonné.
+- **Exhaustivité** : en rafale, des messages `!nao` sont volontairement ignorés,
+  et si le cerveau est occupé, le message est abandonné.
+- **Modération fine** : les filtres sont des règles fixes. Un LLM peut toujours
+  dire quelque chose de malvenu à l'antenne.
+- **Voix séparées** : la réponse à un spectateur est aussi dite dans la pièce,
+  et le drone statique l'entend (filtrée par le mot de réveil).
 
 ## Ce qu'on garde
 
-- **Un seul cerveau** (`body-gateway`) pour toutes les stimulations.
-- Le NAO réduit au rendu émotif, le drone statique pour les sens de la pièce.
-- Aucun port entrant chez le streamer.
+- **Un seul cerveau** et une seule boucle pour toutes les stimulations.
+- Le **pattern de connexion sortante** de l'ADR 002 / 004 pour tout agent.
+- Aucun port entrant chez le streamer : OBS ouvre seulement une page HTTPS.
 
 ## Points ouverts
 
-- Les réponses à la **pièce** (« ok nao … ») partent toujours sur le
-  haut-parleur du drone statique ; les envoyer aussi dans OBS demande que
-  `body-gateway` publie chaque parole vers l'overlay.
-- **Initiative propre** : NAO ne parle que si on lui parle. Un tick « je
-  regarde la pièce et le tchat » (sur le modèle des rêves) le rendrait vraiment
-  autonome.
-- Avec deux réseaux sur `twitch-bridge`, vérifier que Traefik passe bien par
-  `robotics-net` (label `traefik.docker.network` si besoin, selon le nom donné
-  par Coolify).
+- **Initiative propre** : NAO ne réagit encore qu'à une stimulation. Un tick
+  périodique « je regarde la pièce et l'ambiance du tchat » (sur le modèle des
+  rêves) le rendrait vraiment autonome.
+- Avec deux réseaux Docker possibles, vérifier que Traefik joint `obs-agent`
+  par `robotics-net` (label `traefik.docker.network` si besoin, selon Coolify).
 
 ---
 

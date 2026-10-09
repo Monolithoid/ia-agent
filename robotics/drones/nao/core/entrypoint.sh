@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Démarre les nœuds ROS2 en parallèle : naoqi-driver, cognitive-renderer,
-# motion-engine, et static-driver (drone statique) sauf si DRONE_ID est vide.
+# motion-engine, static-driver (drone statique) sauf si DRONE_ID est vide, et
+# un second static-driver pour la voix OBS si OBS_DRONE_ID est défini (ADR 005).
 # Si l'un s'arrête, le conteneur s'arrête → Docker le redémarre entier.
 set -euo pipefail
 
@@ -23,6 +24,12 @@ if [ -n "${DRONE_ID:-}" ]; then
     echo "[nao-core] static-driver(${PID_STATIC}) pour ${DRONE_ID}"
 else
     echo "[nao-core] DRONE_ID vide — static-driver non démarré"
+fi
+
+# Voix du stream (ADR 005) : même driver, autre corps (synthèse edge-tts → OBS).
+if [ -n "${OBS_DRONE_ID:-}" ]; then
+    DRONE_ID="$OBS_DRONE_ID" python3 -u /ros2_ws/static_driver_node.py  &  PID_OBS=$!
+    echo "[nao-core] static-driver(${PID_OBS}) pour ${OBS_DRONE_ID} (voix OBS)"
 fi
 
 # Quitter dès qu'un nœud s'arrête (Docker redémarre le conteneur entier)

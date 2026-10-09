@@ -2,9 +2,10 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<title>NAO — overlay OBS</title>
+<title>NAO — voix du stream</title>
 <!--
-  Source navigateur OBS : http(s)://obs.<domaine>/overlay?token=<OBS_TOKEN>
+  Voix de NAO sur le stream (obs_agent.py, ADR 005).
+  Source navigateur OBS : https://obs.<domaine>/overlay?token=<OBS_TOKEN>
   Cocher « Contrôler l'audio via OBS » : la voix de NAO arrive alors dans le
   mixer OBS comme une source audio à part (volume, filtres, retour casque).
   Fond transparent : seuls les sous-titres s'affichent pendant que NAO parle.
@@ -18,11 +19,10 @@
              font-size: 30px; line-height: 1.3;
              opacity: 0; transition: opacity 0.3s; }
   #caption.on { opacity: 1; }
-  #question { font-size: 22px; color: #b9c3ff; margin-bottom: 6px; }
 </style>
 </head>
 <body>
-<div id="caption"><div id="question"></div><div id="answer"></div></div>
+<div id="caption"></div>
 <script>
   const token = new URLSearchParams(location.search).get("token") || "";
   const q = encodeURIComponent(token);
@@ -39,9 +39,8 @@
   }
 
   function show(ev) {
-    document.getElementById("question").textContent = `${ev.user} : ${ev.question}`;
-    document.getElementById("answer").textContent = ev.answer;
-    caption.classList.add("on");
+    caption.textContent = ev.text;
+    if (ev.text) caption.classList.add("on");
   }
 
   function next() {
@@ -53,7 +52,6 @@
       speaking(false);
       setTimeout(() => { caption.classList.remove("on"); playing = false; next(); }, 1500);
     };
-    if (!ev.audio) { setTimeout(done, 6000); return; }
     const audio = new Audio(`audio/${ev.id}.mp3?token=${q}`);
     audio.onplay = () => speaking(true);
     audio.onended = done;

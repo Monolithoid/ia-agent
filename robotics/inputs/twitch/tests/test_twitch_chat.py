@@ -1,6 +1,6 @@
 """Tests sans réseau des règles du tchat Twitch.
 
-    cd robotics/brain/twitch_bridge && python3 -m unittest discover -s tests -v
+    cd robotics/inputs/twitch && python3 -m unittest discover -s tests -v
 """
 
 import os
