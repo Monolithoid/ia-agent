@@ -22,6 +22,8 @@ ia-agent/
 │   │   ├── body_gateway/    → Cerveau ROS 2 : LLM ↔ corps robotiques
 │   │   ├── ros2_bridge/     → Dockerfile rosbridge_server WebSocket
 │   │   └── webui/           → Pipe Open WebUI (nao_pipe.py)
+│   ├── inputs/
+│   │   └── twitch/          → Entrée tchat Twitch « !nao » → body-gateway (ADR 005)
 │   ├── shared/              → Classes partagées (RobotBridgeBase)
 │   └── drones/
 │       ├── nao/
@@ -32,6 +34,7 @@ ia-agent/
 │       │   ├── motion_engine/ → Package ROS 2 : synthèse biomécanique (émotion → mouvement)
 │       │   └── core/        → Dockerfile + entrypoint du container nao-core
 │       ├── static/          → Drone statique Raspberry Pi (micros, caméra, haut-parleur) — à venir, voir ADR 004
+│       ├── obs/             → Voix de NAO sur le stream : overlay OBS (ADR 005)
 │       └── quadcopter/      → Réservé
 ├── docs/
 │   ├── architecture.md      → ce fichier
@@ -45,7 +48,7 @@ ia-agent/
 - [Récapitulatif des containers](containers-overview.md) — tableau détaillé des échanges entre containers
 - [Stack IA](ia-stack.md) — configuration de chaque service IA
 - [Bridge IA / ROS 2 / NAO](bridge-ia-ros2-nao.md) — couche robotique
-- [ADR 001](decisions/001-ros2-over-ros1.md) · [ADR 002](decisions/002-nao-websocket-bridge.md) · [ADR 003](decisions/003-ollama-direct-sans-bitterbot.md) · [ADR 004](decisions/004-drone-statique.md)
+- [ADR 001](decisions/001-ros2-over-ros1.md) · [ADR 002](decisions/002-nao-websocket-bridge.md) · [ADR 003](decisions/003-ollama-direct-sans-bitterbot.md) · [ADR 004](decisions/004-drone-statique.md) · [ADR 005](decisions/005-avatar-twitch.md)
 
 ---
 
@@ -64,6 +67,8 @@ ia-agent/
 | `ros2-bridge` | rosbridge_server WebSocket | 9090 | host network |
 | `rosbridge-proxy` | Proxy Caddy : Traefik → ros2-bridge | 80 | robotics-net |
 | `chat-relay` | Proxy Caddy : ai-network → body-gateway | 8095 | ai-network |
+| `twitch-input` | Entrée tchat Twitch « !nao » → body-gateway | — | ai-network |
+| `obs-agent` | Voix de NAO sur le stream (overlay OBS, corps `obs_01`) | 8096 | Public (`obs.$DOMAIN`, jeton) |
 | `bitterbot-gateway` *(désactivé)* | Agent IA avec mémoire long-terme | 19001 | SSH tunnel |
 
 ## Réseaux Docker

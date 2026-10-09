@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>NAO — voix du stream</title>
+<!--
+  Voix de NAO sur le stream (obs_agent.py, ADR 005).
+  Source navigateur OBS : https://obs.<domaine>/overlay?token=<OBS_TOKEN>
+  Cocher « Contrôler l'audio via OBS » : la voix de NAO arrive alors dans le
+  mixer OBS comme une source audio à part (volume, filtres, retour casque).
+  Fond transparent : seuls les sous-titres s'affichent pendant que NAO parle.
+-->
+<style>
+  html, body { margin: 0; background: transparent; overflow: hidden;
+               font-family: system-ui, sans-serif; }
+  #caption { position: absolute; left: 4%; right: 4%; bottom: 6%;
+             padding: 14px 20px; border-radius: 12px;
+             background: rgba(10, 12, 24, 0.78); color: #fff;
+             font-size: 30px; line-height: 1.3;
+             opacity: 0; transition: opacity 0.3s; }
+  #caption.on { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="caption"></div>
+<script>
+  const token = new URLSearchParams(location.search).get("token") || "";
+  const q = encodeURIComponent(token);
+  const caption = document.getElementById("caption");
+  const pending = [];
+  let playing = false;
+
+  function speaking(state) {
+    fetch(`speaking?token=${q}`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({speaking: state}),
+    }).catch(() => {});
+  }
+
+  function show(ev) {
+    caption.textContent = ev.text;
+    if (ev.text) caption.classList.add("on");
+  }
+
+  function next() {
+    if (playing || pending.length === 0) return;
+    const ev = pending.shift();
+    playing = true;
+    show(ev);
+    const done = () => {
+      speaking(false);
+      setTimeout(() => { caption.classList.remove("on"); playing = false; next(); }, 1500);
+    };
+    const audio = new Audio(`audio/${ev.id}.mp3?token=${q}`);
+    audio.onplay = () => speaking(true);
+    audio.onended = done;
+    audio.onerror = done;
+    audio.play().catch(done);
+  }
+
+  const events = new EventSource(`events?token=${q}`);
+  events.onmessage = (e) => { pending.push(JSON.parse(e.data)); next(); };
+</script>
+</body>
+</html>

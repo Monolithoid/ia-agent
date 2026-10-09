@@ -44,6 +44,18 @@ class TestRouting(unittest.TestCase):
             action = {"body": "static_01", "type": kind}
             self.assertEqual(body_rules.route_action(action, REGISTRY, connected), "nao_01")
 
+    def test_speech_goes_to_every_connected_voice(self):
+        registry = ["nao_01", "static_01", "obs_01"]
+        action = {"body": "nao_01", "type": "speech", "text": "bonjour"}
+        both = {"nao_01": True, "static_01": True, "obs_01": True}
+        self.assertEqual(body_rules.route_targets(action, registry, both), ["static_01", "obs_01"])
+        only_obs = {"nao_01": True, "static_01": False, "obs_01": True}
+        self.assertEqual(body_rules.route_targets(action, registry, only_obs), ["obs_01"])
+        self.assertEqual(body_rules.speech_bodies(registry, {}, "nao_01"), ["nao_01"])
+        self.assertEqual(body_rules.route_targets({"body": "obs_01", "type": "leds"},
+                                                  registry, both), ["nao_01"])
+        self.assertEqual(body_rules.body_type("obs_01"), "obs")
+
     def test_unknown_body(self):
         self.assertIsNone(body_rules.route_action({"body": "x", "type": "speech"}, REGISTRY, {}))
 

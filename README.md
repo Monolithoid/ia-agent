@@ -22,6 +22,7 @@ Stack IA auto-hébergée sur VPS Ubuntu, déployée via Docker Compose et géré
 | [ADR 002](docs/decisions/002-nao-websocket-bridge.md) | Bridge WebSocket embarqué sur NAO (sans VPN ni Raspberry Pi) |
 | [ADR 003](docs/decisions/003-ollama-direct-sans-bitterbot.md) | Ollama direct sans Bitterbot pour body-gateway |
 | [ADR 004](docs/decisions/004-drone-statique.md) | Drone statique Raspberry Pi pour les sens, NAO réduit au rendu émotif |
+| [ADR 005](docs/decisions/005-avatar-twitch.md) | Une seule boucle stimulations → LLM → actions : Twitch comme entrée, OBS comme voix |
 
 ---
 
@@ -96,6 +97,8 @@ ia-agent/
 │   │   ├── body_gateway/    → Cerveau ROS 2 : LLM ↔ corps robotiques
 │   │   ├── ros2_bridge/     → Dockerfile rosbridge_server WebSocket
 │   │   └── webui/           → Pipe Open WebUI (nao_pipe.py)
+│   ├── inputs/
+│   │   └── twitch/          → Entrée tchat Twitch « !nao » → body-gateway (ADR 005)
 │   ├── shared/              → Classes partagées (RobotBridgeBase)
 │   └── drones/
 │       ├── nao/
@@ -106,6 +109,7 @@ ia-agent/
 │       │   ├── motion_engine/ → Package ROS 2 : synthèse biomécanique (émotion → mouvement)
 │       │   └── core/        → Dockerfile + entrypoint du container nao-core
 │       ├── static/          → Drone statique Raspberry Pi (micros, caméra, haut-parleur) — à venir
+│       ├── obs/             → Voix de NAO sur le stream : overlay OBS (ADR 005)
 │       └── quadcopter/      → Réservé
 ├── docs/
 │   ├── coolify-vps.md

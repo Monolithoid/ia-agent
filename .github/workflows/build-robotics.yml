@@ -1,11 +1,13 @@
 name: Build & Push — Images robotiques
 
-# Publie quatre images sur Docker Hub :
+# Publie six images sur Docker Hub :
 #   monolithoid/naoqi-bridge  → Python 3.12 Alpine, HTTP bridge Flask vers NAO
 #   monolithoid/nao-core      → ROS2 Humble, naoqi-driver + cognitive-renderer + motion-engine
 #                               + static-driver (drone statique, ADR 004)
 #   monolithoid/body-gateway  → ROS2 Humble, pont LLM ↔ bus ROS2
 #   monolithoid/ros2-bridge   → ROS2 Humble + rosbridge_server WebSocket :9090
+#   monolithoid/twitch-input  → Python 3.12, entrée tchat Twitch « !nao » → body-gateway
+#   monolithoid/obs-agent     → Python 3.12, voix de NAO dans OBS (corps « voix » via rosbridge)
 #
 # Secrets requis :
 #   DOCKERHUB_USERNAME : monolithoid
@@ -19,6 +21,8 @@ on:
       - 'robotics/brain/**'
       - 'robotics/drones/nao/**'
       - 'robotics/drones/static/driver/**'
+      - 'robotics/drones/obs/**'
+      - 'robotics/inputs/**'
       - 'robotics/shared/**'
       - '.github/workflows/build-robotics.yml'
 
@@ -53,6 +57,16 @@ jobs:
             image: monolithoid/ros2-bridge
             context: ./robotics/brain/ros2_bridge
             dockerfile: ./robotics/brain/ros2_bridge/Dockerfile
+
+          - name: twitch-input
+            image: monolithoid/twitch-input
+            context: ./robotics/inputs/twitch
+            dockerfile: ./robotics/inputs/twitch/Dockerfile
+
+          - name: obs-agent
+            image: monolithoid/obs-agent
+            context: ./robotics/drones/obs
+            dockerfile: ./robotics/drones/obs/Dockerfile
 
     steps:
       - name: Checkout

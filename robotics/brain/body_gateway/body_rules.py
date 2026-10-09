@@ -1,8 +1,10 @@
 """
 body_rules.py — Règles de body_gateway sans dépendance ROS 2 (testables seules).
 
-  - type d'un corps d'après son identifiant (nao_01 → nao, static_01 → static)
-  - table de routage : quel corps exécute quel type d'action
+  - type d'un corps d'après son identifiant (nao_01 → nao, static_01 → static,
+    obs_01 → obs)
+  - table de routage : quel(s) corps exécute(nt) quel type d'action ; la parole
+    part sur toutes les voix connectées (pièce et stream, ADR 005)
   - mot de réveil pour les corps qui envoient toute la parole entendue (static)
   - direction de la voix : texte pour le LLM et angle de tête du NAO
 
@@ -23,27 +25,34 @@ import unicodedata
 # talks when no static drone is connected.
 CAPABILITIES: dict[str, set[str]] = {
     "static": {"speech"},
+    "obs":    {"speech"},
     "nao":    {"speech", "motion", "leds", "move", "look"},
 }
 
 # One line per body type for the LLM system prompt.
 CAPABILITY_LABELS: dict[str, str] = {
     "static": "parler, entendre, voir (haut-parleur, micros, caméra de la pièce)",
+    "obs":    "parler sur le stream (voix envoyée dans le mixer OBS)",
     "nao":    "gestes, tête, LEDs (motion, look, leds, move)",
 }
 
-# Preferred body type for each action type, when that body is connected.
-PREFERRED_TYPE: dict[str, str] = {
-    "speech": "static",
-}
+# Bodies that only give NAO a voice: "speech" goes to every connected one.
+VOICE_TYPES = ("static", "obs")
 
 HEAD_YAW_LIMIT_RAD = 2.0857   # cf. motion_engine/nao_joints.py JOINT_LIMITS["HeadYaw"]
 
 
 def body_type(body_id: str) -> str:
-    """'static_01' → 'static', anything else → 'nao' (every body was a NAO
-    before ADR 004)."""
-    return "static" if body_id.startswith("static") else "nao"
+    """'static_01' → 'static', 'obs_01' → 'obs', anything else → 'nao' (every
+    body was a NAO before ADR 004)."""
+    for kind in VOICE_TYPES:
+        if body_id.startswith(kind):
+            return kind
+    return "nao"
+
+
+def is_voice(body_id: str) -> bool:
+    return body_type(body_id) in VOICE_TYPES
 
 
 def bodies_of_type(registry: list[str], kind: str) -> list[str]:
@@ -53,55 +62,68 @@ def bodies_of_type(registry: list[str], kind: str) -> list[str]:
 def describe_bodies(registry: list[str], speaker: str) -> str:
     """Lines '- id : capacités' injected in the system prompt.
 
-    A NAO that is the speaking body (no static drone connected) also gets "parler".
+    A NAO that is the speaking body (no voice body connected) also gets "parler".
     """
     lines = []
     for b in registry:
         label = CAPABILITY_LABELS[body_type(b)]
-        if b == speaker and body_type(b) != "static":
+        if b == speaker and not is_voice(b):
             label = f"parler, {label}"
         lines.append(f"- {b} : {label}")
     return "\n".join(lines)
 
 
+def speech_bodies(registry: list[str], connected: dict[str, bool], default: str) -> list[str]:
+    """Bodies that should speak: every connected voice body, else [`default`]."""
+    voices = [b for b in registry if is_voice(b) and connected.get(b, False)]
+    return voices or [default]
+
+
 def speech_body(registry: list[str], connected: dict[str, bool], default: str) -> str:
-    """Body that should speak: first connected static drone, else `default`."""
-    for b in bodies_of_type(registry, "static"):
-        if connected.get(b, False):
-            return b
-    return default
+    """Body named as the speaker in the system prompt: first of speech_bodies()."""
+    return speech_bodies(registry, connected, default)[0]
 
 
 def route_action(action: dict, registry: list[str], connected: dict[str, bool]) -> str | None:
     """Return the body that must execute this action, or None if unknown body.
 
-    1. Preferred body type for this action (speech → static) when connected.
+    1. "speech" → first connected voice body (route_targets() returns them all).
     2. The body named by the LLM if it has the capability.
-    3. Otherwise the first registered body able to do it (static → NAO for gestures).
+    3. Otherwise the first registered body able to do it (voice → NAO for gestures).
+    """
+    targets = route_targets(action, registry, connected)
+    return targets[0] if targets else None
+
+
+def route_targets(action: dict, registry: list[str], connected: dict[str, bool]) -> list[str]:
+    """Every body that must execute this action ([] if unknown body).
+
+    Speech goes to all connected voice bodies at once (room speaker and OBS):
+    whatever the input was (voice, WebUI, Twitch…), the answer is heard in the
+    room and on the stream.  Other actions go to a single body.
     """
     kind = action.get("type", "")
     requested = action.get("body", registry[0] if registry else "")
     if requested not in registry:
-        return None
+        return []
 
-    preferred = PREFERRED_TYPE.get(kind)
-    if preferred:
-        for b in bodies_of_type(registry, preferred):
-            if connected.get(b, False):
-                return b
+    if kind == "speech":
+        voices = [b for b in registry if is_voice(b) and connected.get(b, False)]
+        if voices:
+            return voices
 
     if kind in CAPABILITIES[body_type(requested)]:
-        # A static drone that is offline cannot speak: fall back to a NAO.
-        if body_type(requested) == "static" and not connected.get(requested, False):
+        # A voice body that is offline cannot speak: fall back to a NAO.
+        if is_voice(requested) and not connected.get(requested, False):
             for b in registry:
-                if body_type(b) != "static" and kind in CAPABILITIES[body_type(b)]:
-                    return b
-        return requested
+                if not is_voice(b) and kind in CAPABILITIES[body_type(b)]:
+                    return [b]
+        return [requested]
 
     for b in registry:
         if kind in CAPABILITIES[body_type(b)]:
-            return b
-    return requested
+            return [b]
+    return [requested]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

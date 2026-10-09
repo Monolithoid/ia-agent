@@ -49,6 +49,14 @@ version: "3.8"
 #   LISTEN_DURATION          : durée d'écoute après wake word en secondes (défaut: 4.0)
 #   ASR_MODEL                : modèle Whisper — tiny/base/small (défaut: small)
 #
+# Twitch et voix du stream (ADR 005) :
+#   TWITCH_CHANNEL           : chaîne dont on lit le tchat (ex: monolithoid)
+#   TWITCH_USER_COOLDOWN_S   : délai entre deux messages acceptés d'un spectateur (défaut: 30)
+#   TWITCH_BLOCKLIST         : mots interdits séparés par des virgules (défaut: vide)
+#   TWITCH_MODS_ONLY         : 1 = seuls modérateurs et streamer peuvent appeler !nao (défaut: 0)
+#   OBS_DRONE_ID             : obs_01 (identifiant ROS2 de la voix du stream)
+#   OBS_TOKEN                : openssl rand -hex 32 (secret de l'URL de l'overlay OBS)
+#
 # Cerveau de body-gateway (voir docs/ia-stack.md, « Fournisseur du cerveau ») :
 #   BRAIN_PROVIDER           : ollama (défaut) | openai | anthropic
 #   BRAIN_URL                : vide = défaut du fournisseur (Ollama : http://localhost:11434)
@@ -299,6 +307,7 @@ services:
       - DRONE_ID=${STATIC_DRONE_ID:-static_01}
       - DRONE_STATUS_TIMEOUT=${DRONE_STATUS_TIMEOUT:-90}
       - SPEAKING_SYNC=${NAO_SPEAKING_SYNC:-1}
+      - OBS_DRONE_ID=${OBS_DRONE_ID:-obs_01}
     depends_on:
       whisper-asr:
         condition: service_started
@@ -319,7 +328,7 @@ services:
       - BRAIN_MODEL=${BRAIN_MODEL:-}
       - BRAIN_API_KEY=${BRAIN_API_KEY:-${OLLAMA_API_KEYS}}
       - BRAIN_EFFORT=${BRAIN_EFFORT:-}
-      - BODY_REGISTRY=${NAO_ROBOT_ID:-nao_01},${STATIC_DRONE_ID:-static_01}
+      - BODY_REGISTRY=${NAO_ROBOT_ID:-nao_01},${STATIC_DRONE_ID:-static_01},${OBS_DRONE_ID:-obs_01}
       - DREAMING_HOUR_START=${DREAMING_HOUR_START:-2}
       - DREAMING_HOUR_END=${DREAMING_HOUR_END:-6}
       - DREAMING_BATTERY_THRESHOLD=${DREAMING_BATTERY_THRESHOLD:-80.0}
@@ -448,6 +457,65 @@ services:
       - ai-network
     depends_on:
       - body-gateway
+
+  # ----------------------------------------------------------
+  # ENTRÉE TWITCH — une stimulation extérieure de plus (ADR 005)
+  #
+  # Comme « ok nao » ou un message Open WebUI : les messages « !nao … »
+  # du tchat (lecture anonyme, aucun jeton Twitch) deviennent un texte
+  # envoyé à body-gateway /chat. Le cerveau renvoie la liste d'actions
+  # et la répartit lui-même sur les corps (NAO, voix de la pièce, voix
+  # du stream). Sans TWITCH_CHANNEL, le conteneur refuse de démarrer.
+  # ----------------------------------------------------------
+  twitch-input:
+    image: ${DOCKERHUB_USERNAME}/twitch-input:latest
+    container_name: twitch-input
+    restart: unless-stopped
+    environment:
+      - TWITCH_CHANNEL=${TWITCH_CHANNEL:-}
+      - BODY_GATEWAY_URL=http://chat-relay:8095
+      - ROBOT_ID=${NAO_ROBOT_ID:-nao_01}
+      - COMMAND_PREFIX=${TWITCH_COMMAND_PREFIX:-!nao}
+      - USER_COOLDOWN_S=${TWITCH_USER_COOLDOWN_S:-30}
+      - MIN_INTERVAL_S=${TWITCH_MIN_INTERVAL_S:-5}
+      - BLOCKLIST=${TWITCH_BLOCKLIST:-}
+      - MODS_ONLY=${TWITCH_MODS_ONLY:-0}
+    networks:
+      - ai-network
+    depends_on:
+      - chat-relay
+
+  # ----------------------------------------------------------
+  # AGENT OBS — voix de NAO sur le stream (ADR 005)
+  #
+  # Corps « voix » comme le haut-parleur du drone statique : il se
+  # connecte à rosbridge (jeton), et static-driver (lancé une 2e fois
+  # dans nao-core avec OBS_DRONE_ID) fait la synthèse edge-tts.
+  # La voix arrive dans le mixer OBS par une source navigateur :
+  #   https://obs.${DOMAIN}/overlay?token=$OBS_TOKEN
+  #   (cocher « Contrôler l'audio via OBS »)
+  # Il n'est « connecté » (et ne reçoit la parole) que tant que
+  # l'overlay est ouvert dans OBS.
+  # ----------------------------------------------------------
+  obs-agent:
+    image: ${DOCKERHUB_USERNAME}/obs-agent:latest
+    container_name: obs-agent
+    restart: unless-stopped
+    environment:
+      - DRONE_ID=${OBS_DRONE_ID:-obs_01}
+      - ROSBRIDGE_URL=ws://rosbridge-proxy:80
+      - ROSBRIDGE_TOKEN=${ROSBRIDGE_TOKEN:-}
+      - OBS_TOKEN=${OBS_TOKEN:-}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.obs-overlay.rule=Host(`obs.${DOMAIN}`)"
+      - "traefik.http.routers.obs-overlay.entrypoints=https"
+      - "traefik.http.routers.obs-overlay.tls.certresolver=letsencrypt"
+      - "traefik.http.services.obs-overlay.loadbalancer.server.port=8096"
+    networks:
+      - robotics-net
+    depends_on:
+      - rosbridge-proxy
 
 # ============================================================
 # RÉSEAUX
