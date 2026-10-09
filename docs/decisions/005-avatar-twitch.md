@@ -82,6 +82,50 @@ connectées** (pièce et stream), quelle que soit l'entrée. Sans voix connecté
 le NAO parle lui-même, comme avant. Les gestes, la tête et les LEDs vont
 toujours au NAO.
 
+### 5. Architecture cible (prévue, pas encore implémentée)
+
+Ces principes cadrent les prochaines évolutions. Le code de cette ADR les
+respecte déjà en partie (entrées texte vers `/chat`, voix comme agents).
+
+**Entrées texte.** Toute entrée de type texte (Open WebUI, tchat Twitch, SMS,
+Discord…) est envoyée telle quelle au LLM, avec sa source et son auteur :
+`[twitch] pseudo : message`. Pas de traitement propre à un canal en dehors de
+son adaptateur (lecture, filtres anti-abus).
+
+**Fil d'événements unique dans `body-gateway`.** Chaque stimulation devient un
+événement `{source, auteur, texte, répondre_à, priorité, heure}` déposé dans une
+seule file, consommée par une seule boucle :
+
+- chaque entrée garde son transport naturel : ROS pour la voix et les
+  capteurs, HTTP `/chat` pour les canaux texte (Open WebUI attend le résultat
+  de son événement et reste en question-réponse) ;
+- priorités simples (la pièce passe avant le tchat) ;
+- les événements arrivés pendant une réflexion sont regroupés dans le prompt
+  suivant au lieu d'être perdus ;
+- une mémoire courte des derniers échanges, toutes sources confondues, est
+  ajoutée au prompt ;
+- un tick périodique sans stimulation donne à NAO l'initiative (« je regarde
+  la pièce et l'ambiance du tchat »).
+
+ROS 2 reste l'abstraction des **corps** (`/bodies/{id}/sensors|actuators/*`) ;
+`body-gateway` reste l'abstraction vis-à-vis du **LLM**. Les entrées texte
+n'ont pas besoin de passer par ROS.
+
+**Canaux texte = entrée + agent.** Un canal qui sait répondre (Open WebUI,
+Twitch, Discord, SMS) est aussi un corps de capacité `message` :
+
+| Action LLM | Destination |
+|---|---|
+| `{"type": "reply", "text": "…"}` | le canal d'origine de l'événement, choisi par `body-gateway` (règle fixe, comme `speech` → toutes les voix) |
+| `{"body": "discord_01", "type": "message", "text": "…"}` | un canal nommé, à l'initiative du LLM |
+| `speech`, `motion`, `leds`… | inchangé : voix et NAO, en plus de la réponse écrite |
+
+Chaque adaptateur renvoie la réponse à sa façon : réponse HTTP (Open WebUI),
+message (Twitch, Discord), envoi (SMS). Contraintes connues : écrire dans le
+tchat Twitch demande un compte bot avec jeton OAuth (la lecture reste
+anonyme), un rythme limité et 500 caractères au plus ; les SMS passent par un
+fournisseur payant.
+
 ## Alternatives écartées
 
 | Option | Pourquoi |
@@ -89,7 +133,8 @@ toujours au NAO.
 | Un service Twitch qui appelle le cerveau et joue lui-même la réponse dans OBS | Chemin à part pour une entrée : la voix OBS ne servirait qu'au tchat, et la pièce ne serait pas entendue sur le stream |
 | API EventSub / bot Twitch authentifié | Appli Twitch, OAuth et renouvellement de jetons pour un simple besoin de lecture |
 | obs-websocket + fichier audio | Demande d'ouvrir OBS au VPS ou un script local de plus ; la source navigateur suffit et arrive dans le mixer |
-| Le LLM choisit la voix (pièce ou stream) | Un petit modèle local se tromperait ; une règle fixe « toutes les voix » est prévisible |
+| Le LLM choisit la voix (pièce ou stream) ou le canal de réponse | Un petit modèle local se tromperait ; des règles fixes (« toutes les voix », « répondre au canal d'origine ») sont prévisibles |
+| Toutes les entrées publiées sur un topic ROS `/inputs` | Open WebUI attend une réponse : il faudrait un identifiant de requête et un retour, pour aucun gain ; l'unification se fait dans `body-gateway` |
 
 ## Ce qu'on perd
 
@@ -108,9 +153,8 @@ toujours au NAO.
 
 ## Points ouverts
 
-- **Initiative propre** : NAO ne réagit encore qu'à une stimulation. Un tick
-  périodique « je regarde la pièce et l'ambiance du tchat » (sur le modèle des
-  rêves) le rendrait vraiment autonome.
+- Implémenter l'architecture cible (section 5) : fil d'événements, mémoire
+  courte, tick d'initiative, puis canaux texte en sortie.
 - Avec deux réseaux Docker possibles, vérifier que Traefik joint `obs-agent`
   par `robotics-net` (label `traefik.docker.network` si besoin, selon Coolify).
 
