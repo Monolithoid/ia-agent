@@ -313,11 +313,16 @@ class Camera:
         except ImportError:
             log.warning("OpenCV absent : pas de caméra")
             return False
-        index = self.cfg.camera_index
-        cap = cv2.VideoCapture(int(index) if index.isdigit() else index)
+        wanted = self.cfg.camera_index
+        index = find_camera(wanted)
+        if index is None:
+            log.warning("Caméra %r introuvable (v4l2-ctl --list-devices)", wanted)
+            return False
+        cap = cv2.VideoCapture(index)
         if not cap.isOpened():
             log.warning("Caméra %s introuvable", index)
             return False
+        log.info("Caméra : %s", camera_name(index) or index)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cfg.camera_width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cfg.camera_height)
         self._cap = cap
@@ -367,6 +372,51 @@ class Camera:
         return (buf.tobytes(), frame.shape[1], frame.shape[0]) if ok else None
 
 
+def _video_index(name):
+    """'video2' → 2, sinon None."""
+    return int(name[5:]) if name.startswith("video") and name[5:].isdigit() else None
+
+
+def camera_name(index, sysfs="/sys/class/video4linux"):
+    """Nom de la caméra /dev/video{index} donné par le noyau, ou None."""
+    try:
+        with open(os.path.join(sysfs, "video{}".format(index), "name"), encoding="utf-8") as f:
+            return f.read().strip()
+    except (OSError, TypeError):
+        return None
+
+
+def find_camera(wanted, sysfs="/sys/class/video4linux"):
+    """Caméra à ouvrir d'après CAMERA_INDEX.
+
+    - « 2 » → index 2 ;
+    - un chemin (/dev/video2, /dev/v4l/by-id/…) → index du /dev/videoN visé ;
+    - sinon un nom (partiel, sans casse), cherché dans les noms des caméras du
+      noyau (ceux de v4l2-ctl --list-devices) : premier nœud qui correspond.
+      Une webcam crée souvent deux nœuds (image + métadonnées) : le premier est
+      celui de l'image.
+    Renvoie un int, un chemin à passer tel quel à OpenCV, ou None.
+    """
+    wanted = (wanted or "0").strip()
+    if wanted.isdigit():
+        return int(wanted)
+    if wanted.startswith("/"):
+        index = _video_index(os.path.basename(os.path.realpath(wanted)))
+        if index is not None:
+            return index
+        return wanted if os.path.exists(wanted) else None
+    try:
+        nodes = sorted((n for n in os.listdir(sysfs) if _video_index(n) is not None),
+                       key=_video_index)
+    except OSError:
+        return None
+    for node in nodes:
+        name = camera_name(_video_index(node), sysfs)
+        if name and wanted.lower() in name.lower():
+            return _video_index(node)
+    return None
+
+
 # ======================================================================
 # Outils audio
 # ======================================================================
@@ -395,6 +445,23 @@ def find_input_device(sd, wanted):
     return None     # périphérique par défaut
 
 
+def choose_sample_rate(sd, device, channels, wanted, info):
+    """SAMPLE_RATE si l'entrée l'accepte, sinon sa fréquence par défaut.
+
+    Les micros USB ouverts en direct (hw:…) refusent souvent 16 kHz ; le WAV
+    envoyé indique sa fréquence, Whisper s'adapte.
+    """
+    try:
+        sd.check_input_settings(device=device, channels=channels, samplerate=wanted,
+                                dtype="int16")
+        return wanted
+    except Exception as exc:
+        fallback = int(info["default_samplerate"])
+        log.warning("%d Hz refusé par %r (%s) : %d Hz utilisé", wanted, info["name"],
+                    exc, fallback)
+        return fallback
+
+
 # ======================================================================
 # Drone statique
 # ======================================================================
@@ -410,6 +477,7 @@ class StaticDrone:
         self.camera = Camera(cfg)
         self.channels = 1
         self.source = direction.SOURCE_NONE
+        self.sample_rate = cfg.sample_rate
         self._audio_q = queue.Queue(maxsize=200)
         self._play_lock = threading.Lock()
         self._rms_peak = 0.0
@@ -463,10 +531,10 @@ class StaticDrone:
         if self.source == direction.SOURCE_LOUDEST_MIC and self.channels < len(self.cfg.mics):
             raise RuntimeError("MICS déclare {} micros mais {!r} n'a que {} canaux".format(
                 len(self.cfg.mics), info["name"], self.channels))
-        log.info("Entrée audio : %s (%d canaux, %d Hz)", info["name"],
-                 self.channels, self.cfg.sample_rate)
+        rate = self.sample_rate = choose_sample_rate(sd, device, self.channels,
+                                                     self.cfg.sample_rate, info)
+        log.info("Entrée audio : %s (%d canaux, %d Hz)", info["name"], self.channels, rate)
 
-        rate = self.cfg.sample_rate
         block = int(rate * self.cfg.block_ms / 1000)
         pre_roll = collections.deque(maxlen=max(1, int(self.cfg.pre_roll_s * 1000 / self.cfg.block_ms)))
         recording = None            # liste de blocs mono pendant un enregistrement
@@ -566,7 +634,7 @@ class StaticDrone:
 
     def publish_audio(self, pcm, angle_source):
         angle, source = angle_source
-        wav = pcm_to_wav(pcm, self.cfg.sample_rate)
+        wav = pcm_to_wav(pcm, self.sample_rate)
         payload = {
             "wav": base64.b64encode(wav).decode("ascii"),
             "azimuth_deg": None if angle is None else round(angle, 1),
@@ -574,7 +642,7 @@ class StaticDrone:
         }
         sent = self.bridge.publish(self.cfg.topic("audio"), {"data": json.dumps(payload)})
         log.info("Audio %s : %.1f s, angle %s (%s)", "envoyé" if sent else "perdu (hors ligne)",
-                 len(pcm) / float(self.cfg.sample_rate), payload["azimuth_deg"], source)
+                 len(pcm) / float(self.sample_rate), payload["azimuth_deg"], source)
 
     # ------------------------------------------------------------------
     # Parole
