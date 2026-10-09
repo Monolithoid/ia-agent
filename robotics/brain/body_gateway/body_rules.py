@@ -104,6 +104,11 @@ def route_action(action: dict, registry: list[str], connected: dict[str, bool]) 
     return requested
 
 
+def without_speech(actions: list) -> list:
+    """Actions minus "speech": used when the caller plays the voice itself (OBS)."""
+    return [a for a in actions if a.get("type") != "speech"]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Wake word
 # ─────────────────────────────────────────────────────────────────────────────

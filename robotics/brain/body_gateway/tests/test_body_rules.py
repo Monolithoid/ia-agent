@@ -54,6 +54,11 @@ class TestRouting(unittest.TestCase):
         self.assertIn("- nao_01 : parler, gestes", body_rules.describe_bodies(["nao_01"], "nao_01"))
 
 
+    def test_without_speech(self):
+        actions = [{"type": "speech", "text": "salut"}, {"type": "leds", "color": "blue"}]
+        self.assertEqual(body_rules.without_speech(actions), [{"type": "leds", "color": "blue"}])
+
+
 class TestWakeWord(unittest.TestCase):
 
     def setUp(self):

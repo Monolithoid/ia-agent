@@ -21,6 +21,7 @@ ia-agent/
 │   ├── brain/               → Cerveau générique, indépendant du type de drone
 │   │   ├── body_gateway/    → Cerveau ROS 2 : LLM ↔ corps robotiques
 │   │   ├── ros2_bridge/     → Dockerfile rosbridge_server WebSocket
+│   │   ├── twitch_bridge/   → Tchat Twitch « !nao » → body-gateway → overlay OBS (ADR 005)
 │   │   └── webui/           → Pipe Open WebUI (nao_pipe.py)
 │   ├── shared/              → Classes partagées (RobotBridgeBase)
 │   └── drones/
@@ -45,7 +46,7 @@ ia-agent/
 - [Récapitulatif des containers](containers-overview.md) — tableau détaillé des échanges entre containers
 - [Stack IA](ia-stack.md) — configuration de chaque service IA
 - [Bridge IA / ROS 2 / NAO](bridge-ia-ros2-nao.md) — couche robotique
-- [ADR 001](decisions/001-ros2-over-ros1.md) · [ADR 002](decisions/002-nao-websocket-bridge.md) · [ADR 003](decisions/003-ollama-direct-sans-bitterbot.md) · [ADR 004](decisions/004-drone-statique.md)
+- [ADR 001](decisions/001-ros2-over-ros1.md) · [ADR 002](decisions/002-nao-websocket-bridge.md) · [ADR 003](decisions/003-ollama-direct-sans-bitterbot.md) · [ADR 004](decisions/004-drone-statique.md) · [ADR 005](decisions/005-avatar-twitch.md)
 
 ---
 
@@ -64,6 +65,7 @@ ia-agent/
 | `ros2-bridge` | rosbridge_server WebSocket | 9090 | host network |
 | `rosbridge-proxy` | Proxy Caddy : Traefik → ros2-bridge | 80 | robotics-net |
 | `chat-relay` | Proxy Caddy : ai-network → body-gateway | 8095 | ai-network |
+| `twitch-bridge` | Tchat Twitch « !nao » → body-gateway, voix de NAO dans OBS | 8096 | Public (`obs.$DOMAIN`, jeton) |
 | `bitterbot-gateway` *(désactivé)* | Agent IA avec mémoire long-terme | 19001 | SSH tunnel |
 
 ## Réseaux Docker

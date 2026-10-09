@@ -49,6 +49,14 @@ version: "3.8"
 #   LISTEN_DURATION          : durée d'écoute après wake word en secondes (défaut: 4.0)
 #   ASR_MODEL                : modèle Whisper — tiny/base/small (défaut: small)
 #
+# Avatar Twitch (twitch-bridge, ADR 005) :
+#   TWITCH_CHANNEL           : chaîne dont on lit le tchat (ex: monolithoid)
+#   OBS_TOKEN                : openssl rand -hex 32 (secret de l'URL de l'overlay OBS)
+#   TWITCH_USER_COOLDOWN_S   : délai entre deux messages acceptés d'un spectateur (défaut: 30)
+#   TWITCH_BLOCKLIST         : mots interdits séparés par des virgules (défaut: vide)
+#   TWITCH_MODS_ONLY         : 1 = seuls modérateurs et streamer peuvent appeler !nao (défaut: 0)
+#   TWITCH_TTS_VOICE         : voix edge-tts de NAO dans OBS (défaut: fr-FR-HenriNeural)
+#
 # Cerveau de body-gateway (voir docs/ia-stack.md, « Fournisseur du cerveau ») :
 #   BRAIN_PROVIDER           : ollama (défaut) | openai | anthropic
 #   BRAIN_URL                : vide = défaut du fournisseur (Ollama : http://localhost:11434)
@@ -448,6 +456,44 @@ services:
       - ai-network
     depends_on:
       - body-gateway
+
+  # ----------------------------------------------------------
+  # TWITCH BRIDGE — NAO avatar sur Twitch (ADR 005)
+  #
+  # Lit le tchat Twitch en anonyme (aucun jeton Twitch), garde les
+  # messages « !nao … », les envoie un par un à body-gateway
+  # (/chat, speak=false : gestes et LEDs sur le NAO, pas de voix dans
+  # la pièce) puis diffuse la réponse parlée dans OBS :
+  #   source navigateur OBS → https://obs.${DOMAIN}/overlay?token=$OBS_TOKEN
+  #   (cocher « Contrôler l'audio via OBS » pour l'avoir dans le mixer)
+  # Sans TWITCH_CHANNEL ni OBS_TOKEN, le conteneur refuse de démarrer.
+  # ----------------------------------------------------------
+  twitch-bridge:
+    image: ${DOCKERHUB_USERNAME}/twitch-bridge:latest
+    container_name: twitch-bridge
+    restart: unless-stopped
+    environment:
+      - TWITCH_CHANNEL=${TWITCH_CHANNEL:-}
+      - OBS_TOKEN=${OBS_TOKEN:-}
+      - BODY_GATEWAY_URL=http://chat-relay:8095
+      - ROBOT_ID=${NAO_ROBOT_ID:-nao_01}
+      - COMMAND_PREFIX=${TWITCH_COMMAND_PREFIX:-!nao}
+      - USER_COOLDOWN_S=${TWITCH_USER_COOLDOWN_S:-30}
+      - MIN_INTERVAL_S=${TWITCH_MIN_INTERVAL_S:-3}
+      - BLOCKLIST=${TWITCH_BLOCKLIST:-}
+      - MODS_ONLY=${TWITCH_MODS_ONLY:-0}
+      - TTS_VOICE=${TWITCH_TTS_VOICE:-fr-FR-HenriNeural}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.obs-overlay.rule=Host(`obs.${DOMAIN}`)"
+      - "traefik.http.routers.obs-overlay.entrypoints=https"
+      - "traefik.http.routers.obs-overlay.tls.certresolver=letsencrypt"
+      - "traefik.http.services.obs-overlay.loadbalancer.server.port=8096"
+    networks:
+      - ai-network
+      - robotics-net
+    depends_on:
+      - chat-relay
 
 # ============================================================
 # RÉSEAUX

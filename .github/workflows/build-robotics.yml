@@ -1,11 +1,12 @@
 name: Build & Push — Images robotiques
 
-# Publie quatre images sur Docker Hub :
+# Publie cinq images sur Docker Hub :
 #   monolithoid/naoqi-bridge  → Python 3.12 Alpine, HTTP bridge Flask vers NAO
 #   monolithoid/nao-core      → ROS2 Humble, naoqi-driver + cognitive-renderer + motion-engine
 #                               + static-driver (drone statique, ADR 004)
 #   monolithoid/body-gateway  → ROS2 Humble, pont LLM ↔ bus ROS2
 #   monolithoid/ros2-bridge   → ROS2 Humble + rosbridge_server WebSocket :9090
+#   monolithoid/twitch-bridge → Python 3.12, tchat Twitch « !nao » → body-gateway → overlay OBS
 #
 # Secrets requis :
 #   DOCKERHUB_USERNAME : monolithoid
@@ -53,6 +54,11 @@ jobs:
             image: monolithoid/ros2-bridge
             context: ./robotics/brain/ros2_bridge
             dockerfile: ./robotics/brain/ros2_bridge/Dockerfile
+
+          - name: twitch-bridge
+            image: monolithoid/twitch-bridge
+            context: ./robotics
+            dockerfile: ./robotics/brain/twitch_bridge/Dockerfile
 
     steps:
       - name: Checkout
