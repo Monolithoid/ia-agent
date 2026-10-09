@@ -1,7 +1,7 @@
 # ADR 006 — Le NAO ne parle à l'extérieur qu'à travers un drone statique
 
 **Date :** 2026-10-09  
-**Statut :** Proposé (étude, aucun code livré)
+**Statut :** Accepté (étapes 1 et 2 livrées : [`nao-relay/`](../../robotics/drones/static/onboard/nao-relay/README.md))
 
 ## Contexte
 
@@ -63,9 +63,9 @@ Pi OS, service systemd) :
 
 ```caddyfile
 :9090 {
-	@nao remote_ip 192.168.50.2          # IP du NAO, seule source acceptée
+	@nao remote_ip {$NAO_IP}             # IP du NAO, seule source acceptée
 	handle @nao {
-		reverse_proxy https://rosbridge.{$DOMAIN} {
+		reverse_proxy {$NAO_RELAY_UPSTREAM} {   # https://rosbridge.$DOMAIN
 			header_up Host {upstream_hostport}
 			header_up Authorization "Bearer {$ROSBRIDGE_TOKEN}"
 		}
@@ -130,13 +130,14 @@ filtrage par MAC). Moins fiable, à n'utiliser que si le câble est impossible.
 
 - Amende l'[ADR 002](002-nao-websocket-bridge.md) : l'option « intermédiaire »
   rejetée est retenue maintenant que le drone existe.
-- À livrer dans un chantier suivant :
-  - `robotics/drones/static/onboard/nao-relay/` : `Caddyfile` + unité systemd,
-    variables `NAO_IP` et `ROSBRIDGE_URL` reprises du `.env` du drone ;
-  - doc d'installation : relais, câble, `dnsmasq`/IP fixe, pare-feu, `chrony` ;
-  - `docs/nao.md` : nouvelle URL `--vps`, suppression du jeton sur le robot ;
-  - test : `wscat -c ws://<drone>:9090/` depuis le NAO doit répondre, et
-    `curl https://example.com` depuis le NAO doit échouer.
+- Livré dans `robotics/drones/static/onboard/nao-relay/` : `Caddyfile`, service
+  systemd `nao-relay`, `dnsmasq-nao.conf` et la doc d'installation (câble, IP
+  fixe, DHCP, `chrony`, pare-feu, tests). Variables `NAO_IP` et
+  `NAO_RELAY_UPSTREAM` dans le `.env` du drone. Le relais échoue fermé : sans
+  `NAO_IP`, il refuse tout (403).
+- `docs/nao.md` décrit la nouvelle URL `--vps` et le robot sans jeton.
+- Reste l'étape 3 (supprimer le routeur Traefik `rosbridge-ws` sur le VPS),
+  une fois le relais validé sur le vrai matériel.
 - Si plusieurs drones statiques existent, un seul (configurable) porte le
   relais du NAO.
 

@@ -1,0 +1,32 @@
+# Relais du NAO (ADR 006) : le NAO parle en ws:// au drone, sur le câble
+# Ethernet ; Caddy relaie vers rosbridge sur le VPS en TLS et ajoute le jeton.
+# Variables lues dans le .env du drone (voir .env.example) :
+#   NAO_IP              seule adresse acceptée (ex. 192.168.50.2)
+#   NAO_RELAY_UPSTREAM  rosbridge du VPS (ex. https://rosbridge.mondomaine.fr)
+#   ROSBRIDGE_TOKEN     même jeton que sur le VPS
+#   NAO_RELAY_PORT      port d'écoute (défaut 9090)
+
+{
+	admin off
+}
+
+:{$NAO_RELAY_PORT:9090} {
+	@nao remote_ip {$NAO_IP}
+
+	handle @nao {
+		reverse_proxy {$NAO_RELAY_UPSTREAM} {
+			# Traefik route sur le nom du VPS, pas sur l'IP du drone
+			header_up Host {upstream_hostport}
+			header_up Authorization "Bearer {$ROSBRIDGE_TOKEN}"
+		}
+	}
+
+	handle {
+		respond "Interdit : seul le NAO passe par ce relais" 403
+	}
+
+	log {
+		output stderr
+		format console
+	}
+}

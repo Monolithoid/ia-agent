@@ -21,6 +21,22 @@ Once connected the bridge subscribes to command topics and executes them via the
 
 > See [ADR 002](decisions/002-nao-websocket-bridge.md) for rejected alternatives (VPN, Raspberry Pi relay).
 
+### Recommended: through the static drone (ADR 006)
+
+Since [ADR 006](decisions/006-nao-via-drone-statique.md) the NAO no longer goes
+to the Internet on its own. It is plugged into the static drone with an
+Ethernet cable, has no gateway, and the drone relays to the VPS over TLS:
+
+```
+NAO 192.168.50.2 ── ws://, no token ──► static drone :9090 (Caddy, adds the token)
+                                           └─► wss://rosbridge.$DOMAIN ─► VPS
+```
+
+The robot then runs `--vps ws://192.168.50.1:9090/` **without** `--token`:
+the secret only lives on the drone and the VPS. Setup:
+[`robotics/drones/static/onboard/nao-relay/`](../robotics/drones/static/onboard/nao-relay/README.md).
+The direct connection described below still works, for a NAO without a drone.
+
 ---
 
 ## Scripts overview
@@ -325,6 +341,10 @@ ps aux | grep nao_ws_bridge   # verify the process is running
 ---
 
 ## SSL / WSS
+
+With the [static drone relay](#recommended-through-the-static-drone-adr-006)
+the NAO ↔ drone hop is plain `ws://` on a private cable and the drone ↔ VPS hop
+is TLS: nothing below is needed. Without the relay:
 
 The robot connects via plain `ws://` on port 80 (Python 2.7 on the robot cannot do modern TLS). Traefik routes `rosbridge.$DOMAIN` on port 80 to `rosbridge-proxy` (Caddy), which checks the `Authorization: Bearer` token before proxying to `ros2-bridge`. Port 9090 is never exposed.
 

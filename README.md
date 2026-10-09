@@ -23,7 +23,7 @@ Stack IA auto-hébergée sur VPS Ubuntu, déployée via Docker Compose et géré
 | [ADR 003](docs/decisions/003-ollama-direct-sans-bitterbot.md) | Ollama direct sans Bitterbot pour body-gateway |
 | [ADR 004](docs/decisions/004-drone-statique.md) | Drone statique Raspberry Pi pour les sens, NAO réduit au rendu émotif |
 | [ADR 005](docs/decisions/005-avatar-twitch.md) | Une seule boucle stimulations → LLM → actions : Twitch comme entrée, OBS comme voix |
-| [ADR 006](docs/decisions/006-nao-via-drone-statique.md) | *(proposé)* Le NAO ne sort vers le VPS qu'à travers un relais sur le drone statique |
+| [ADR 006](docs/decisions/006-nao-via-drone-statique.md) | Le NAO ne sort vers le VPS qu'à travers un relais sur le drone statique |
 
 ---
 
