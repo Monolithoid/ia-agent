@@ -98,7 +98,7 @@ or, with the same values in the `"bridge"` section of `nao_provision.json`
 python nao_ws_bridge.py --vps ws://rosbridge.$DOMAIN/ --token TOKEN --provision
 ```
 
-While the static drone speaks, `cognitive_renderer` makes the NAO move its eyes,
+While the static drone (or the stream voice) speaks, `cognitive_renderer` makes the NAO move its eyes,
 head and arms so it looks like the one talking (see
 [cognitive_renderer](#cognitive_renderer)).
 
@@ -212,17 +212,19 @@ The `cognitive_renderer_node.py` runs an animation loop (1 tick/minute) that map
 | `uncertain` | yellow pulsing | slow yaw |
 | `excited` | bright white | look up |
 
-**Speaking sync (ADR 004).** `cognitive_renderer` listens to
-`/bodies/{DRONE_ID}/sensors/speaking` (relayed by `static_driver` from
-`/drones/{DRONE_ID}/speaking`). While it is `true`, every 1.5 s it blinks the
+**Speaking sync (ADR 004, ADR 005).** `cognitive_renderer` listens to
+`/bodies/{id}/sensors/speaking` for every voice body, `DRONE_ID` and
+`OBS_DRONE_ID` (relayed by `static_driver` from `/drones/{id}/speaking`).
+While any of them is `true`, every 1.5 s it blinks the
 eyes (`FaceLeds`, bright/dim white), nods the head slightly (`HeadPitch`) and
 raises one forearm then the other, so the NAO looks like it is the one speaking.
-When it turns `false`, the NAO goes back to its cognitive state profile. Arm
+When none is speaking, the NAO goes back to its cognitive state profile. Arm
 gestures only play when arm stiffness is on (energy `medium` or above).
 
 | Variable (container `nao-core`) | Default | Role |
 |---|---|---|
 | `DRONE_ID` | `static_01` (`STATIC_DRONE_ID`) | static drone to mimic; empty = no sync |
+| `OBS_DRONE_ID` | empty (compose: `obs_01`) | stream voice to mimic too ([ADR 005](decisions/005-avatar-twitch.md)) |
 | `SPEAKING_SYNC` | `1` (`NAO_SPEAKING_SYNC`) | `0` disables the speaking animation |
 | `SPEAKING_TIMEOUT` | `120` | stop after this many seconds without `speaking=false` (0 = never) |
 

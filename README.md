@@ -35,12 +35,16 @@ flowchart TB
         Dev(["Développeur\n(SSH tunnel)"])
         Google["Google OAuth"]
         NAO["Robot NAO\n(réseau local)"]
+        Static["Drone statique\n(Raspberry Pi / PC)"]
+        Twitch["Tchat Twitch\n(IRC, lecture anonyme)"]
+        OBS["OBS du streamer\n(source navigateur)"]
     end
 
     subgraph Coolify["Reverse Proxy — Coolify / Traefik"]
         RP_Chat["chat.mon-domain.com :443"]
         RP_Ollama["ollama.mon-domain.com :443"]
-        RP_ROS["rosbridge.mon-domain.com :443"]
+        RP_ROS["rosbridge.mon-domain.com :443 / :80"]
+        RP_OBS["obs.mon-domain.com :443"]
     end
 
     subgraph Docker["VPS mon-domain.com — Docker"]
@@ -50,6 +54,8 @@ flowchart TB
             N8N["n8n :5678"]
             Chroma["ChromaDB :8000"]
             ChatRelay["chat-relay :8095"]
+            Whisper["whisper-asr :9000"]
+            TwitchIn["twitch-input"]
         end
 
         subgraph bbNet["bitterbot-net (internal)"]
@@ -64,6 +70,7 @@ flowchart TB
 
         subgraph robotNet["robotics-net"]
             RosbridgeProxy["rosbridge-proxy :80"]
+            ObsAgent["obs-agent :8096"]
         end
     end
 
@@ -82,8 +89,19 @@ flowchart TB
     BodyGW <-->|"ROS 2 DDS"| NaoCore
     NaoCore <-->|"ROS 2 DDS"| Ros2Bridge
 
-    NAO -->|"WSS sortant :443"| RP_ROS --> RosbridgeProxy --> Ros2Bridge
+    NaoCore --> Whisper
+    Twitch -->|"!nao …"| TwitchIn --> ChatRelay
+
+    NAO -->|"WS sortant :80 + jeton"| RP_ROS --> RosbridgeProxy --> Ros2Bridge
+    Static -->|"WSS sortant + jeton"| RP_ROS
+    ObsAgent -->|"WS + jeton"| RosbridgeProxy
+    OBS -->|"HTTPS /overlay?token="| RP_OBS --> ObsAgent
 ```
+
+Toutes les entrées (« ok nao » dans la pièce, Open WebUI, tchat Twitch, capteurs)
+passent par la même boucle : texte → `body-gateway` (LLM) → liste d'actions
+répartie sur les corps (NAO, voix de la pièce, voix du stream). Voir
+[ADR 005](docs/decisions/005-avatar-twitch.md).
 
 ---
 
@@ -108,19 +126,24 @@ ia-agent/
 │       │   ├── cognitive_renderer/ → Nœud ROS 2 : état cognitif → LEDs / tête
 │       │   ├── motion_engine/ → Package ROS 2 : synthèse biomécanique (émotion → mouvement)
 │       │   └── core/        → Dockerfile + entrypoint du container nao-core
-│       ├── static/          → Drone statique Raspberry Pi (micros, caméra, haut-parleur) — à venir
+│       ├── static/          → Drone statique (ADR 004) : onboard/ (Raspberry Pi / PC) + driver/ (nœud ROS 2 VPS)
 │       ├── obs/             → Voix de NAO sur le stream : overlay OBS (ADR 005)
 │       └── quadcopter/      → Réservé
 ├── docs/
-│   ├── coolify-vps.md
+│   ├── architecture.md
+│   ├── containers-overview.md
 │   ├── ia-stack.md
 │   ├── bridge-ia-ros2-nao.md
 │   ├── nao.md
-│   ├── architecture.md
+│   ├── test-chain.md
+│   ├── coolify-vps.md
 │   └── decisions/           → ADR (Architecture Decision Records)
+├── tests/                   → test-chain.sh, diagnostics NAO, faux drone statique
 ├── .github/workflows/
 │   ├── build-bitterbot.yml  → Build + push $DOCKERHUB_USERNAME/bitterbot
-│   └── build-robotics.yml   → Build + push images robotiques
+│   └── build-robotics.yml   → Build + push des 6 images robotiques (naoqi-bridge, nao-core,
+│                              body-gateway, ros2-bridge, twitch-input, obs-agent)
+├── setup-vps.sh             → Préparation du VPS (dossiers, firewall, jetons)
 └── docker-compose.yml
 ```
 
@@ -134,4 +157,5 @@ ia-agent/
 | API Ollama | `https://ollama.$DOMAIN` | `Authorization: Bearer $OLLAMA_API_KEYS` |
 | n8n | `ssh -L 5678:localhost:5678 $VPS_USER@$DOMAIN` | Basic auth |
 | Bitterbot | `ssh -L 19001:localhost:19001 $VPS_USER@$DOMAIN` | Token WS |
-| rosbridge | `wss://rosbridge.$DOMAIN` | — (NAO se connecte en sortant) |
+| rosbridge | `wss://rosbridge.$DOMAIN` (`ws://` port 80 pour le NAO) | `Authorization: Bearer $ROSBRIDGE_TOKEN` |
+| Overlay OBS (voix du stream) | `https://obs.$DOMAIN/overlay?token=$OBS_TOKEN` (source navigateur OBS) | Jeton dans l'URL |

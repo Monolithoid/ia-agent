@@ -1,7 +1,7 @@
 # ADR 005 — Une seule boucle : stimulations → LLM → actions des agents (Twitch, OBS)
 
 **Date :** 2026-10-09  
-**Statut :** Proposé
+**Statut :** Accepté (sections 1 à 4 implémentées ; section 5 prévue)
 
 ## Contexte
 

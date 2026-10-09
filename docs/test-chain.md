@@ -22,7 +22,7 @@ open-webui (nao_pipe.py)
   │  POST http://chat-relay:8095/chat     ← Maillon 1 (ai-network)
   ▼
 chat-relay (Caddy)
-  │  reverse-proxy → host-gateway:8095   ← Maillon 2
+  │  reverse-proxy → <passerelle hôte>:8095   ← Maillon 2
   ▼
 body-gateway  (host network, :8095)
   │  POST http://localhost:11434/v1/chat/completions   ← Maillon 3
@@ -109,9 +109,9 @@ docker exec open-webui curl -sf -X POST http://chat-relay:8095/chat \
 
 ---
 
-### Maillon 2 — chat-relay → body-gateway (host-gateway:8095)
+### Maillon 2 — chat-relay → body-gateway (passerelle hôte :8095)
 
-**Ce qui est testé :** le Caddy de `chat-relay` proxifie les requêtes vers `host-gateway:8095`, l'alias Docker qui pointe vers le réseau hôte où `body-gateway` écoute. Ce maillon valide que le passage `ai-network → host network` fonctionne.
+**Ce qui est testé :** le Caddy de `chat-relay` proxifie les requêtes vers le port 8095 de la passerelle hôte (IP lue au démarrage dans `/proc/net/route`), où `body-gateway` écoute en `network_mode: host`. C'est aussi le chemin de `twitch-input`. Ce maillon valide que le passage `ai-network → host network` fonctionne.
 
 **Succès :** `POST http://localhost:8095/chat` répond depuis le host, et la même requête depuis `open-webui` via `chat-relay` donne le même résultat.
 
