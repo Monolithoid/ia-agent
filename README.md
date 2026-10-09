@@ -158,5 +158,5 @@ ia-agent/
 | API Ollama | `https://ollama.$DOMAIN` | `Authorization: Bearer $OLLAMA_API_KEYS` |
 | n8n | `ssh -L 5678:localhost:5678 $VPS_USER@$DOMAIN` | Basic auth |
 | Bitterbot | `ssh -L 19001:localhost:19001 $VPS_USER@$DOMAIN` | Token WS |
-| rosbridge | `wss://rosbridge.$DOMAIN` (`ws://` port 80 pour le NAO) | `Authorization: Bearer $ROSBRIDGE_TOKEN` |
+| rosbridge | `wss://rosbridge.$DOMAIN` (le NAO passe par le relais du drone statique, ADR 006) | `Authorization: Bearer $ROSBRIDGE_TOKEN` |
 | Overlay OBS (voix du stream) | `https://obs.$DOMAIN/overlay?token=$OBS_TOKEN` (source navigateur OBS) | Jeton dans l'URL |

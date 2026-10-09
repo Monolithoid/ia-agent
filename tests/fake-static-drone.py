@@ -8,7 +8,7 @@ Python 3 standard uniquement (client WebSocket minimal inclus).
 
 Usage (sur le VPS, depuis la racine du dépôt) :
     python3 tests/fake-static-drone.py                       # ws://localhost:9090 direct
-    python3 tests/fake-static-drone.py --url ws://rosbridge.$DOMAIN --token "$ROSBRIDGE_TOKEN"
+    python3 tests/fake-static-drone.py --url wss://rosbridge.$DOMAIN --token "$ROSBRIDGE_TOKEN"
 
 Étapes :
   1. /drones/{id}/status            → /bodies/{id}/connected = true

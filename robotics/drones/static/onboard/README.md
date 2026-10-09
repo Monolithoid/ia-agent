@@ -181,8 +181,8 @@ journalctl -u static-drone -f
 
 ### 9. Relais du NAO (ADR 006)
 
-Pour que le NAO passe par le drone au lieu de sortir seul sur Internet :
-câble Ethernet NAO ↔ drone, relais Caddy, pare-feu. Voir
+Le NAO ne sait pas faire de TLS : il envoie ses requêtes au drone, qui les
+relaie vers le VPS en `wss://` et ajoute le jeton (relais Caddy). Voir
 [nao-relay/README.md](nao-relay/README.md).
 
 ## Tests
