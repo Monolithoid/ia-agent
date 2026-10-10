@@ -17,6 +17,41 @@ Ce qui diffère d'un Raspberry Pi :
 | Démarrage automatique | Service systemd **utilisateur** (`static-drone-user.service`), pour avoir accès au son de la session. Le service système `static-drone.service` n'y a pas accès. |
 | Alimentation | Empêcher la mise en veille, y compris capot fermé. |
 
+## Installation automatique
+
+Le script `setup-ubuntu.sh` fait les étapes 1 à 6 ci-dessous. Il est
+idempotent : on peut le relancer sans risque, il ne refait que ce qui manque
+et garde les valeurs déjà mises dans `.env`.
+
+```bash
+cd ~
+git clone https://github.com/Monolithoid/ia-agent.git
+bash ia-agent/robotics/drones/static/onboard/setup-ubuntu.sh
+```
+
+À lancer avec l'utilisateur du drone, **sans sudo** (le script le demande
+quand il en a besoin). Au premier passage, il demande l'URL rosbridge, le
+jeton, la webcam, le micro et le haut-parleur. Après un ajout aux groupes
+`audio` et `video`, se déconnecter puis se reconnecter.
+
+Par défaut, rien ne démarre tout seul et la mise en veille n'est pas touchée :
+on lance le drone à la main (étape 7) quand on en a besoin, ce qui convient à
+un PC qui sert aussi à autre chose. Sur un PC dédié au drone :
+
+| Option | Effet |
+|---|---|
+| `--service` | Démarrage automatique au boot (étape 9) |
+| `--no-sleep` | Plus de mise en veille, même capot fermé (étape 10). Le capot n'est ignoré qu'après un redémarrage : le script ne relance pas `systemd-logind`, ce qui fermerait la session graphique. |
+| `--audio` | Choisir à nouveau le micro et le haut-parleur |
+
+Ce qu'il ne fait pas : les réglages fins (étape 8).
+
+Ensuite, pour le relais du NAO : `bash ia-agent/robotics/drones/static/onboard/nao-relay/setup-ubuntu.sh`
+(étape 11).
+
+Les étapes ci-dessous détaillent ce que fait le script, pour une installation
+à la main ou un dépannage.
+
 ## 1. Paquets
 
 ```bash
@@ -206,6 +241,10 @@ Le NAO passe par le drone pour joindre le VPS
 portable, suivre [nao-relay/README.md](nao-relay/README.md) tel quel. Le
 portable doit avoir une adresse fixe sur le réseau local (réservation DHCP)
 et rester éveillé (étape 10), sinon le NAO perd le VPS.
+
+`nao-relay/setup-ubuntu.sh` fait cette installation (Caddy, pare-feu s'il est
+actif) et vérifie que le relais joint le VPS. Le relais se lance ensuite à la
+main avec `nao-relay/run.sh`, ou au boot avec `--service`.
 
 ## Dépannage
 

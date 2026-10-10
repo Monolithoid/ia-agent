@@ -17,6 +17,8 @@ aucun port à ouvrir côté maison.
 | `static-drone-user.service` | Service systemd utilisateur, pour un PC Ubuntu de bureau (accès au son de la session) |
 | `tests/test_camera.py` | Tests unitaires du choix de la caméra et de la fréquence audio |
 | [`pc-portable-ubuntu.md`](pc-portable-ubuntu.md) | **Installation sur un PC portable Ubuntu** (webcam + micro) |
+| `setup-ubuntu.sh` | Installation automatique sur Ubuntu (idempotente), voir [pc-portable-ubuntu.md](pc-portable-ubuntu.md#installation-automatique) |
+| `setup-lib.sh` | Fonctions communes aux scripts d'installation |
 | `nao-relay/` | Relais du NAO : le NAO passe par le drone pour joindre le VPS ([installation](nao-relay/README.md), [ADR 006](../../../../docs/decisions/006-nao-via-drone-statique.md)) |
 
 ## Topics
@@ -69,6 +71,7 @@ le message part quand même avec `direction_source: "none"`.
 Sur un **PC portable Ubuntu** avec webcam et micro, suivre plutôt
 [pc-portable-ubuntu.md](pc-portable-ubuntu.md) (choix du micro et de la
 webcam, service utilisateur, mise en veille).
+Le script `setup-ubuntu.sh` fait cette installation automatiquement.
 
 ### 1. Système
 
