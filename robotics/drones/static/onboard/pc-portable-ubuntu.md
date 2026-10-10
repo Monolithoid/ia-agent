@@ -199,6 +199,14 @@ Garder le portable **sur secteur**. Pour annuler : `sudo systemctl unmask
 sleep.target suspend.target hibernate.target hybrid-sleep.target` et remettre
 `HandleLidSwitch=suspend`.
 
+## 11. Relais du NAO
+
+Le NAO passe par le drone pour joindre le VPS
+([ADR 006](../../../../docs/decisions/006-nao-via-drone-statique.md)). Sur le
+portable, suivre [nao-relay/README.md](nao-relay/README.md) tel quel. Le
+portable doit avoir une adresse fixe sur le réseau local (réservation DHCP)
+et rester éveillé (étape 10), sinon le NAO perd le VPS.
+
 ## Dépannage
 
 | Symptôme | Piste |

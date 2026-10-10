@@ -1,0 +1,21 @@
+# Service systemd du relais du NAO (ADR 006). Adapter User et les chemins, puis :
+#   sudo cp nao-relay.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nao-relay
+#   journalctl -u nao-relay -f
+
+[Unit]
+Description=Relais rosbridge du NAO (ADR 006)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=pi
+EnvironmentFile=/home/pi/ia-agent/robotics/drones/static/onboard/.env
+ExecStart=/usr/bin/caddy run --adapter caddyfile --config /home/pi/ia-agent/robotics/drones/static/onboard/nao-relay/Caddyfile
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

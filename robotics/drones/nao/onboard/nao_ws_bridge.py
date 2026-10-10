@@ -10,13 +10,15 @@ No external Python dependencies — uses a built-in pure Python 2.7 WebSocket cl
 The naoqi module is available natively on the robot (OpenNAO firmware).
 
 Usage:
-    python /home/nao/nao_ws_bridge.py --vps ws://rosbridge.DOMAIN/ --token TOKEN [options]
+    python /home/nao/nao_ws_bridge.py --vps ws://DRONE_IP:9090/ [options]
 
 Authentication:
     --token TOKEN                  Secret sent as "Authorization: Bearer TOKEN" during
                                    the WebSocket handshake (rosbridge-proxy rejects
                                    connections without it). Defaults to the
                                    ROSBRIDGE_TOKEN environment variable.
+                                   Not needed through the static drone relay
+                                   (ADR 006), which adds the token itself.
 
 Module filtering:
     --modules led,speech,gesture   Enable only the listed modules.
@@ -34,16 +36,16 @@ TTS method:
 
 Examples:
     # Emotive-only NAO (ADR 004: the static drone speaks, listens and sees):
-    python nao_ws_bridge.py --vps ws://rosbridge.DOMAIN/ --token TOKEN --modules led,motion,stiffness,gesture,stop --no-audio-capture
+    python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --modules led,motion,stiffness,gesture,stop --no-audio-capture
 
     # LEDs + speech only, no audio capture:
-    python nao_ws_bridge.py --vps ws://rosbridge.DOMAIN/ --token TOKEN --modules led,speech --no-audio-capture
+    python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --modules led,speech --no-audio-capture
 
     # All modules active (default behaviour):
-    python nao_ws_bridge.py --vps ws://rosbridge.DOMAIN/ --token TOKEN
+    python nao_ws_bridge.py --vps ws://DRONE_IP:9090/
 
     # Apply post-flash config then start bridge:
-    python nao_ws_bridge.py --vps ws://rosbridge.DOMAIN/ --token TOKEN --provision
+    python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --provision
 """
 
 from __future__ import print_function
@@ -623,7 +625,7 @@ class NaoBridge(object):
     """Main bridge class: manages the WebSocket connection and dispatches commands.
 
     Args:
-        vps_url       : rosbridge WebSocket URL (e.g. ws://rosbridge.DOMAIN/).
+        vps_url       : rosbridge WebSocket URL (e.g. ws://DRONE_IP:9090/, static drone relay).
         token         : shared secret expected by rosbridge-proxy (None = no header).
         modules       : set of module names to enable (None = all modules).
         audio_capture : enable wake word detection and VAD capture.
@@ -1283,15 +1285,15 @@ if __name__ == "__main__":
             "Modules disponibles : {}\n\n"
             "Exemples :\n"
             "  Tout actif (defaut) :\n"
-            "    python nao_ws_bridge.py --vps ws://rosbridge.DOMAIN/ --token TOKEN\n\n"
+            "    python nao_ws_bridge.py --vps ws://DRONE_IP:9090/\n\n"
             "  LED + parole seulement, sans capture audio :\n"
-            "    python nao_ws_bridge.py --vps ws://rosbridge.DOMAIN/ --token TOKEN --modules led,speech --no-audio-capture\n\n"
+            "    python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --modules led,speech --no-audio-capture\n\n"
             "  Gestes + LED uniquement :\n"
-            "    python nao_ws_bridge.py --vps ws://rosbridge.DOMAIN/ --token TOKEN --modules gesture,led"
+            "    python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --modules gesture,led"
         ).format(",".join(sorted(ALL_MODULES)))
     )
     parser.add_argument("--vps", default=None,
-                        help="Rosbridge URL (e.g. ws://rosbridge.DOMAIN/). Required unless using --provision only.")
+                        help="Rosbridge URL, usually the static drone relay (e.g. ws://DRONE_IP:9090/). Required unless using --provision only.")
     parser.add_argument("--token", default=os.environ.get("ROSBRIDGE_TOKEN"),
                         help="Token expected by rosbridge-proxy (default: $ROSBRIDGE_TOKEN).")
     parser.add_argument(

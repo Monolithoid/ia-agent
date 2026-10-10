@@ -268,7 +268,7 @@ internet d'edge-tts.
 # Seul, sans le reste de test-chain.sh
 python3 tests/fake-static-drone.py
 # Par le chemin public (Traefik + rosbridge-proxy), avec le jeton
-python3 tests/fake-static-drone.py --url ws://rosbridge.$DOMAIN --token "$ROSBRIDGE_TOKEN"
+python3 tests/fake-static-drone.py --url wss://rosbridge.$DOMAIN --token "$ROSBRIDGE_TOKEN"
 ```
 
 Si un vrai drone `static_01` est branché pendant le test, il prononce les

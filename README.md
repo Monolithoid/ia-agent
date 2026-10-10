@@ -23,6 +23,7 @@ Stack IA auto-hébergée sur VPS Ubuntu, déployée via Docker Compose et géré
 | [ADR 003](docs/decisions/003-ollama-direct-sans-bitterbot.md) | Ollama direct sans Bitterbot pour body-gateway |
 | [ADR 004](docs/decisions/004-drone-statique.md) | Drone statique Raspberry Pi pour les sens, NAO réduit au rendu émotif |
 | [ADR 005](docs/decisions/005-avatar-twitch.md) | Une seule boucle stimulations → LLM → actions : Twitch comme entrée, OBS comme voix |
+| [ADR 006](docs/decisions/006-nao-via-drone-statique.md) | Le NAO ne sort vers le VPS qu'à travers un relais sur le drone statique |
 
 ---
 
@@ -157,5 +158,5 @@ ia-agent/
 | API Ollama | `https://ollama.$DOMAIN` | `Authorization: Bearer $OLLAMA_API_KEYS` |
 | n8n | `ssh -L 5678:localhost:5678 $VPS_USER@$DOMAIN` | Basic auth |
 | Bitterbot | `ssh -L 19001:localhost:19001 $VPS_USER@$DOMAIN` | Token WS |
-| rosbridge | `wss://rosbridge.$DOMAIN` (`ws://` port 80 pour le NAO) | `Authorization: Bearer $ROSBRIDGE_TOKEN` |
+| rosbridge | `wss://rosbridge.$DOMAIN` (le NAO passe par le relais du drone statique, ADR 006) | `Authorization: Bearer $ROSBRIDGE_TOKEN` |
 | Overlay OBS (voix du stream) | `https://obs.$DOMAIN/overlay?token=$OBS_TOKEN` (source navigateur OBS) | Jeton dans l'URL |

@@ -29,7 +29,7 @@ Open WebUI (chat / voice)                twitch-input (Twitch chat "!nao …")
 
 The static drone and `obs-agent` connect the same way as the NAO (WebSocket client of `rosbridge-proxy`, same token).
 
-The NAO robot establishes an **outbound WebSocket connection** to `ws://rosbridge.$DOMAIN` (port 80, proxied via Traefik; TLS clients use `wss://` on 443). Every connection must carry `Authorization: Bearer $ROSBRIDGE_TOKEN`. No inbound connection to the robot is required.
+The NAO robot establishes an **outbound WebSocket connection** to the static drone's relay (`ws://DRONE_IP:9090`, local network), which forwards it to `wss://rosbridge.$DOMAIN` and adds the token ([ADR 006](decisions/006-nao-via-drone-statique.md)). Every connection reaching the VPS must carry `Authorization: Bearer $ROSBRIDGE_TOKEN`; rosbridge is only reachable over TLS. No inbound connection to the robot is required.
 
 ---
 
@@ -50,8 +50,7 @@ ROS 2 Humble + `rosbridge_suite`. Exposes a JSON WebSocket following the rosbrid
 **Role:** WebSocket proxy between Traefik (Docker network) and `ros2-bridge` (host network)
 
 ```
-wss://rosbridge.$DOMAIN → Traefik :443 (TLS) ┐
-ws://rosbridge.$DOMAIN  → Traefik :80 (NAO)  ┴→ rosbridge-proxy :80 (Caddy, token check) → host:9090 (ros2-bridge)
+wss://rosbridge.$DOMAIN → Traefik :443 (TLS) → rosbridge-proxy :80 (Caddy, token check) → host:9090 (ros2-bridge)
 ```
 
 Caddy only proxies requests whose `Authorization` header equals `Bearer $ROSBRIDGE_TOKEN` and answers `401` otherwise; it refuses to start when `ROSBRIDGE_TOKEN` is empty. Upstream is the host gateway on port 9090. Traefik handles the TLS certificate. `naoqi-bridge` (VPS) also goes through the proxy and sends the same token.
