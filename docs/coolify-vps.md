@@ -59,7 +59,7 @@ ufw enable
 
 `setup-vps.sh` applique ces règles (et ouvre aussi le port 8000 de l'interface Coolify).
 
-> Le port 19001 (Bitterbot) n'est pas exposé directement. Le port 9090 (rosbridge) n'est plus exposé : tout passe par `rosbridge-proxy`, qui exige l'en-tête `Authorization: Bearer $ROSBRIDGE_TOKEN`. Les clients TLS utilisent `wss://rosbridge.$DOMAIN` (443) ; le NAO (Python 2.7, OpenSSL trop vieux pour TLS 1.2) utilise `ws://rosbridge.$DOMAIN` (80). Si une ancienne règle `ufw allow from NAO_PUBLIC_IP to any port 9090` existe, la supprimer avec `ufw delete`.
+> Le port 19001 (Bitterbot) n'est pas exposé directement. Le port 9090 (rosbridge) n'est plus exposé : tout passe par `rosbridge-proxy`, qui exige l'en-tête `Authorization: Bearer $ROSBRIDGE_TOKEN`. Tous les clients utilisent `wss://rosbridge.$DOMAIN` (443) ; le NAO (Python 2.7, sans TLS) passe par le relais du drone statique ([ADR 006](decisions/006-nao-via-drone-statique.md)), il n'y a plus de rosbridge en HTTP clair. Si une ancienne règle `ufw allow from NAO_PUBLIC_IP to any port 9090` existe, la supprimer avec `ufw delete`.
 
 ---
 

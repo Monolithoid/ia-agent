@@ -1,0 +1,34 @@
+# Relais du NAO (ADR 006) : le NAO parle en ws:// au drone sur le réseau local ;
+# Caddy relaie vers rosbridge sur le VPS en TLS (wss) et ajoute le jeton.
+# Le VPS n'a ainsi plus besoin d'accepter du HTTP en clair.
+# Variables lues dans le .env du drone (voir .env.example) :
+#   NAO_RELAY_UPSTREAM  rosbridge du VPS (ex. https://rosbridge.mondomaine.fr)
+#   ROSBRIDGE_TOKEN     même jeton que sur le VPS
+#   NAO_IP              adresses acceptées (défaut : tout le réseau local)
+#   NAO_RELAY_PORT      port d'écoute (défaut 9090)
+
+{
+	admin off
+}
+
+:{$NAO_RELAY_PORT:9090} {
+	@local remote_ip {$NAO_IP:192.168.0.0/16 172.16.0.0/12 10.0.0.0/8 127.0.0.1}
+
+	handle @local {
+		reverse_proxy {$NAO_RELAY_UPSTREAM} {
+			# Traefik route sur le nom du VPS, pas sur l'IP du drone
+			header_up Host {upstream_hostport}
+			header_up Authorization "Bearer {$ROSBRIDGE_TOKEN}"
+		}
+	}
+
+	# Le jeton ne sort jamais du réseau local, même si le port 9090 est exposé
+	handle {
+		respond "Interdit hors du réseau local" 403
+	}
+
+	log {
+		output stderr
+		format console
+	}
+}

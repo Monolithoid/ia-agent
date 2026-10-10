@@ -367,10 +367,9 @@ services:
   # que si elle porte l'en-tête « Authorization: Bearer $ROSBRIDGE_TOKEN »,
   # sinon il répond 401. Sans jeton configuré, le conteneur refuse de démarrer.
   #
-  # Deux routeurs Traefik vers le même service :
-  #   rosbridge     → wss://rosbridge.${DOMAIN} (443, TLS)
-  #   rosbridge-ws  → ws://rosbridge.${DOMAIN}  (80, sans TLS) pour le NAO,
-  #                   dont le Python 2.7 embarqué ne sait pas faire de TLS.
+  # Routeur Traefik : wss://rosbridge.${DOMAIN} (443, TLS) uniquement.
+  # Le NAO, dont le Python 2.7 ne sait pas faire de TLS, passe par le relais
+  # du drone statique (ADR 006) : plus de rosbridge en HTTP clair.
   rosbridge-proxy:
     image: caddy:alpine
     container_name: rosbridge-proxy
@@ -415,9 +414,6 @@ services:
       - "traefik.http.routers.rosbridge.entrypoints=https"
       - "traefik.http.routers.rosbridge.tls.certresolver=letsencrypt"
       - "traefik.http.routers.rosbridge.service=rosbridge"
-      - "traefik.http.routers.rosbridge-ws.rule=Host(`rosbridge.${DOMAIN}`)"
-      - "traefik.http.routers.rosbridge-ws.entrypoints=http"
-      - "traefik.http.routers.rosbridge-ws.service=rosbridge"
       - "traefik.http.services.rosbridge.loadbalancer.server.port=80"
     networks:
       - robotics-net

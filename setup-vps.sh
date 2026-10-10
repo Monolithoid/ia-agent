@@ -106,7 +106,7 @@ configure_firewall() {
     ufw allow from 10.0.0.0/8    to any port 8095 comment "body-gateway depuis Docker bridge (ai-network, alt)"
 
     # rosbridge : uniquement depuis rosbridge-proxy (Docker bridge), qui vérifie le jeton.
-    # Le NAO passe par Traefik (ws://rosbridge.DOMAIN, port 80), jamais en direct sur 9090.
+    # Le NAO passe par le relais du drone statique (ADR 006), puis Traefik en wss://.
     ufw allow from 172.16.0.0/12 to any port 9090 comment "rosbridge depuis rosbridge-proxy (Docker bridge)"
     ufw allow from 10.0.0.0/8    to any port 9090 comment "rosbridge depuis rosbridge-proxy (Docker bridge, alt)"
 
@@ -264,7 +264,8 @@ main() {
     echo ""
     echo "  → Déployer le bridge NAO (si robot présent) :"
     echo "    scp robotics/drones/nao/onboard/nao_ws_bridge.py nao@NAO_IP:/home/nao/"
-    echo "    puis sur le NAO : python nao_ws_bridge.py --vps ws://rosbridge.DOMAIN/ --token \$ROSBRIDGE_TOKEN"
+    echo "    puis sur le NAO : python nao_ws_bridge.py --vps ws://IP_DU_DRONE:9090/"
+    echo "    (relais du drone statique : robotics/drones/static/onboard/nao-relay/)"
 }
 
 main "$@"

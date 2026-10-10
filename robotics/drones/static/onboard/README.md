@@ -14,6 +14,7 @@ aucun port à ouvrir côté maison.
 | `.env.example` | Configuration d'exemple, à copier en `.env` |
 | `requirements.txt` | Dépendances Python |
 | `static-drone.service` | Service systemd, pour un démarrage automatique plus tard |
+| `nao-relay/` | Relais du NAO : le NAO passe par le drone pour joindre le VPS ([installation](nao-relay/README.md), [ADR 006](../../../../docs/decisions/006-nao-via-drone-statique.md)) |
 
 ## Topics
 
@@ -177,6 +178,12 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now static-drone
 journalctl -u static-drone -f
 ```
+
+### 9. Relais du NAO (ADR 006)
+
+Le NAO ne sait pas faire de TLS : il envoie ses requêtes au drone, qui les
+relaie vers le VPS en `wss://` et ajoute le jeton (relais Caddy). Voir
+[nao-relay/README.md](nao-relay/README.md).
 
 ## Tests
 

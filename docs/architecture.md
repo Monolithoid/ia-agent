@@ -120,8 +120,9 @@ body-gateway (ROS 2 Humble, host network, :8095)
 
 NAO robot
   └── nao_ws_bridge.py (Python 2.7)
-        └─► WebSocket sortant ws://rosbridge.$DOMAIN:80 (jeton Authorization: Bearer)
-              └─► rosbridge-proxy (Caddy) → ros2-bridge (host :9090)
+        └─► WebSocket sortant ws://IP_DU_DRONE:9090 (réseau local, sans jeton)
+              └─► relais du drone statique (Caddy, ADR 006) : wss://rosbridge.$DOMAIN + jeton
+                    └─► rosbridge-proxy (Caddy) → ros2-bridge (host :9090)
                     └─► ROS 2 DDS domain 42
 ```
 

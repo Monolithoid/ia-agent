@@ -6,13 +6,14 @@ Documentation for the NAO robot bridge embedded on the robot and its integration
 
 ## Connection principle
 
-The NAO cannot receive inbound connections from the internet (local network firewall, NAT). The chosen solution is a **Python 2.7 script embedded on the robot** that establishes an **outbound** WebSocket connection to the rosbridge server on the VPS.
+The NAO cannot receive inbound connections from the internet (local network firewall, NAT). The chosen solution is a **Python 2.7 script embedded on the robot** that establishes an **outbound** WebSocket connection to rosbridge, through the static drone's relay ([ADR 006](decisions/006-nao-via-drone-statique.md)).
 
 ```
-NAO (local network)
+NAO (Wi-Fi, local network)
   └─► nao_ws_bridge.py (Python 2.7, no external dependencies)
-        └─► Outbound WebSocket ws://rosbridge.$DOMAIN:80 (token in Authorization header)
-              └─► rosbridge-proxy → ros2-bridge (ROS 2 Humble, VPS)
+        └─► Outbound WebSocket ws://DRONE_IP:9090 (local network, no token)
+              └─► static drone relay (Caddy): wss://rosbridge.$DOMAIN + token
+                    └─► rosbridge-proxy → ros2-bridge (ROS 2 Humble, VPS)
                     └─► nao-core (naoqi_driver + cognitive_renderer + motion_engine)
                           └─► body_gateway → Ollama (LLM)
 ```
@@ -20,6 +21,18 @@ NAO (local network)
 Once connected the bridge subscribes to command topics and executes them via the native NAOqi SDK. It also publishes status (battery) and captured audio back to the VPS.
 
 > See [ADR 002](decisions/002-nao-websocket-bridge.md) for rejected alternatives (VPN, Raspberry Pi relay).
+
+### Through the static drone (ADR 006)
+
+The robot's Python 2.7 cannot do TLS, and the VPS no longer accepts rosbridge
+over plain HTTP. The NAO stays on the home Wi-Fi and talks to a relay on the
+static drone, which forwards to the VPS over TLS and adds the token. The local
+network is considered safe.
+
+The robot runs `--vps ws://DRONE_IP:9090/` **without** `--token`: the secret
+only lives on the drone and the VPS. Setup:
+[`robotics/drones/static/onboard/nao-relay/`](../robotics/drones/static/onboard/nao-relay/README.md).
+For a NAO without a drone, see [SSL / WSS](#ssl--wss).
 
 ---
 
@@ -54,10 +67,11 @@ Once connected the bridge subscribes to command topics and executes them via the
 ### CLI options
 
 ```
-python /home/nao/nao_ws_bridge.py --vps ws://rosbridge.$DOMAIN/ --token TOKEN [options]
+python /home/nao/nao_ws_bridge.py --vps ws://DRONE_IP:9090/ [options]
 
 --vps URL             rosbridge WebSocket URL (required unless --provision only)
 --token TOKEN         Secret sent as "Authorization: Bearer TOKEN" (default: $ROSBRIDGE_TOKEN).
+                      Not needed through the static drone relay (ADR 006), which adds it.
                       Must match ROSBRIDGE_TOKEN in Coolify; connections without it get 401.
 --nao-ip IP           NAOqi IP address (default: 127.0.0.1)
 --nao-port PORT       NAOqi port (default: 9559)
@@ -87,7 +101,7 @@ listening and the camera. The NAO only renders emotions with its motors and LEDs
 | `move` | off | the NAO stays in place; add it back if it must walk |
 
 ```bash
-python nao_ws_bridge.py --vps ws://rosbridge.$DOMAIN/ --token TOKEN \
+python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ \
     --modules led,motion,stiffness,gesture,stop --no-audio-capture
 ```
 
@@ -95,7 +109,7 @@ or, with the same values in the `"bridge"` section of `nao_provision.json`
 (as in `nao_provision.json.example`):
 
 ```bash
-python nao_ws_bridge.py --vps ws://rosbridge.$DOMAIN/ --token TOKEN --provision
+python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --provision
 ```
 
 While the static drone (or the stream voice) speaks, `cognitive_renderer` makes the NAO move its eyes,
@@ -121,16 +135,16 @@ is still in `nao_ws_bridge.py`.
 
 ```bash
 # All modules active (default):
-python nao_ws_bridge.py --vps ws://rosbridge.$DOMAIN/ --token TOKEN
+python nao_ws_bridge.py --vps ws://DRONE_IP:9090/
 
 # LEDs + speech only, no audio capture:
-python nao_ws_bridge.py --vps ws://rosbridge.$DOMAIN/ --token TOKEN --modules led,speech --no-audio-capture
+python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --modules led,speech --no-audio-capture
 
 # Apply post-flash config then start bridge:
-python nao_ws_bridge.py --vps ws://rosbridge.$DOMAIN/ --token TOKEN --provision
+python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --provision
 
 # Force native NAOqi TTS (no edge-tts on VPS):
-python nao_ws_bridge.py --vps ws://rosbridge.$DOMAIN/ --token TOKEN --tts-method text
+python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --tts-method text
 ```
 
 ---
@@ -248,14 +262,14 @@ scp robotics/drones/nao/onboard/nao_ws_bridge.py nao@NAO_IP:/home/nao/nao_ws_bri
 ### 2. Launch the bridge manually
 
 ```bash
-# Connect from NAO to VPS rosbridge: plain ws:// on port 80 (Traefik → rosbridge-proxy),
-# authenticated by the token (same value as ROSBRIDGE_TOKEN in Coolify).
-python /home/nao/nao_ws_bridge.py --vps ws://rosbridge.$DOMAIN/ --token TOKEN
+# Connect from NAO to the static drone relay (ADR 006), which adds the token
+# and forwards to wss://rosbridge.$DOMAIN.
+python /home/nao/nao_ws_bridge.py --vps ws://DRONE_IP:9090/
 ```
 
 Successful connection logs:
 ```
-[bridge] Connecting to ws://rosbridge.example.com/ ...
+[bridge] Connecting to ws://192.168.1.20:9090/ ...
 [bridge] Connected. Active modules: audio_out, gesture, led, motion, move, speech, stop. Audio capture: yes.
 [bridge] TTS capabilities announced: mp3
 [bridge] Ready.
@@ -269,15 +283,15 @@ then create `/home/nao/autostart.sh`:
 ```bash
 #!/bin/bash
 sleep 10   # wait for network
-export ROSBRIDGE_TOKEN=...   # same value as in Coolify; keep this file chmod 600
 # Emotive-only NAO: modules and audio capture come from nao_provision.json ("bridge").
-python /home/nao/nao_ws_bridge.py --vps ws://rosbridge.your-domain.com/ --provision &
+# No token here: the static drone relay adds it (ADR 006).
+python /home/nao/nao_ws_bridge.py --vps ws://192.168.1.20:9090/ --provision &
 ```
 
 Without a provisioning file, pass the options directly:
 `--modules led,motion,stiffness,gesture,stop --no-audio-capture`.
 
-> Replace `rosbridge.your-domain.com` with `rosbridge.$DOMAIN` (your actual domain).
+> Replace `192.168.1.20` with the static drone's address on the local network.
 
 Then in Choregraphe: **Edit** → **Preferences** → **Autorun** → add this script.
 
@@ -326,11 +340,9 @@ ps aux | grep nao_ws_bridge   # verify the process is running
 
 ## SSL / WSS
 
-The robot connects via plain `ws://` on port 80 (Python 2.7 on the robot cannot do modern TLS). Traefik routes `rosbridge.$DOMAIN` on port 80 to `rosbridge-proxy` (Caddy), which checks the `Authorization: Bearer` token before proxying to `ros2-bridge`. Port 9090 is never exposed.
+Python 2.7 on the robot cannot do modern TLS, and the VPS only accepts rosbridge over `wss://` (443). Normally the NAO goes through the [static drone relay](#through-the-static-drone-adr-006): plain `ws://` on the local network, TLS from the drone to the VPS.
 
-> Without TLS the token travels in clear text: someone on the network path could read and replay it. Rotate it (Coolify + robot) if you suspect a leak. The `stunnel` setup below removes this limitation.
-
-If you need the robot to connect directly to a `wss://` endpoint (no Traefik), use `stunnel`:
+For a NAO without a drone, the robot must do TLS itself with `stunnel`:
 
 ```bash
 # Install on NAO (if opkg available)
@@ -378,7 +390,7 @@ listens and speaks itself.
 
 Apply on first boot:
 ```bash
-python /home/nao/nao_ws_bridge.py --provision --vps ws://rosbridge.$DOMAIN/ --token TOKEN
+python /home/nao/nao_ws_bridge.py --provision --vps ws://DRONE_IP:9090/
 ```
 
 Or provision only (without starting the bridge):
