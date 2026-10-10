@@ -3,14 +3,18 @@
 # statique Ubuntu : le NAO parle en ws:// au drone, Caddy relaie vers le VPS
 # en wss:// et ajoute le jeton. Automatise nao-relay/README.md, étapes 1 à 3.
 #
+# Par défaut, le relais ne démarre pas tout seul : on le lance à la main avec
+# nao-relay/run.sh quand on en a besoin (PC non dédié). --service installe le
+# service nao-relay, lancé au boot.
+#
 # Idempotent : on peut le relancer autant de fois qu'on veut ; il ne refait que
-# ce qui manque et ne redémarre le relais que si sa configuration a changé.
+# ce qui manque et ne redémarre le service que si sa configuration a changé.
 #
 # Prérequis : le drone est installé (../setup-ubuntu.sh), son .env contient
 # ROSBRIDGE_TOKEN et ROSBRIDGE_URL (ou DOMAIN).
 #
 # Usage (avec l'utilisateur du drone, pas en root) :
-#   bash robotics/drones/static/onboard/nao-relay/setup-ubuntu.sh
+#   bash robotics/drones/static/onboard/nao-relay/setup-ubuntu.sh [--service]
 #
 # Sans terminal, NAO_RELAY_UPSTREAM, NAO_IP et NAO_RELAY_PORT peuvent être
 # passés par l'environnement ; ils sont alors écrits dans le .env du drone.
@@ -31,11 +35,14 @@ LOCAL_NETS=(192.168.0.0/16 172.16.0.0/12 10.0.0.0/8)
 CADDY_KEYRING="/usr/share/keyrings/caddy-stable-archive-keyring.gpg"
 CADDY_LIST="/etc/apt/sources.list.d/caddy-stable.list"
 
-case "${1:-}" in
-    -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    "") ;;
-    *) error "Option inconnue : $1 (voir --help)" ;;
-esac
+OPT_SERVICE=0
+for arg in "$@"; do
+    case "$arg" in
+        --service) OPT_SERVICE=1 ;;
+        -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *)         error "Option inconnue : $arg (voir --help)" ;;
+    esac
+done
 
 is_placeholder() {
     local v="$1"
@@ -167,7 +174,6 @@ validate_caddyfile() {
 
 setup_service() {
     section "Service nao-relay"
-    validate_caddyfile
 
     # Le fichier du dépôt suppose User=pi et ~pi/ia-agent : on y met les vrais
     local tmp changed=0
@@ -223,8 +229,13 @@ setup_firewall() {
 
 check_relay() {
     section "Vérification"
-    local port code
+    local port code temp_pid=""
     port="$(relay_port)"
+    if ! systemctl is-active -q nao-relay 2>/dev/null; then
+        # Pas de service : relais lancé le temps du test, puis arrêté
+        bash "${RELAY_DIR}/run.sh" >/dev/null 2>&1 &
+        temp_pid=$!
+    fi
     for _ in 1 2 3 4 5; do
         code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' \
             -H "Connection: Upgrade" -H "Upgrade: websocket" \
@@ -233,13 +244,17 @@ check_relay() {
         [[ "$code" == "000" ]] || break
         sleep 1
     done
+    if [[ -n "$temp_pid" ]]; then
+        kill "$temp_pid" 2>/dev/null || true
+        wait "$temp_pid" 2>/dev/null || true
+    fi
     case "$code" in
         101) log "Le relais et le VPS répondent (101 Switching Protocols)" ;;
         401) warn "401 : jeton refusé par le VPS (ROSBRIDGE_TOKEN différent de celui du VPS)" ;;
         403) warn "403 : adresse refusée par le relais (voir NAO_IP)" ;;
         502) warn "502 : le drone n'atteint pas NAO_RELAY_UPSTREAM" ;;
-        000) warn "Le relais ne répond pas sur le port $port : journalctl -u nao-relay -e" ;;
-        *)   warn "Réponse inattendue : $code (journalctl -u nao-relay -e)" ;;
+        000) warn "Le relais ne répond pas sur le port $port (port déjà pris ? lancer run.sh pour voir l'erreur)" ;;
+        *)   warn "Réponse inattendue : $code" ;;
     esac
 }
 
@@ -251,7 +266,15 @@ next_steps() {
     info "Le drone doit garder la même adresse : réservation DHCP sur la box pour ${ip:-cette machine}."
     info "Dans /home/nao/autostart.sh, supprimer « export ROSBRIDGE_TOKEN=... » et lancer :"
     echo "    python /home/nao/nao_ws_bridge.py --vps ws://${ip:-<IP du drone>}:${port}/ --provision &"
-    info "Journal du relais : journalctl -u nao-relay -f"
+    if [[ $OPT_SERVICE -eq 1 ]]; then
+        info "Journal du relais : journalctl -u nao-relay -f"
+    else
+        info "Lancer le relais (Ctrl+C pour l'arrêter) : bash ${RELAY_DIR}/run.sh"
+        if [[ -f "$UNIT_DST" ]]; then
+            warn "Un service nao-relay installé auparavant reste en place."
+            warn "Pour l'enlever : sudo systemctl disable --now nao-relay"
+        fi
+    fi
 }
 
 # ============================================================
@@ -265,7 +288,8 @@ main() {
 
     setup_env
     install_caddy
-    setup_service
+    validate_caddyfile
+    if [[ $OPT_SERVICE -eq 1 ]]; then setup_service; fi
     setup_firewall
     check_relay
     next_steps

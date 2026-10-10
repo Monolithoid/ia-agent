@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Fonctions communes à setup-ubuntu.sh et nao-relay/setup-ubuntu.sh.
 # Ce fichier est sourcé, pas exécuté.
 

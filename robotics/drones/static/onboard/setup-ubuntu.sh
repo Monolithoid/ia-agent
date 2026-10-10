@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # setup-ubuntu.sh — Installation du drone statique sur un PC (portable) Ubuntu
-# avec webcam et micro. Automatise pc-portable-ubuntu.md, étapes 1 à 6, 9 et 10.
+# avec webcam et micro. Automatise pc-portable-ubuntu.md, étapes 1 à 6 (et 9,
+# 10 en option).
+#
+# Par défaut, rien ne démarre tout seul et la mise en veille n'est pas touchée :
+# on lance le drone à la main quand on en a besoin (PC non dédié). Sur un PC
+# dédié au drone, ajouter --service et --no-sleep.
 #
 # Idempotent : on peut le relancer autant de fois qu'on veut ; il ne refait que
 # ce qui manque et ne réécrit pas les réglages déjà faits dans .env.
@@ -10,8 +15,8 @@
 #
 # Options :
 #   --audio        Redemander le micro et le haut-parleur par défaut
-#   --no-service   Ne pas installer le démarrage automatique (étape 9)
-#   --no-power     Ne pas toucher à la mise en veille (étape 10)
+#   --service      Démarrage automatique au boot (service utilisateur, étape 9)
+#   --no-sleep     Plus de mise en veille, même capot fermé (étape 10)
 #   -h, --help     Cette aide
 #
 # Sans terminal (ex. via ssh -T), les valeurs peuvent être passées par
@@ -38,14 +43,14 @@ APT_PACKAGES=(git python3-venv libportaudio2 libusb-1.0-0 mpg123
               alsa-utils v4l-utils pulseaudio-utils)
 
 OPT_AUDIO=0
-OPT_SERVICE=1
-OPT_POWER=1
+OPT_SERVICE=0
+OPT_POWER=0
 for arg in "$@"; do
     case "$arg" in
         --audio)      OPT_AUDIO=1 ;;
-        --no-service) OPT_SERVICE=0 ;;
-        --no-power)   OPT_POWER=0 ;;
-        -h|--help)    sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --service)    OPT_SERVICE=1 ;;
+        --no-sleep)   OPT_POWER=1 ;;
+        -h|--help)    sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)            error "Option inconnue : $arg (voir --help)" ;;
     esac
 done
@@ -359,6 +364,10 @@ main() {
         info "Journal : journalctl --user -u static-drone -f"
     else
         info "Lancer à la main : cd ${ONBOARD_DIR} && .venv/bin/python static_drone.py"
+        if [[ -f "$UNIT_DST" ]]; then
+            warn "Un démarrage automatique installé auparavant reste en place."
+            warn "Pour l'enlever : systemctl --user disable --now static-drone"
+        fi
     fi
     info "Relais du NAO (ADR 006) : bash ${ONBOARD_DIR}/nao-relay/setup-ubuntu.sh"
 }

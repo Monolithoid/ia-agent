@@ -20,6 +20,7 @@ n'est plus stocké sur le robot. Le réseau local est considéré comme sûr.
 | `Caddyfile` | Le relais : proxy inverse WebSocket, ajoute le jeton |
 | `nao-relay.service` | Service systemd du relais |
 | `setup-ubuntu.sh` | Installation automatique sur Ubuntu (idempotente) |
+| `run.sh` | Lance le relais à la main, sans service |
 
 Les commandes valent pour le PC Ubuntu comme pour le Raspberry Pi. Le drone
 doit déjà fonctionner ([installation du drone](../README.md)).
@@ -27,12 +28,17 @@ doit déjà fonctionner ([installation du drone](../README.md)).
 ## Installation automatique
 
 Sur Ubuntu, `setup-ubuntu.sh` fait les étapes 2 et 3 et vérifie le relais
-(tableau de l'étape 5). Il est idempotent : le relancer ne redémarre le relais
-que si `.env`, le `Caddyfile` ou le service ont changé.
+(tableau de l'étape 5). Il est idempotent.
 
 ```bash
 bash ~/ia-agent/robotics/drones/static/onboard/nao-relay/setup-ubuntu.sh
+bash ~/ia-agent/robotics/drones/static/onboard/nao-relay/run.sh   # lance le relais, Ctrl+C pour l'arrêter
 ```
+
+Par défaut, le relais ne démarre pas tout seul : on le lance avec `run.sh`
+quand le NAO doit joindre le VPS. Sur un PC dédié, `setup-ubuntu.sh --service`
+installe le service `nao-relay`, lancé au boot ; relancer le script ne le
+redémarre que si `.env`, le `Caddyfile` ou le service ont changé.
 
 À lancer avec l'utilisateur du drone, **sans sudo**, après l'installation du
 drone (`../setup-ubuntu.sh`) : il lit `ROSBRIDGE_TOKEN` dans le `.env` du
