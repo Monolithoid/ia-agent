@@ -14,6 +14,9 @@ aucun port à ouvrir côté maison.
 | `.env.example` | Configuration d'exemple, à copier en `.env` |
 | `requirements.txt` | Dépendances Python |
 | `static-drone.service` | Service systemd, pour un démarrage automatique plus tard |
+| `static-drone-user.service` | Service systemd utilisateur, pour un PC Ubuntu de bureau (accès au son de la session) |
+| `tests/test_camera.py` | Tests unitaires du choix de la caméra et de la fréquence audio |
+| [`pc-portable-ubuntu.md`](pc-portable-ubuntu.md) | **Installation sur un PC portable Ubuntu** (webcam + micro) |
 | `nao-relay/` | Relais du NAO : le NAO passe par le drone pour joindre le VPS ([installation](nao-relay/README.md), [ADR 006](../../../../docs/decisions/006-nao-via-drone-statique.md)) |
 
 ## Topics
@@ -62,6 +65,10 @@ le message part quand même avec `direction_source: "none"`.
   sur la sortie audio / un haut-parleur USB.
 
 ## Installation pas à pas
+
+Sur un **PC portable Ubuntu** avec webcam et micro, suivre plutôt
+[pc-portable-ubuntu.md](pc-portable-ubuntu.md) (choix du micro et de la
+webcam, service utilisateur, mise en veille).
 
 ### 1. Système
 
@@ -139,10 +146,11 @@ Selon le matériel :
   `aplay -l`).
 - **Plusieurs micros** : `MICS=gauche:-60,droite:60` (un `nom:angle` par
   canal, dans l'ordre des canaux) et, si besoin, `AUDIO_INPUT_DEVICE` avec le
-  nom ou l'index affiché par `python -m sounddevice`. Si l'ouverture échoue à
-  16 kHz, essayer `SAMPLE_RATE=48000`.
-- **Caméra** : `CAMERA_HFOV` = champ de vision horizontal de la webcam
-  (défaut 66°).
+  nom ou l'index affiché par `python -m sounddevice`. Si l'entrée refuse
+  `SAMPLE_RATE` (16 kHz), sa fréquence par défaut est utilisée.
+- **Caméra** : `CAMERA_INDEX` = index, chemin (`/dev/video2`) ou nom partiel
+  affiché par `v4l2-ctl --list-devices` ; `CAMERA_HFOV` = champ de vision
+  horizontal de la webcam (défaut 66°).
 
 ### 6. Lancer à la main
 
@@ -170,7 +178,10 @@ Pour plus de détails : `LOG_LEVEL=DEBUG .venv/bin/python static_drone.py`.
 
 ### 8. Démarrage automatique (plus tard)
 
-Adapter `User` et les chemins de `static-drone.service`, puis :
+Sur un PC Ubuntu de bureau, utiliser plutôt le service utilisateur
+([pc-portable-ubuntu.md, étape 9](pc-portable-ubuntu.md#9-démarrage-automatique)).
+
+Sur le Pi, adapter `User` et les chemins de `static-drone.service`, puis :
 
 ```bash
 sudo cp static-drone.service /etc/systemd/system/
