@@ -42,6 +42,9 @@ on:
     paths:
       - '.github/workflows/build-bitterbot.yml'
 
+permissions:
+  contents: read
+
 jobs:
   build-and-push:
     name: Build & Push monolithoid/bitterbot
@@ -61,8 +64,9 @@ jobs:
       # ----------------------------------------------------------------
       - name: Resolve Bitterbot ref
         id: ref
+        env:
+          INPUT_REF: ${{ github.event.inputs.bitterbot_ref }}
         run: |
-          INPUT_REF="${{ github.event.inputs.bitterbot_ref }}"
           if [ -n "$INPUT_REF" ]; then
             echo "ref=$INPUT_REF" >> $GITHUB_OUTPUT
             echo "source=manual input" >> $GITHUB_OUTPUT
@@ -78,12 +82,14 @@ jobs:
       #    - avoir un message d'erreur clair si le ref n'existe pas
       # ----------------------------------------------------------------
       - name: Clone Bitterbot at pinned ref
+        env:
+          BITTERBOT_REF: ${{ steps.ref.outputs.ref }}
         run: |
           git clone https://github.com/Bitterbot-AI/bitterbot-desktop.git bitterbot-src
           cd bitterbot-src
-          git checkout ${{ steps.ref.outputs.ref }}
+          git checkout "$BITTERBOT_REF"
           echo "HEAD=$(git rev-parse HEAD)" >> $GITHUB_ENV
-          echo "Building from ref : ${{ steps.ref.outputs.ref }}"
+          echo "Building from ref : $BITTERBOT_REF"
           echo "Full SHA          : $(git rev-parse HEAD)"
           echo "Source            : ${{ steps.ref.outputs.source }}"
 
@@ -142,10 +148,12 @@ jobs:
       # 8. Résumé dans l'onglet Actions
       # ----------------------------------------------------------------
       - name: Build summary
+        env:
+          BITTERBOT_REF: ${{ steps.ref.outputs.ref }}
         run: |
           echo "## Image publiée" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Ref Bitterbot :** \`${{ steps.ref.outputs.ref }}\` → SHA \`${{ env.HEAD }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Ref Bitterbot :** \`$BITTERBOT_REF\` → SHA \`${{ env.HEAD }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Tag | Commande |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|" >> $GITHUB_STEP_SUMMARY

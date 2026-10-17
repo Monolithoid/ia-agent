@@ -24,3 +24,15 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Secrets et certificats (ne jamais commiter)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
