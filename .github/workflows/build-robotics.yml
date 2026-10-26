@@ -1,6 +1,6 @@
 name: Build & Push — Images robotiques
 
-# Publie six images sur Docker Hub :
+# Publie sept images sur Docker Hub :
 #   monolithoid/naoqi-bridge  → Python 3.12 Alpine, HTTP bridge Flask vers NAO
 #   monolithoid/nao-core      → ROS2 Humble, naoqi-driver + cognitive-renderer + motion-engine
 #                               + static-driver (drone statique, ADR 004)
@@ -8,6 +8,7 @@ name: Build & Push — Images robotiques
 #   monolithoid/ros2-bridge   → ROS2 Humble + rosbridge_server WebSocket :9090
 #   monolithoid/twitch-input  → Python 3.12, entrée tchat Twitch « !nao » → body-gateway
 #   monolithoid/obs-agent     → Python 3.12, voix de NAO dans OBS (corps « voix » via rosbridge)
+#   monolithoid/regie         → Python 3.12, page de régie : flux /events en direct (via rosbridge)
 #
 # Secrets requis :
 #   DOCKERHUB_USERNAME : monolithoid
@@ -24,6 +25,7 @@ on:
       - 'robotics/drones/obs/**'
       - 'robotics/inputs/**'
       - 'robotics/shared/**'
+      - 'robotics/regie/**'
       - '.github/workflows/build-robotics.yml'
 
   workflow_dispatch:
@@ -70,6 +72,11 @@ jobs:
             image: monolithoid/obs-agent
             context: ./robotics/drones/obs
             dockerfile: ./robotics/drones/obs/Dockerfile
+
+          - name: regie
+            image: monolithoid/regie
+            context: ./robotics/regie
+            dockerfile: ./robotics/regie/Dockerfile
 
     steps:
       - name: Checkout

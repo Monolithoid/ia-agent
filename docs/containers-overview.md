@@ -21,6 +21,7 @@ Vue synthétique de tous les containers du projet, leurs rôles, et leurs échan
 | **chat-relay** | Reverse-proxy Caddy léger. Rend le body-gateway (réseau host) accessible depuis l'ai-network pour open-webui et twitch-input. | `open-webui`, `twitch-input` → requêtes HTTP de chat (HTTP/JSON, port 8095) | `body-gateway` (host) ← requêtes HTTP relayées (HTTP/JSON, port 8095) |
 | **twitch-input** | Entrée tchat Twitch (ADR 005). Lit le tchat en IRC anonyme, garde les messages `!nao …`, les filtre (longueur, liens, mots interdits, délai par spectateur, option modérateurs seulement) et les envoie un par un au cerveau. Refuse de démarrer sans `TWITCH_CHANNEL`. | Twitch → messages du tchat (IRC sur TLS, `irc.chat.twitch.tv:6697`) ; `chat-relay` ← réponse du cerveau (HTTP/JSON, ignorée) | `chat-relay` → `{"text": "[tchat Twitch] pseudo : message", "robot_id"}` (HTTP/JSON, `POST /chat`) |
 | **obs-agent** | Voix de NAO sur le stream (ADR 005) : corps `obs_01` de capacité `speech`. Client rosbridge comme le drone statique ; sert l'overlay `https://obs.$DOMAIN/overlay?token=$OBS_TOKEN`, à ouvrir comme source navigateur OBS. N'est « connecté » que tant que l'overlay est ouvert. | `rosbridge-proxy` ← `/drones/obs_01/audio_out` (MP3 base64) et `/bodies/obs_01/actuators/say` (sous-titre) ; OBS → ouverture de l'overlay (HTTPS via Traefik) | `rosbridge-proxy` → `/drones/obs_01/status` (battement de cœur) et `/drones/obs_01/speaking` (Bool) ; OBS ← overlay HTML + audio (mixer OBS) |
+| **regie** | Régie (ADR 007) : page `https://regie.$DOMAIN/?token=$REGIE_TOKEN` qui montre en direct chaque entrée, la décision du LLM et les actions routées vers les corps. Client rosbridge en lecture seule. | `rosbridge-proxy` ← `/events` (JSON publié par body-gateway), `/cognitive_state`, `/emotion_state` | navigateur ← page HTML + flux SSE (HTTPS via Traefik) |
 | **bitterbot-gateway** *(désactivé)* | Agent autonome avec mémoire long-terme (SQLite) et moteur de rêves. Désactivé depuis l'ADR 003 au profit d'appels directs Ollama depuis body-gateway. | `ollama` ← texte généré (HTTP/JSON) | `ollama` → requêtes d'inférence (HTTP/JSON) |
 
 ---
@@ -111,5 +112,5 @@ NAO, drone statique ou obs-agent (WebSocket sortant)
 |---|---|---|---|
 | `ai-network` | bridge | ollama, open-webui, n8n, chromadb, naoqi-bridge, whisper-asr, chat-relay, twitch-input | oui |
 | `bitterbot-net` | bridge (interne) | *(réservé bitterbot-gateway)* | non |
-| `robotics-net` | bridge | rosbridge-proxy, naoqi-bridge, obs-agent | oui |
+| `robotics-net` | bridge | rosbridge-proxy, naoqi-bridge, obs-agent, regie | oui |
 | host | — | ros2-bridge, nao-core, body-gateway | via hôte |

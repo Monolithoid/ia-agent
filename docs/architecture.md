@@ -71,6 +71,7 @@ ia-agent/
 | `chat-relay` | Proxy Caddy : ai-network → body-gateway | 8095 | ai-network |
 | `twitch-input` | Entrée tchat Twitch « !nao » → body-gateway | — | ai-network |
 | `obs-agent` | Voix de NAO sur le stream (overlay OBS, corps `obs_01`) | 8096 | Public (`obs.$DOMAIN`, jeton) |
+| `regie` | Régie : flux `/events` en direct (entrées, décisions du LLM, actions) | 8097 | Public (`regie.$DOMAIN`, jeton) |
 | `bitterbot-gateway` *(désactivé)* | Agent IA avec mémoire long-terme | 19001 | SSH tunnel |
 
 ## Réseaux Docker
@@ -83,7 +84,7 @@ bitterbot-net (bridge, internal — aucun accès internet)
   └── (réservé bitterbot-gateway — voir ADR 003)
 
 robotics-net (bridge, internet)
-  └── rosbridge-proxy, naoqi-bridge, obs-agent
+  └── rosbridge-proxy, naoqi-bridge, obs-agent, regie
 
 host network
   └── nao-core, body-gateway, ros2-bridge  (DDS ROS 2 domaine 42)

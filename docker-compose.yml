@@ -56,6 +56,7 @@ version: "3.8"
 #   TWITCH_MODS_ONLY         : 1 = seuls modérateurs et streamer peuvent appeler !nao (défaut: 0)
 #   OBS_DRONE_ID             : obs_01 (identifiant ROS2 de la voix du stream)
 #   OBS_TOKEN                : openssl rand -hex 32 (secret de l'URL de l'overlay OBS)
+#   REGIE_TOKEN              : openssl rand -hex 32 (secret de l'URL de la régie)
 #
 # Cerveau de body-gateway (voir docs/ia-stack.md, « Fournisseur du cerveau ») :
 #   BRAIN_PROVIDER           : ollama (défaut) | openai | anthropic
@@ -514,6 +515,34 @@ services:
     depends_on:
       - rosbridge-proxy
 
+  # ----------------------------------------------------------
+  # RÉGIE — suivre les flux entre les composants (ADR 007)
+  #
+  # body-gateway publie chaque entrée, décision du LLM et action
+  # routée sur le topic ROS /events. La régie le lit par rosbridge
+  # (jeton, lecture seule) et l'affiche en direct :
+  #   https://regie.${DOMAIN}/?token=$REGIE_TOKEN
+  # Lichtblick, rqt ou `ros2 topic echo /events` lisent le même topic.
+  # ----------------------------------------------------------
+  regie:
+    image: ${DOCKERHUB_USERNAME}/regie:latest
+    container_name: regie
+    restart: unless-stopped
+    environment:
+      - ROSBRIDGE_URL=ws://rosbridge-proxy:80
+      - ROSBRIDGE_TOKEN=${ROSBRIDGE_TOKEN:-}
+      - REGIE_TOKEN=${REGIE_TOKEN:-}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.regie.rule=Host(`regie.${DOMAIN}`)"
+      - "traefik.http.routers.regie.entrypoints=https"
+      - "traefik.http.routers.regie.tls.certresolver=letsencrypt"
+      - "traefik.http.services.regie.loadbalancer.server.port=8097"
+    networks:
+      - robotics-net
+    depends_on:
+      - rosbridge-proxy
+
 # ============================================================
 # RÉSEAUX
 #
@@ -527,7 +556,7 @@ services:
 #
 # robotics-net (bridge, accès internet) :
 #   rosbridge-proxy — proxy WebSocket Caddy vers ros2-bridge (host)
-#   naoqi-bridge, obs-agent — clients de rosbridge-proxy (jeton)
+#   naoqi-bridge, obs-agent, regie — clients de rosbridge-proxy (jeton)
 #
 # Nœuds ROS2 (ros2-bridge, nao-core, body-gateway) :
 #   network_mode: host — DDS ROS2 Humble (domain 42) sur le réseau hôte.

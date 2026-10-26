@@ -24,6 +24,7 @@ Stack IA auto-hébergée sur VPS Ubuntu, déployée via Docker Compose et géré
 | [ADR 004](docs/decisions/004-drone-statique.md) | Drone statique Raspberry Pi pour les sens, NAO réduit au rendu émotif |
 | [ADR 005](docs/decisions/005-avatar-twitch.md) | Une seule boucle stimulations → LLM → actions : Twitch comme entrée, OBS comme voix |
 | [ADR 006](docs/decisions/006-nao-via-drone-statique.md) | Le NAO ne sort vers le VPS qu'à travers un relais sur le drone statique |
+| [ADR 007](docs/decisions/007-regie-topic-events.md) | Régie : body-gateway publie ses flux sur le topic ROS standard `/events` |
 
 ---
 
@@ -118,6 +119,7 @@ ia-agent/
 │   │   └── webui/           → Pipe Open WebUI (nao_pipe.py)
 │   ├── inputs/
 │   │   └── twitch/          → Entrée tchat Twitch « !nao » → body-gateway (ADR 005)
+│   ├── regie/               → Page de régie : flux /events en direct (ADR 007)
 │   ├── shared/              → Classes partagées (RobotBridgeBase)
 │   └── drones/
 │       ├── nao/
@@ -142,8 +144,8 @@ ia-agent/
 ├── tests/                   → test-chain.sh, diagnostics NAO, faux drone statique
 ├── .github/workflows/
 │   ├── build-bitterbot.yml  → Build + push $DOCKERHUB_USERNAME/bitterbot
-│   └── build-robotics.yml   → Build + push des 6 images robotiques (naoqi-bridge, nao-core,
-│                              body-gateway, ros2-bridge, twitch-input, obs-agent)
+│   └── build-robotics.yml   → Build + push des 7 images robotiques (naoqi-bridge, nao-core,
+│                              body-gateway, ros2-bridge, twitch-input, obs-agent, regie)
 ├── setup-vps.sh             → Préparation du VPS (dossiers, firewall, jetons)
 └── docker-compose.yml
 ```
@@ -160,3 +162,4 @@ ia-agent/
 | Bitterbot | `ssh -L 19001:localhost:19001 $VPS_USER@$DOMAIN` | Token WS |
 | rosbridge | `wss://rosbridge.$DOMAIN` (le NAO passe par le relais du drone statique, ADR 006) | `Authorization: Bearer $ROSBRIDGE_TOKEN` |
 | Overlay OBS (voix du stream) | `https://obs.$DOMAIN/overlay?token=$OBS_TOKEN` (source navigateur OBS) | Jeton dans l'URL |
+| Régie (flux entre les composants) | `https://regie.$DOMAIN/?token=$REGIE_TOKEN` | Jeton dans l'URL |
