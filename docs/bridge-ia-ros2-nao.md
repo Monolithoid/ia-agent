@@ -197,7 +197,7 @@ Whisper and edge-tts calls live in `robotics/shared/speech_services.py`, shared 
 ### obs-agent
 
 **Image:** `$DOCKERHUB_USERNAME/obs-agent:latest` — **Code:** `robotics/drones/obs/`
-**Role:** NAO's voice on the stream ([ADR 005](decisions/005-avatar-twitch.md)): body type `obs`, capability `speech`. It is a rosbridge client like the static drone and uses the same `/drones/{id}/*` topics, so `static_driver` (second instance, `DRONE_ID=obs_01`) does the edge-tts synthesis. It serves `https://obs.$DOMAIN/overlay?token=$OBS_TOKEN` (port 8096, Traefik), to add in OBS as a browser source with "Control audio via OBS": the voice becomes a mixer source, with captions.
+**Role:** NAO's voice on the stream ([ADR 005](decisions/005-avatar-twitch.md)): body type `obs`, capability `speech`. It is a rosbridge client like the static drone and uses the same `/drones/{id}/*` topics, so `static_driver` (second instance, `DRONE_ID=obs_01`) does the edge-tts synthesis. It serves `https://<obs-agent domain>/overlay?token=$OBS_TOKEN` (port 8096, domain set in Coolify), to add in OBS as a browser source with "Control audio via OBS": the voice becomes a mixer source, with captions.
 
 | Topic | Direction | Content |
 |---|---|---|

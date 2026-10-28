@@ -161,5 +161,5 @@ ia-agent/
 | n8n | `ssh -L 5678:localhost:5678 $VPS_USER@$DOMAIN` | Basic auth |
 | Bitterbot | `ssh -L 19001:localhost:19001 $VPS_USER@$DOMAIN` | Token WS |
 | rosbridge | `wss://rosbridge.$DOMAIN` (le NAO passe par le relais du drone statique, ADR 006) | `Authorization: Bearer $ROSBRIDGE_TOKEN` |
-| Overlay OBS (voix du stream) | `https://obs.$DOMAIN/overlay?token=$OBS_TOKEN` (source navigateur OBS) | Jeton dans l'URL |
-| Régie (flux entre les composants) | `https://regie.$DOMAIN/?token=$REGIE_TOKEN` | Jeton dans l'URL |
+| Overlay OBS (voix du stream) | `https://<domaine obs-agent>/overlay?token=$OBS_TOKEN` (domaine choisi dans Coolify) (source navigateur OBS) | Jeton dans l'URL |
+| Régie (flux entre les composants) | `https://<domaine regie>/?token=$REGIE_TOKEN` (domaine choisi dans Coolify) | Jeton dans l'URL |
