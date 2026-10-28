@@ -62,7 +62,7 @@ nao-core/static_driver → edge-tts → /drones/static_01/audio_out
 ## Prérequis
 
 - `docker` disponible sur le VPS
-- Les services cibles démarrés (`docker compose up -d`)
+- Les services cibles démarrés (Deploy dans Coolify ; `docker ps` pour vérifier)
 - `curl` et `python3` installés (présents par défaut sur Ubuntu)
 - NAO peut être éteint pour tous les maillons sauf le 6 (mock attendu)
 
@@ -297,15 +297,15 @@ phrases du test et le NAO tourne la tête.
 
 | Symptôme | Maillon | Cause probable | Solution |
 |---|---|---|---|
-| `container X: NOT running` | 0 | Service non démarré | `docker compose up -d <service>` |
+| `container X: NOT running` | 0 | Service non démarré | `docker start <service>` (ou Redeploy dans Coolify) |
 | `Could not resolve host: chat-relay` | 1 | open-webui hors de `ai-network` | Vérifier `networks:` dans `docker-compose.yml` |
-| `Connection refused` sur :8095 depuis open-webui | 1–2 | chat-relay non démarré | `docker compose up -d chat-relay` |
+| `Connection refused` sur :8095 depuis open-webui | 1–2 | chat-relay non démarré | `docker start chat-relay` (ou Redeploy dans Coolify) |
 | `Connection refused` sur localhost:8095 | 2 | body-gateway crashé | `docker logs body-gateway` |
 | `model not found` dans Ollama | 3 | Modèle non téléchargé | `docker exec -it ollama ollama pull qwen3:1.7b` |
 | Timeout sur `/v1/chat/completions` | 3 | Modèle non chargé ou CPU saturé | Attendre le chargement initial (~30 s) |
 | JSON parse error dans body-gateway | 3b | Ollama ne retourne pas du JSON strict | Vérifier le system prompt `_AWAKE_SYSTEM` dans `body_gateway.py` |
 | Topics ROS 2 absents | 4 | DDS domain incorrect ou body-gateway/nao-core crashé | `docker logs body-gateway` ; `docker logs nao-core` ; vérifier `ROS_DOMAIN_ID=42` |
-| `Connection refused` sur localhost:8090 | 5 | naoqi-bridge non démarré | `docker compose up -d naoqi-bridge` |
+| `Connection refused` sur localhost:8090 | 5 | naoqi-bridge non démarré | `docker start naoqi-bridge` (ou Redeploy dans Coolify) |
 | `connected: true` avec NAO éteint | 6 | Ancienne connexion TCP non fermée | Redémarrer `naoqi-bridge` |
 | `/bodies/static_01/connected` jamais vu | 9 | static-driver non démarré | `docker logs nao-core` : ligne `static-driver(…) pour static_01` ? `STATIC_DRONE_ID` vide ? |
 | Pas de `HeadYaw` | 9 | `static_01` absent de `BODY_REGISTRY` | Vérifier l'environnement de body-gateway |
