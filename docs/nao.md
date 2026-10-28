@@ -77,9 +77,11 @@ python /home/nao/nao_ws_bridge.py --vps ws://DRONE_IP:9090/ [options]
                       (off by default: one log line per 20 Hz motion command costs CPU)
 --nao-ip IP           NAOqi IP address (default: 127.0.0.1)
 --nao-port PORT       NAOqi port (default: 9559)
---modules MOD,...     Comma-separated modules to enable (default: all)
+--modules MOD,...     Comma-separated modules to enable
+                      (default: all except speech and audio_out)
                       Available: audio_out, gesture, led, motion, move, speech, stiffness, stop
---no-audio-capture    Disable wake word and VAD capture
+--audio-capture       Enable wake word and VAD capture (off by default)
+--no-audio-capture    Force it off, even if the provision file enables it
                       (both default to the "bridge" section of the --provision file;
                       the command-line flags win)
 --tts-method METHOD   auto | mp3 | text (default: auto)
@@ -102,9 +104,14 @@ listening and the camera. The NAO only renders emotions with its motors and LEDs
 | audio capture (wake word ASR + VAD) | off (`--no-audio-capture`) | the static drone's microphones listen, `body-gateway` checks "ok nao" |
 | `move` | off | the NAO stays in place; add it back if it must walk |
 
+This is the default: the audio modules and audio capture are off unless
+asked for, so the robot does not spend CPU on ALSpeechRecognition (wake word)
+or TTS playback. Add `--modules led,motion,stiffness,gesture,stop` to also
+turn `move` off:
+
 ```bash
 python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ \
-    --modules led,motion,stiffness,gesture,stop --no-audio-capture
+    --modules led,motion,stiffness,gesture,stop
 ```
 
 or, with the same values in the `"bridge"` section of `nao_provision.json`
@@ -120,8 +127,8 @@ head and arms so it looks like the one talking (see
 
 **Back to the NAO's own voice** (no static drone): nothing to change on the VPS,
 `body-gateway` already sends the speech to the NAO when no static drone is
-connected. On the robot, restore the audio modules, either by removing the
-`"bridge"` section from `nao_provision.json` (all modules, audio capture on) or with:
+connected. On the robot, turn the audio modules back on (they are off by
+default), either with `--modules ...,speech,audio_out --audio-capture` or with:
 
 ```json
 "bridge": {
@@ -290,8 +297,8 @@ sleep 10   # wait for network
 python /home/nao/nao_ws_bridge.py --vps ws://192.168.1.20:9090/ --provision &
 ```
 
-Without a provisioning file, pass the options directly:
-`--modules led,motion,stiffness,gesture,stop --no-audio-capture`.
+Without a provisioning file, audio is already off; to turn `move` off too:
+`--modules led,motion,stiffness,gesture,stop`.
 
 > Replace `192.168.1.20` with the static drone's address on the local network.
 
@@ -334,7 +341,7 @@ ps aux | grep nao_ws_bridge   # verify the process is running
 | `ImportError: No module named websocket` | Old install attempt — not needed anymore | No wheel installation required; the WS client is built in |
 | `Only ws:// is supported` | Trying to use `wss://` directly | Use `ws://` — TLS is terminated by Traefik upstream. Use stunnel if `wss://` is mandatory. |
 | Robot does not speak | rosbridge not started or wrong topic | `docker logs ros2-bridge` on VPS |
-| Wake word not detected | `--no-audio-capture` set or ASR unavailable | Check ALSpeechRecognition is active on robot |
+| Wake word not detected | audio capture off (default, enable with `--audio-capture`) or ASR unavailable | Check ALSpeechRecognition is active on robot |
 | Loop reconnections | Network timeout | Normal — script reconnects automatically |
 | `[MOCK]` lines in logs | Running without NAOqi (on dev machine) | Expected in mock/dev mode — no action needed |
 
@@ -387,8 +394,8 @@ Create `nao_provision.json` next to the script (see `nao_provision.json.example`
 ```
 
 The `"bridge"` section is optional: it gives the default `--modules` and audio
-capture (emotive-only NAO here). Without it, all modules are on and the NAO
-listens and speaks itself.
+capture (emotive-only NAO here). Without it, the defaults are the same: every
+module except `speech` and `audio_out`, and no audio capture.
 
 Apply on first boot:
 ```bash
