@@ -61,6 +61,7 @@ For a NAO without a drone, see [SSL / WSS](#ssl--wss).
 - **Wake word detection** — "ok nao" / "okay nao" via ALSpeechRecognition
 - **VAD audio capture** — records speech after wake word, publishes WAV on `/nao/audio`
 - **TTS method negotiation** — announces `mp3` or `text` to the VPS on connect
+- **Motion limits** — speed, amplitude, rate, posture and heat guard rails before ALMotion (see [Motion limits](#motion-limits))
 - **Post-flash provisioning** — applies autonomous life state, language, volume from JSON,
   plus the bridge's default modules and audio capture (`"bridge"` section)
 
@@ -130,6 +131,55 @@ connected. On the robot, restore the audio modules, either by removing the
 
 then restart the bridge. The NAO audio code (TTS, MP3 playback, wake word, VAD)
 is still in `nao_ws_bridge.py`.
+
+### Motion limits
+
+NAOqi gets unstable when it receives fast, frequent or blocking motion calls.
+Every motion command therefore goes through a guard in `nao_ws_bridge.py`
+(`_MotionGuard`) before reaching `ALMotion`, whatever its source
+(`cognitive_renderer`, `motion_engine`, `body-gateway`):
+
+- **Speed**: clamped to `[min_speed, max_speed]` (fraction of the motor's max speed).
+- **Amplitude**: each angle is clamped to the NAO V5 hardware range shrunk by
+  `joint_margin`, optionally narrowed per joint by `joint_ranges`.
+  Leg joints and unknown joints are refused.
+- **Frequency**: commands are merged per joint (latest target wins) and sent
+  with the non-blocking `ALMotion.setAngles`, at most once every `min_interval`
+  seconds. A 20 Hz stream becomes one call every 100 ms, and the WebSocket
+  receive thread never waits on a motion.
+- **Concurrent motions**: joint moves are dropped while a posture change or a
+  walk runs (`joints_while_busy`); a posture is refused while walking and the
+  other way round. `goToPosture` runs in its own thread, only for the postures
+  in `postures`, at `posture_speed`, with `posture_cooldown` between two changes.
+- **Stiffness**: `/nao/stiffness` values are capped at `stiffness_max`; moves
+  no longer call `setStiffnesses` on every command.
+- **Heat**: a group (head, left arm, right arm) whose hottest motor reaches
+  `max_motor_temp` °C refuses new moves until it cools down (read every 30 s).
+- **Balance**: `moveToward` velocities are capped at `walk_max`; the NAOqi fall
+  manager and arm self-collision protection are turned on at startup.
+
+Defaults, overridable in the `"bridge"` → `"motion_limits"` section of
+`nao_provision.json` (used with `--provision`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `max_speed` / `min_speed` | 0.3 / 0.02 | joint speed fraction range |
+| `joint_margin` | 0.05 rad | distance kept from each mechanical stop |
+| `joint_ranges` | `{}` | per-joint `[min, max]` in rad, can only narrow the range |
+| `min_interval` | 0.1 s | min delay between two `setAngles` calls (10 Hz) |
+| `stiffness_max` | 1.0 | max stiffness value |
+| `max_motor_temp` | 70 °C | moves refused above it (0 = off) |
+| `postures` | Stand, StandInit, Sit, Crouch | allowed postures |
+| `posture_speed` / `posture_cooldown` | 0.3 / 5 s | `goToPosture` speed, delay between two changes |
+| `walk_max` | 0.5 | max normalized `moveToward` velocity |
+| `joints_while_busy` | false | accept joint moves during a posture change or walk |
+| `fall_manager` / `arm_collision_protection` | true / true | NAOqi protections turned on at startup |
+
+Tests without a robot (mock mode):
+
+```bash
+cd robotics/drones/nao/onboard && python3 -m unittest discover -s tests -v
+```
 
 ### Usage examples
 

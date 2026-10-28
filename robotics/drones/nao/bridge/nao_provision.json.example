@@ -11,6 +11,14 @@
   },
   "bridge": {
     "modules": ["led", "motion", "stiffness", "gesture", "stop"],
-    "audio_capture": false
+    "audio_capture": false,
+    "motion_limits": {
+      "max_speed": 0.3,
+      "min_interval": 0.1,
+      "joint_margin": 0.05,
+      "joint_ranges": {"HeadPitch": [-0.4, 0.3]},
+      "max_motor_temp": 70,
+      "postures": ["Stand", "StandInit", "Sit", "Crouch"]
+    }
   }
 }
