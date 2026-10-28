@@ -47,7 +47,7 @@ if [ "$code" = "200" ]; then
     _ok "POST /connected répond HTTP 200 → code déployé"
 else
     _fail "POST /connected → HTTP $code (image non reconstruite ?)"
-    _info "Reconstruire : docker compose build naoqi-bridge && docker compose up -d naoqi-bridge"
+    _info "Mettre à jour : Redeploy dans Coolify (nouvelle image naoqi-bridge)"
 fi
 
 # ── 3. /nao/status publié sur le bus ROS ────────────────────────────────────
@@ -103,6 +103,5 @@ done
 
 # ── Résumé ────────────────────────────────────────────────────────────────────
 echo ""
-echo -e "${YELLOW}── Commandes de rebuild si nécessaire${NC}"
-echo -e "  ${CYAN}docker compose build naoqi-bridge naoqi-driver${NC}"
-echo -e "  ${CYAN}docker compose up -d naoqi-bridge naoqi-driver${NC}"
+echo -e "${YELLOW}── Mise à jour si nécessaire${NC}"
+echo -e "  ${CYAN}Coolify → resource IA → Redeploy (les images sont buildées par GitHub Actions)${NC}"

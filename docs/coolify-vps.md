@@ -196,17 +196,12 @@ pour voir en direct chaque entrée, la décision du LLM et les actions envoyées
 
 ## 8. Mettre à jour les services
 
-```bash
-# Toutes les images
-docker compose pull
-docker compose up -d
+Depuis Coolify : bouton **Redeploy** sur la resource (ou **Restart** sur un service).
 
-# Un service spécifique
-docker compose pull bitterbot-gateway && docker compose up -d bitterbot-gateway
-docker compose pull naoqi-bridge nao-core body-gateway ros2-bridge twitch-input obs-agent regie && docker compose up -d naoqi-bridge nao-core body-gateway ros2-bridge twitch-input obs-agent regie
-```
-
-Ou depuis Coolify : bouton **Redeploy** sur la resource.
+> Coolify déploie depuis son propre clone du dépôt (sous `/data/coolify/…`), avec ses
+> variables. Lancé dans `/opt/ia-agent`, `docker compose …` ne voit ni ce projet ni ces
+> variables (avertissements `variable is not set`, liste vide) : passer par Coolify, ou
+> par `docker` avec le nom du conteneur (`docker restart obs-agent`).
 
 ---
 
@@ -286,8 +281,8 @@ systemctl list-timers --all | grep rclone
 ## 10. Diagnostic
 
 ```bash
-# État de tous les containers
-docker compose ps
+# État de tous les containers (pas « docker compose ps », voir § 8)
+docker ps --format "table {{.Names}}\t{{.Status}}"
 
 # Logs d'un service
 docker logs ollama -f
