@@ -188,6 +188,9 @@ docker exec -it ollama ollama pull qwen3:1.7b   # modèle par défaut de body-ga
 **source navigateur** avec l'URL `https://<domaine obs-agent>/overlay?token=$OBS_TOKEN` et cocher
 **« Contrôler l'audio via OBS »**. La voix devient une source du mixer, avec sous-titres.
 Le corps `obs_01` n'est connecté (et ne reçoit la parole) que tant que cette source est ouverte.
+Si OBS bloque la lecture automatique du son (jauge immobile, bandeau rouge « Son bloqué »
+dans l'overlay) : clic droit sur la source → **Interagir**, puis un clic dans la page. À
+refaire après chaque redémarrage d'OBS ou rechargement de la source.
 
 **Régie** ([ADR 007](decisions/007-regie-topic-events.md)) : ouvrir `https://<domaine regie>/?token=$REGIE_TOKEN`
 pour voir en direct chaque entrée, la décision du LLM et les actions envoyées à chaque corps.
