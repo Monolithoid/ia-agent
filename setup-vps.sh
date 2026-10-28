@@ -158,6 +158,9 @@ configure_bitterbot() {
     echo -e "  Variable : ${CYAN}OBS_TOKEN${NC} (secret de l'overlay OBS : https://obs.DOMAIN/overlay?token=…)"
     echo -e "  Valeur   : ${GREEN}$(openssl rand -hex 32)${NC}"
     echo ""
+    echo -e "  Variable : ${CYAN}REGIE_TOKEN${NC} (secret de la régie : https://regie.DOMAIN/?token=…)"
+    echo -e "  Valeur   : ${GREEN}$(openssl rand -hex 32)${NC}"
+    echo ""
     echo -e "  Variable : ${CYAN}TWITCH_CHANNEL${NC} (chaîne Twitch dont NAO lit le tchat)"
 }
 

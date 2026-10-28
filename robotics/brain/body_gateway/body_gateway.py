@@ -44,6 +44,10 @@ all the connected ones.
 Dream flow (02:00-06:00 + battery ≥ threshold):
   Periodic dream ticks → soft micro-actions (head, LEDs, whisper).
 
+Régie: each input, LLM decision and routed action is also published as JSON
+on the ROS topic /events (format in events.py), readable by the régie page,
+Lichtblick or `ros2 topic echo /events`.
+
 Environment variables:
   BRAIN_URL                  default http://localhost:11434
   BRAIN_MODEL                default qwen3:1.7b
@@ -85,6 +89,7 @@ from std_msgs.msg import Bool, Float32, String
 
 import body_rules
 import brain_client
+import events
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
@@ -292,6 +297,7 @@ class BodyGatewayNode(Node):
         self.pub_emotion    = self.create_publisher(String, "/emotion_state",       10)
         self.pub_energy     = self.create_publisher(String, "/energy_state",        10)
         self.pub_motion_cmd = self.create_publisher(String, "/motion_engine/command", 10)
+        self.pub_events     = self.create_publisher(String, "/events",              50)
 
         self._pub_say:     dict[str, object] = {}
         self._pub_motion:  dict[str, object] = {}
@@ -449,6 +455,8 @@ class BodyGatewayNode(Node):
             self.get_logger().info(f"[{body_id}] Corps connecté")
         elif not msg.data and prev:
             self.get_logger().warn(f"[{body_id}] Corps déconnecté")
+        if msg.data != prev:
+            self._emit_bodies()
 
     def _on_sonar(self, body_id: str, msg: Range):
         """React to sonar proximity: wake the robot when a human is detected nearby.
@@ -464,7 +472,7 @@ class BodyGatewayNode(Node):
 
     def _on_bumper(self, body_id: str, msg: Bool):
         if msg.data:
-            self._trigger_inference(body_id, f"[bumper] Contact physique sur {body_id}.")
+            self._trigger_inference(body_id, f"[bumper] Contact physique sur {body_id}.", "sensor")
 
     def _on_sound_direction(self, body_id: str, msg: String):
         """Direction of the last speech segment heard by a static drone.
@@ -517,6 +525,8 @@ class BodyGatewayNode(Node):
                     self._publish_cognitive("listening")
                 else:
                     self.get_logger().info(f"[{body_id}] Sans mot de réveil, ignoré : {heard!r}")
+                    self._emit("ignored", source="voice", body=body_id, text=heard,
+                               reason="wake_word")
                 return
         self._state = "AWAKE"
         threading.Thread(
@@ -541,23 +551,18 @@ class BodyGatewayNode(Node):
         # Ollama call, which would saturate the CPU and produce incoherent output.
         if not self._infer_lock.acquire(blocking=False):
             self.get_logger().warn("Inférence en cours — voix ignorée")
+            self._emit("ignored", source="voice", body=body_id, text=user_input, reason="busy")
             return
 
+        interaction = events.new_id()
+        self._emit("input", interaction, source="voice", body=body_id, text=user_input, author="")
         try:
-            system_prompt = self._system_prompt(_AWAKE_SYSTEM)
-            raw = self._brain_chat(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": self._user_content(body_id, user_input)},
-                ],
-                temperature=0.7,
-            )
-            parsed = self._parse_json(raw)
+            parsed = self._decide(interaction, body_id, user_input, _AWAKE_SYSTEM, 0.7)
 
             self._publish_emotion(parsed.get("emotion", "neutral"))
             self._publish_energy(parsed.get("energy", "medium"))
             self._publish_cognitive("responding")
-            self._dispatch_actions(parsed.get("actions", []))
+            self._dispatch_actions(parsed.get("actions", []), interaction)
 
             speech_text = " ".join(
                 a.get("text", "")
@@ -585,9 +590,11 @@ class BodyGatewayNode(Node):
 
         except brain_client.BRAIN_ERRORS as e:
             self.get_logger().error(f"[{body_id}] Voice API error: {e}")
+            self._emit("error", interaction, message=f"LLM : {e}")
             self._fallback(body_id)
         except Exception as e:
             self.get_logger().error(f"[{body_id}] Voice infer error: {e}")
+            self._emit("error", interaction, message=str(e))
             self._fallback(body_id)
         finally:
             self._infer_lock.release()
@@ -767,24 +774,21 @@ class BodyGatewayNode(Node):
 
         # Wait up to 25 s for the lock — longer than UI timeout to handle slow LLMs,
         # but short enough to avoid blocking the HTTP thread indefinitely.
+        source, author = events.chat_origin(user_input)
         if not self._infer_lock.acquire(timeout=25):
+            self._emit("ignored", source=source, body=body_id, text=user_input, reason="busy")
             return {"speech": "Je suis occupé, réessaie dans un instant.", "error": "busy"}
 
+        interaction = events.new_id()
+        self._emit("input", interaction, source=source, body=body_id, text=user_input,
+                   author=author)
         try:
-            system_prompt = self._system_prompt(_AWAKE_SYSTEM)
-            raw = self._brain_chat(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": self._user_content(body_id, user_input)},
-                ],
-                temperature=0.7,
-            )
-            parsed = self._parse_json(raw)
+            parsed = self._decide(interaction, body_id, user_input, _AWAKE_SYSTEM, 0.7)
 
             self._publish_emotion(parsed.get("emotion", "neutral"))
             self._publish_energy(parsed.get("energy", "medium"))
             self._publish_cognitive("responding")
-            self._dispatch_actions(parsed.get("actions", []))
+            self._dispatch_actions(parsed.get("actions", []), interaction)
 
             speech_text = " ".join(
                 a.get("text", "")
@@ -800,10 +804,12 @@ class BodyGatewayNode(Node):
 
         except brain_client.BRAIN_ERRORS as e:
             self.get_logger().error(f"LLM error (chat): {e}")
+            self._emit("error", interaction, message=f"LLM : {e}")
             self._fallback(body_id)
             return {"speech": "Je réfléchis, un instant.", "error": str(e)}
         except Exception as e:
             self.get_logger().error(f"Chat infer error: {e}")
+            self._emit("error", interaction, message=str(e))
             return {"speech": "Une erreur s'est produite.", "error": str(e)}
         finally:
             self._infer_lock.release()
@@ -813,34 +819,33 @@ class BodyGatewayNode(Node):
     # Asynchronous inference (sonar proximity, bumper touch, dream ticks)
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _trigger_inference(self, body_id: str, user_input: str):
+    def _trigger_inference(self, body_id: str, user_input: str, source: str):
         self._publish_cognitive("thinking")
         threading.Thread(
             target=self._infer_and_act,
-            args=(body_id, user_input, False),
+            args=(body_id, user_input, False, source),
             daemon=True,
         ).start()
 
-    def _infer_and_act(self, body_id: str, user_input: str, is_dream: bool):
+    def _infer_and_act(self, body_id: str, user_input: str, is_dream: bool,
+                       source: str = "dream"):
         # Non-blocking acquire: async triggers (bumper, sonar, dream tick) are
         # fire-and-forget — if an inference is already running, silently skip.
         if not self._infer_lock.acquire(blocking=False):
             self.get_logger().warn("Inférence en cours — ignoré")
+            self._emit("ignored", source=source, body=body_id, text=user_input, reason="busy")
             return
 
+        interaction = events.new_id()
+        self._emit("input", interaction, source=source, body=body_id, text=user_input, author="")
         try:
             # Dream mode uses a restricted system prompt (no walking, no arm gestures).
-            system_prompt = self._system_prompt(_DREAM_SYSTEM if is_dream else _AWAKE_SYSTEM)
-
-            raw = self._brain_chat(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": self._user_content(body_id, user_input)},
-                ],
-                # Dream ticks use lower temperature for more predictable, subtle outputs.
-            temperature=0.5 if is_dream else 0.7,
+            # Dream ticks use lower temperature for more predictable, subtle outputs.
+            parsed = self._decide(
+                interaction, body_id, user_input,
+                _DREAM_SYSTEM if is_dream else _AWAKE_SYSTEM,
+                0.5 if is_dream else 0.7,
             )
-            parsed = self._parse_json(raw)
 
             # Dream ticks do not update cognitive/emotion state — the robot should
             # appear to be in a continuous dream, not flicker between states.
@@ -848,15 +853,17 @@ class BodyGatewayNode(Node):
                 self._publish_emotion(parsed.get("emotion", "neutral"))
                 self._publish_cognitive("responding")
 
-            self._dispatch_actions(parsed.get("actions", []))
+            self._dispatch_actions(parsed.get("actions", []), interaction)
 
         except brain_client.BRAIN_ERRORS as e:
             self.get_logger().error(f"LLM error: {e}")
+            self._emit("error", interaction, message=f"LLM : {e}")
             # On dream tick errors, swallow silently — the next tick will retry.
             if not is_dream:
                 self._fallback(body_id)
         except Exception as e:
             self.get_logger().error(f"Inférence error: {e}")
+            self._emit("error", interaction, message=str(e))
             if not is_dream:
                 self._fallback(body_id)
         finally:
@@ -865,6 +872,28 @@ class BodyGatewayNode(Node):
             # robot is ready to receive the next wake word or sensor event.
             if not is_dream:
                 self._publish_cognitive("listening")
+
+    def _decide(self, interaction: str, body_id: str, user_input: str,
+                template: str, temperature: float) -> dict:
+        """One LLM call: prompt → parsed JSON, published on /events as a decision."""
+        started = time.monotonic()
+        raw = self._brain_chat(
+            messages=[
+                {"role": "system", "content": self._system_prompt(template)},
+                {"role": "user",   "content": self._user_content(body_id, user_input)},
+            ],
+            temperature=temperature,
+        )
+        parsed = self._parse_json(raw)
+        self._emit(
+            "decision", interaction,
+            thoughts=parsed.get("thoughts", ""),
+            emotion=parsed.get("emotion", ""),
+            energy=parsed.get("energy", ""),
+            actions=parsed.get("actions", []),
+            duration_s=round(time.monotonic() - started, 2),
+        )
+        return parsed
 
     def _system_prompt(self, template: str) -> str:
         """Fill the prompt with each body's capabilities and the body that speaks."""
@@ -908,7 +937,7 @@ class BodyGatewayNode(Node):
     # Dispatch actions to robot bodies via ROS 2
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _dispatch_actions(self, actions: list):
+    def _dispatch_actions(self, actions: list, interaction: str = ""):
         """Iterate over the LLM action list and publish each one to the correct robot body.
 
         Actions target specific bodies via the "body" field.  Unknown bodies
@@ -919,6 +948,12 @@ class BodyGatewayNode(Node):
             requested = action.get("body", BODY_REGISTRY[0])
             # Routing table: speech → every connected voice (room, stream), gestures → NAO.
             targets = body_rules.route_targets(action, BODY_REGISTRY, self._body_connected)
+            self._emit(
+                "action", interaction,
+                type=action.get("type", ""), requested=requested, targets=targets,
+                connected={b: self._body_connected.get(b, False) for b in targets},
+                detail=events.action_detail(action),
+            )
             # Skip actions targeting a body not registered at startup.
             if not targets:
                 self.get_logger().warn(f"Corps inconnu '{requested}' — ignoré")
@@ -1033,6 +1068,8 @@ class BodyGatewayNode(Node):
             self._state = "IDLE"
             self._publish_cognitive("idle")
             self.get_logger().info("État → IDLE")
+        # Lets a régie opened later learn which bodies are connected.
+        self._emit_bodies()
 
     def _dream_loop(self):
         """Background thread: trigger a dream inference tick every DREAM_TICK_INTERVAL s.
@@ -1055,6 +1092,15 @@ class BodyGatewayNode(Node):
     # ─────────────────────────────────────────────────────────────────────────
     # ROS 2 publish helpers
     # ─────────────────────────────────────────────────────────────────────────
+
+    def _emit(self, kind: str, interaction: str = "", **fields):
+        """Publish one event on /events (format in events.py)."""
+        msg = String()
+        msg.data = events.encode(events.make(kind, interaction, **fields))
+        self.pub_events.publish(msg)
+
+    def _emit_bodies(self):
+        self._emit("bodies", connected=dict(self._body_connected), state=self._state)
 
     def _publish_cognitive(self, state: str):
         msg = String()

@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Régie NAO</title>
+<style>
+  :root {
+    --bg: #0f1216; --panel: #171b21; --line: #2a313b; --text: #e6e9ee; --muted: #8b95a3;
+    --ok: #3ecf8e; --warn: #f0b429; --err: #ef5b5b;
+    --webui: #5b9cf0; --twitch: #a970ff; --voice: #3ecf8e; --sensor: #f0b429; --dream: #7b8794;
+    --brain: #f07b5b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center;
+           padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  .pill b { color: var(--text); font-weight: 500; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--err); display: inline-block; }
+  .dot.up { background: var(--ok); }
+  header .spacer { flex: 1; }
+  button { background: var(--panel); color: var(--text); border: 1px solid var(--line);
+           border-radius: 6px; padding: 5px 12px; font: inherit; cursor: pointer; }
+  button.on { border-color: var(--warn); color: var(--warn); }
+  main { padding: 12px 16px 32px; max-width: 1200px; margin: 0 auto; }
+  #map { width: 100%; height: auto; display: block; background: var(--panel);
+         border: 1px solid var(--line); border-radius: 10px; }
+  #map .edge { stroke: var(--line); stroke-width: 2; fill: none; }
+  #map .node rect { fill: #1e242c; stroke: var(--line); stroke-width: 1.5; transition: stroke .3s, fill .3s; }
+  #map .node.hot rect { fill: #262e38; stroke: var(--accent, var(--text)); }
+  #map .node .name { fill: var(--text); font-size: 15px; font-weight: 600; }
+  #map .node .sub { fill: var(--muted); font-size: 12px; }
+  #map .col { fill: var(--muted); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+  #map .conn { fill: var(--muted); }
+  #map .conn.up { fill: var(--ok); }
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 8px; align-items: center; }
+  .filters label { display: inline-flex; gap: 5px; align-items: center; color: var(--muted); cursor: pointer; }
+  .filters h2 { font-size: 15px; margin: 0 12px 0 0; font-weight: 600; }
+  #feed { display: flex; flex-direction: column; gap: 8px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--c, var(--line));
+          border-radius: 8px; padding: 10px 12px; overflow-wrap: anywhere; }
+  .card.ignored { opacity: .6; padding: 6px 12px; }
+  .row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .time { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+  .badge { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em;
+           color: var(--c, var(--muted)); }
+  .muted { color: var(--muted); }
+  .thoughts { color: var(--muted); font-style: italic; margin-top: 6px; }
+  .actions { margin: 6px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 3px; }
+  .actions li { display: flex; gap: 8px; flex-wrap: wrap; }
+  .type { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--brain); }
+  .tgt.off { color: var(--warn); }
+  .err { color: var(--err); margin-top: 6px; }
+  .empty { color: var(--muted); padding: 24px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Régie NAO</h1>
+  <span class="pill"><span id="link" class="dot"></span><span id="linkText">rosbridge…</span></span>
+  <span class="pill">Cerveau <b id="cognitive">—</b></span>
+  <span class="pill">Émotion <b id="emotion">—</b></span>
+  <span class="spacer"></span>
+  <button id="pause" type="button">Pause</button>
+</header>
+<main>
+  <svg id="map" viewBox="0 0 1000 380" role="img" aria-label="Flux entre les entrées, body-gateway et les corps"></svg>
+  <div class="filters">
+    <h2>Interactions</h2>
+    <span id="filters"></span>
+  </div>
+  <div id="feed"><div class="empty">En attente d'événements sur /events…</div></div>
+</main>
+<script>
+"use strict";
+const SOURCES = [
+  ["webui",  "Open WebUI"],
+  ["twitch", "Tchat Twitch"],
+  ["voice",  "Voix « ok nao »"],
+  ["sensor", "Capteurs"],
+  ["dream",  "Rêve"],
+];
+const SOURCE_NAME = Object.fromEntries(SOURCES);
+const COLOR = name => getComputedStyle(document.documentElement).getPropertyValue("--" + name).trim();
+const SVG = "http://www.w3.org/2000/svg";
+const map = document.getElementById("map");
+const feed = document.getElementById("feed");
+const MAX_CARDS = 150;
+
+let bodies = ["nao_01", "static_01", "obs_01"];
+let connected = {};
+const nodes = {};         // key → {g, x, y, sub}
+const cards = new Map();  // interaction id → card element
+const hidden = new Set();
+let paused = false, buffered = [];
+
+// ── Diagram ────────────────────────────────────────────────────────────────
+
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(SVG, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+
+function short(text, n) {
+  text = (text || "").replace(/\s+/g, " ").trim();
+  return text.length > n ? text.slice(0, n - 1) + "…" : text;
+}
+
+function node(key, x, y, w, name, accent) {
+  const g = el("g", { class: "node", transform: `translate(${x - w / 2},${y - 26})` }, map);
+  g.style.setProperty("--accent", accent);
+  el("rect", { width: w, height: 52, rx: 10 }, g);
+  el("rect", { width: 4, height: 32, x: 0, y: 10, rx: 2, style: `fill:${accent};stroke:none` }, g);
+  el("text", { x: 16, y: 22, class: "name" }, g).textContent = name;
+  const sub = el("text", { x: 16, y: 40, class: "sub" }, g);
+  nodes[key] = { g, x, y, w, sub };
+  return nodes[key];
+}
+
+function drawMap() {
+  map.textContent = "";
+  for (const k in nodes) delete nodes[k];
+  el("text", { x: 120, y: 24, class: "col", "text-anchor": "middle" }, map).textContent = "Entrées";
+  el("text", { x: 500, y: 24, class: "col", "text-anchor": "middle" }, map).textContent = "Cerveau";
+  el("text", { x: 880, y: 24, class: "col", "text-anchor": "middle" }, map).textContent = "Corps";
+  const edges = el("g", {}, map);
+  const step = (h, n, i) => 50 + (h - 50) / n * (i + 0.5);
+  SOURCES.forEach(([key, name], i) => node("in:" + key, 120, step(380, SOURCES.length, i), 210, name, COLOR(key)));
+  node("brain", 500, 200, 240, "body-gateway · LLM", COLOR("brain"));
+  bodies.forEach((b, i) => {
+    const n = node("body:" + b, 880, step(380, bodies.length, i), 210, b, COLOR("ok"));
+    n.conn = el("circle", { cx: 190, cy: 20, r: 5, class: "conn" + (connected[b] ? " up" : "") }, n.g);
+  });
+  for (const k in nodes) {
+    if (k === "brain") continue;
+    const a = nodes[k], b = nodes.brain;
+    const [x1, x2] = k.startsWith("in:") ? [a.x + a.w / 2, b.x - b.w / 2] : [b.x + b.w / 2, a.x - a.w / 2];
+    const [y1, y2] = k.startsWith("in:") ? [a.y, b.y] : [b.y, a.y];
+    const mid = (x1 + x2) / 2;
+    nodes[k].path = el("path", { class: "edge", d: `M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}` }, edges);
+  }
+}
+
+function setBodies(list) {
+  const fresh = [...new Set(list)];
+  if (fresh.join() !== bodies.join()) { bodies = fresh; drawMap(); }
+  for (const b of bodies) nodes["body:" + b].conn.setAttribute("class", "conn" + (connected[b] ? " up" : ""));
+}
+
+function flash(key) {
+  const n = nodes[key];
+  if (!n) return;
+  n.g.classList.add("hot");
+  clearTimeout(n.timer);
+  n.timer = setTimeout(() => n.g.classList.remove("hot"), 1500);
+}
+
+function pulse(key, color, reverse) {
+  const n = nodes[key];
+  if (!n || !n.path) return;
+  const path = n.path, len = path.getTotalLength();
+  const dot = el("circle", { r: 6, fill: color }, map);
+  const start = performance.now(), dur = 700;
+  (function frame(now) {
+    const p = Math.min((now - start) / dur, 1);
+    const pt = path.getPointAtLength((reverse ? 1 - p : p) * len);
+    dot.setAttribute("cx", pt.x); dot.setAttribute("cy", pt.y);
+    if (p < 1) requestAnimationFrame(frame); else dot.remove();
+  })(start);
+}
+
+// ── Feed ───────────────────────────────────────────────────────────────────
+
+function h(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function clock(t) {
+  return new Date((t || Date.now() / 1000) * 1000).toLocaleTimeString("fr-FR");
+}
+
+function newCard(ev, cls) {
+  const empty = feed.querySelector(".empty");
+  if (empty) empty.remove();
+  const card = h("div", "card" + (cls ? " " + cls : ""));
+  card.dataset.source = ev.source || "";
+  card.style.setProperty("--c", `var(--${ev.source || "line"})`);
+  card.hidden = hidden.has(ev.source);
+  feed.prepend(card);
+  while (feed.children.length > MAX_CARDS) {
+    const last = feed.lastElementChild;
+    for (const [id, c] of cards) if (c === last) cards.delete(id);
+    last.remove();
+  }
+  return card;
+}
+
+function cardFor(ev) {
+  if (ev.id && cards.has(ev.id)) return cards.get(ev.id);
+  const card = newCard(ev);
+  if (ev.id) cards.set(ev.id, card);
+  return card;
+}
+
+function renderInput(ev) {
+  const card = cardFor(ev);
+  const row = h("div", "row");
+  row.append(h("span", "time", clock(ev.t)), h("span", "badge", SOURCE_NAME[ev.source] || ev.source));
+  if (ev.body) row.append(h("span", "muted", ev.body));
+  card.append(row, h("div", "", ev.text));
+}
+
+function renderIgnored(ev) {
+  const card = newCard(ev, "ignored");
+  const why = ev.reason === "wake_word" ? "sans mot de réveil" : "cerveau occupé";
+  const row = h("div", "row");
+  row.append(h("span", "time", clock(ev.t)), h("span", "badge", SOURCE_NAME[ev.source] || ev.source),
+             h("span", "muted", `ignoré (${why}) :`), h("span", "", short(ev.text, 160)));
+  card.append(row);
+}
+
+function renderDecision(ev) {
+  const card = cardFor(ev);
+  const row = h("div", "row");
+  row.append(h("span", "type", "LLM"), h("span", "muted", `${ev.duration_s ?? "?"} s`));
+  if (ev.emotion) row.append(h("span", "", ev.emotion));
+  if (ev.energy) row.append(h("span", "muted", "énergie " + ev.energy));
+  card.append(row);
+  if (ev.thoughts) card.append(h("div", "thoughts", ev.thoughts));
+  card._actions = h("ul", "actions");
+  card.append(card._actions);
+}
+
+function renderAction(ev) {
+  const card = cardFor(ev);
+  if (!card._actions) { card._actions = h("ul", "actions"); card.append(card._actions); }
+  const li = h("li");
+  li.append(h("span", "type", ev.type || "?"));
+  if (!ev.targets || !ev.targets.length) {
+    li.append(h("span", "tgt off", `corps inconnu ${ev.requested}`));
+  } else {
+    li.append(h("span", "muted", "→"));
+    for (const t of ev.targets) {
+      li.append(h("span", "tgt" + (ev.connected && ev.connected[t] ? "" : " off"),
+                  t + (ev.connected && ev.connected[t] ? "" : " (déconnecté)")));
+    }
+  }
+  if (ev.detail) li.append(h("span", "", short(ev.detail, 200)));
+  card._actions.append(li);
+}
+
+function renderError(ev) {
+  cardFor(ev).append(h("div", "err", "Erreur : " + ev.message));
+}
+
+// ── Events ─────────────────────────────────────────────────────────────────
+
+function handle(ev, live) {
+  switch (ev.kind) {
+    case "link":
+      document.getElementById("link").className = "dot" + (ev.up ? " up" : "");
+      document.getElementById("linkText").textContent = ev.up ? "rosbridge connecté" : "rosbridge coupé";
+      return;
+    case "cognitive":
+      document.getElementById("cognitive").textContent = ev.value;
+      if (nodes.brain) nodes.brain.sub.textContent = ev.value;
+      if (live && ev.value === "thinking") flash("brain");
+      return;
+    case "emotion":
+      document.getElementById("emotion").textContent = ev.value;
+      return;
+    case "bodies":
+      connected = ev.connected || {};
+      setBodies(Object.keys(connected));
+      return;
+    case "input":
+      nodes["in:" + ev.source] && (nodes["in:" + ev.source].sub.textContent = short(ev.text, 30));
+      if (live) { flash("in:" + ev.source); pulse("in:" + ev.source, COLOR(ev.source)); }
+      renderInput(ev);
+      return;
+    case "ignored":
+      if (live) flash("in:" + ev.source);
+      renderIgnored(ev);
+      return;
+    case "decision":
+      if (live) flash("brain");
+      renderDecision(ev);
+      return;
+    case "action":
+      for (const t of ev.targets || []) {
+        if (!bodies.includes(t)) setBodies([...bodies, t]);
+        nodes["body:" + t].sub.textContent = short(`${ev.type} ${ev.detail || ""}`, 30);
+        if (live) { flash("body:" + t); pulse("body:" + t, COLOR("brain")); }
+      }
+      renderAction(ev);
+      return;
+    case "error":
+      renderError(ev);
+      return;
+  }
+}
+
+function connect() {
+  const token = new URLSearchParams(location.search).get("token") || "";
+  const source = new EventSource("stream?token=" + encodeURIComponent(token));
+  source.addEventListener("history", e => {
+    feed.textContent = "";
+    feed.append(h("div", "empty", "En attente d'événements sur /events…"));
+    cards.clear();
+    for (const ev of JSON.parse(e.data)) handle(ev, false);
+  });
+  source.onmessage = e => {
+    const ev = JSON.parse(e.data);
+    if (paused && !["link", "cognitive", "emotion", "bodies"].includes(ev.kind)) buffered.push(ev);
+    else handle(ev, true);
+  };
+  source.onerror = () => handle({ kind: "link", up: false }, false);
+}
+
+// ── Controls ───────────────────────────────────────────────────────────────
+
+const filters = document.getElementById("filters");
+for (const [key, name] of SOURCES) {
+  const label = h("label");
+  const box = h("input");
+  box.type = "checkbox"; box.checked = true;
+  box.onchange = () => {
+    box.checked ? hidden.delete(key) : hidden.add(key);
+    for (const c of feed.querySelectorAll(".card")) c.hidden = hidden.has(c.dataset.source);
+  };
+  const sw = h("span", "dot"); sw.style.background = COLOR(key);
+  label.append(box, sw, document.createTextNode(name));
+  filters.append(label);
+}
+
+document.getElementById("pause").onclick = e => {
+  paused = !paused;
+  e.target.classList.toggle("on", paused);
+  e.target.textContent = paused ? `Reprendre` : "Pause";
+  if (!paused) { buffered.forEach(ev => handle(ev, false)); buffered = []; }
+};
+
+drawMap();
+connect();
+</script>
+</body>
+</html>

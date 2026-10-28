@@ -73,6 +73,7 @@ Faire pointer vers l'IP du VPS (enregistrements A) les sous-domaines servis par 
 | `ollama.$DOMAIN` | API Ollama |
 | `rosbridge.$DOMAIN` | `rosbridge-proxy` (NAO, drone statique) |
 | `obs.$DOMAIN` | `obs-agent` : overlay OBS, voix du stream ([ADR 005](decisions/005-avatar-twitch.md)) |
+| `regie.$DOMAIN` | `regie` : suivi en direct des flux entre les composants ([ADR 007](decisions/007-regie-topic-events.md)) |
 
 ---
 
@@ -100,9 +101,10 @@ Toutes les variables sensibles sont injectées par Coolify. Aucun secret n'est c
 | `OAUTH_CLIENT_SECRET` | Idem, même credential |
 | `N8N_BASIC_AUTH_PASSWORD` | Mot de passe fort de ton choix |
 | `BITTERBOT_GATEWAY_TOKEN` | `openssl rand -hex 32` — doit correspondre à `gateway.auth.token` dans `bitterbot.json` |
-| `ROSBRIDGE_TOKEN` | `openssl rand -hex 32` — jeton exigé par `rosbridge-proxy` ; même valeur à passer au NAO (`nao_ws_bridge.py --token`), au drone statique et à `obs-agent`. Sans lui, `rosbridge-proxy` refuse de démarrer |
+| `ROSBRIDGE_TOKEN` | `openssl rand -hex 32` — jeton exigé par `rosbridge-proxy` ; même valeur à passer au NAO (`nao_ws_bridge.py --token`), au drone statique, à `obs-agent` et à `regie`. Sans lui, `rosbridge-proxy` refuse de démarrer |
 | `TWITCH_CHANNEL` | Chaîne dont on lit le tchat (ex : `monolithoid`). Sans elle, `twitch-input` refuse de démarrer et redémarre en boucle |
 | `OBS_TOKEN` | `openssl rand -hex 32` — secret de l'URL de l'overlay OBS. Sans lui (ou sans `ROSBRIDGE_TOKEN`), `obs-agent` refuse de démarrer |
+| `REGIE_TOKEN` | `openssl rand -hex 32` — secret de l'URL de la régie. Sans lui (ou sans `ROSBRIDGE_TOKEN`), `regie` refuse de démarrer |
 
 Variables optionnelles (valeurs par défaut dans `docker-compose.yml`, dont l'en-tête décrit chacune) :
 
@@ -156,6 +158,7 @@ Chaque build prend 5–15 min. Les images produites :
 - `$DOCKERHUB_USERNAME/ros2-bridge:latest`
 - `$DOCKERHUB_USERNAME/twitch-input:latest`
 - `$DOCKERHUB_USERNAME/obs-agent:latest`
+- `$DOCKERHUB_USERNAME/regie:latest`
 
 **Rebuilds automatiques :**
 - Bitterbot : tous les lundis à 3h00 UTC
@@ -179,6 +182,9 @@ docker exec -it ollama ollama pull qwen3:1.7b   # modèle par défaut de body-ga
 **« Contrôler l'audio via OBS »**. La voix devient une source du mixer, avec sous-titres.
 Le corps `obs_01` n'est connecté (et ne reçoit la parole) que tant que cette source est ouverte.
 
+**Régie** ([ADR 007](decisions/007-regie-topic-events.md)) : ouvrir `https://regie.$DOMAIN/?token=$REGIE_TOKEN`
+pour voir en direct chaque entrée, la décision du LLM et les actions envoyées à chaque corps.
+
 ---
 
 ## 8. Mettre à jour les services
@@ -190,7 +196,7 @@ docker compose up -d
 
 # Un service spécifique
 docker compose pull bitterbot-gateway && docker compose up -d bitterbot-gateway
-docker compose pull naoqi-bridge nao-core body-gateway ros2-bridge twitch-input obs-agent && docker compose up -d naoqi-bridge nao-core body-gateway ros2-bridge twitch-input obs-agent
+docker compose pull naoqi-bridge nao-core body-gateway ros2-bridge twitch-input obs-agent regie && docker compose up -d naoqi-bridge nao-core body-gateway ros2-bridge twitch-input obs-agent regie
 ```
 
 Ou depuis Coolify : bouton **Redeploy** sur la resource.
