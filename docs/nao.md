@@ -73,6 +73,8 @@ python /home/nao/nao_ws_bridge.py --vps ws://DRONE_IP:9090/ [options]
 --token TOKEN         Secret sent as "Authorization: Bearer TOKEN" (default: $ROSBRIDGE_TOKEN).
                       Not needed through the static drone relay (ADR 006), which adds it.
                       Must match ROSBRIDGE_TOKEN in Coolify; connections without it get 401.
+--verbose             Also log every /nao/motion and /nao/status message
+                      (off by default: one log line per 20 Hz motion command costs CPU)
 --nao-ip IP           NAOqi IP address (default: 127.0.0.1)
 --nao-port PORT       NAOqi port (default: 9559)
 --modules MOD,...     Comma-separated modules to enable (default: all)
