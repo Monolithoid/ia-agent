@@ -9,6 +9,9 @@
   Cocher « Contrôler l'audio via OBS » : la voix de NAO arrive alors dans le
   mixer OBS comme une source audio à part (volume, filtres, retour casque).
   Fond transparent : seuls les sous-titres s'affichent pendant que NAO parle.
+  Si le navigateur bloque la lecture automatique du son, un bandeau le dit :
+  dans OBS, clic droit sur la source > Interagir, puis un clic dans la page.
+  Les phrases reçues entre-temps sont jouées après ce clic.
 -->
 <style>
   html, body { margin: 0; background: transparent; overflow: hidden;
@@ -19,16 +22,23 @@
              font-size: 30px; line-height: 1.3;
              opacity: 0; transition: opacity 0.3s; }
   #caption.on { opacity: 1; }
+  #unlock { position: absolute; top: 4%; left: 4%; display: none;
+            padding: 8px 14px; border-radius: 8px;
+            background: #b3261e; color: #fff; font-size: 20px; }
+  #unlock.on { display: block; }
 </style>
 </head>
 <body>
 <div id="caption"></div>
+<div id="unlock">Son bloqué : clic droit sur la source &gt; Interagir, puis un clic ici</div>
 <script>
   const token = new URLSearchParams(location.search).get("token") || "";
   const q = encodeURIComponent(token);
   const caption = document.getElementById("caption");
+  const unlock = document.getElementById("unlock");
   const pending = [];
   let playing = false;
+  let blocked = false;
 
   function speaking(state) {
     fetch(`speaking?token=${q}`, {
@@ -44,7 +54,7 @@
   }
 
   function next() {
-    if (playing || pending.length === 0) return;
+    if (playing || blocked || pending.length === 0) return;
     const ev = pending.shift();
     playing = true;
     show(ev);
@@ -56,8 +66,26 @@
     audio.onplay = () => speaking(true);
     audio.onended = done;
     audio.onerror = done;
-    audio.play().catch(done);
+    audio.play().catch((err) => {
+      if (err && err.name === "NotAllowedError") {
+        // Lecture automatique refusée : on garde la phrase jusqu'au premier clic.
+        blocked = true;
+        playing = false;
+        pending.unshift(ev);
+        caption.classList.remove("on");
+        unlock.classList.add("on");
+        return;
+      }
+      done();
+    });
   }
+
+  document.addEventListener("pointerdown", () => {
+    if (!blocked) return;
+    blocked = false;
+    unlock.classList.remove("on");
+    next();
+  });
 
   const events = new EventSource(`events?token=${q}`);
   events.onmessage = (e) => { pending.push(JSON.parse(e.data)); next(); };
