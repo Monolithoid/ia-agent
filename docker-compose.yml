@@ -368,7 +368,8 @@ services:
   # que si elle porte l'en-tête « Authorization: Bearer $ROSBRIDGE_TOKEN »,
   # sinon il répond 401. Sans jeton configuré, le conteneur refuse de démarrer.
   #
-  # Routeur Traefik : wss://rosbridge.${DOMAIN} (443, TLS) uniquement.
+  # Domaine : à choisir dans Coolify (champ Domains du service), en https://
+  # sur le port 80 du conteneur, ex. https://rosbridge.${DOMAIN}. TLS uniquement.
   # Le NAO, dont le Python 2.7 ne sait pas faire de TLS, passe par le relais
   # du drone statique (ADR 006) : plus de rosbridge en HTTP clair.
   rosbridge-proxy:
@@ -409,13 +410,6 @@ services:
           }
           EOF
           exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.rosbridge.rule=Host(`rosbridge.${DOMAIN}`)"
-      - "traefik.http.routers.rosbridge.entrypoints=https"
-      - "traefik.http.routers.rosbridge.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.rosbridge.service=rosbridge"
-      - "traefik.http.services.rosbridge.loadbalancer.server.port=80"
     networks:
       - robotics-net
     depends_on:
@@ -489,8 +483,10 @@ services:
   # Corps « voix » comme le haut-parleur du drone statique : il se
   # connecte à rosbridge (jeton), et static-driver (lancé une 2e fois
   # dans nao-core avec OBS_DRONE_ID) fait la synthèse edge-tts.
+  # Domaine : à choisir dans Coolify (champ Domains du service), avec le
+  # port du conteneur, ex. https://obs.${DOMAIN}:8096.
   # La voix arrive dans le mixer OBS par une source navigateur :
-  #   https://obs.${DOMAIN}/overlay?token=$OBS_TOKEN
+  #   https://<domaine obs-agent>/overlay?token=$OBS_TOKEN
   #   (cocher « Contrôler l'audio via OBS »)
   # Il n'est « connecté » (et ne reçoit la parole) que tant que
   # l'overlay est ouvert dans OBS.
@@ -504,12 +500,6 @@ services:
       - ROSBRIDGE_URL=ws://rosbridge-proxy:80
       - ROSBRIDGE_TOKEN=${ROSBRIDGE_TOKEN:-}
       - OBS_TOKEN=${OBS_TOKEN:-}
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.obs-overlay.rule=Host(`obs.${DOMAIN}`)"
-      - "traefik.http.routers.obs-overlay.entrypoints=https"
-      - "traefik.http.routers.obs-overlay.tls.certresolver=letsencrypt"
-      - "traefik.http.services.obs-overlay.loadbalancer.server.port=8096"
     networks:
       - robotics-net
     depends_on:
@@ -521,7 +511,9 @@ services:
   # body-gateway publie chaque entrée, décision du LLM et action
   # routée sur le topic ROS /events. La régie le lit par rosbridge
   # (jeton, lecture seule) et l'affiche en direct :
-  #   https://regie.${DOMAIN}/?token=$REGIE_TOKEN
+  #   https://<domaine regie>/?token=$REGIE_TOKEN
+  # Domaine : à choisir dans Coolify (champ Domains du service), avec le
+  # port du conteneur, ex. https://regie.${DOMAIN}:8097.
   # Lichtblick, rqt ou `ros2 topic echo /events` lisent le même topic.
   # ----------------------------------------------------------
   regie:
@@ -532,12 +524,6 @@ services:
       - ROSBRIDGE_URL=ws://rosbridge-proxy:80
       - ROSBRIDGE_TOKEN=${ROSBRIDGE_TOKEN:-}
       - REGIE_TOKEN=${REGIE_TOKEN:-}
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.regie.rule=Host(`regie.${DOMAIN}`)"
-      - "traefik.http.routers.regie.entrypoints=https"
-      - "traefik.http.routers.regie.tls.certresolver=letsencrypt"
-      - "traefik.http.services.regie.loadbalancer.server.port=8097"
     networks:
       - robotics-net
     depends_on:

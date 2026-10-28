@@ -63,17 +63,24 @@ ufw enable
 
 ---
 
-## 3. DNS
+## 3. Domaines et DNS
 
-Faire pointer vers l'IP du VPS (enregistrements A) les sous-domaines servis par Traefik :
+Les domaines publics se choisissent dans Coolify : resource **"IA"** → chaque service →
+champ **Domains**. Indiquer le port du conteneur à la fin de l'URL (il n'est pas public,
+il dit seulement à Traefik vers quel port du conteneur envoyer le trafic). Les noms
+ci-dessous sont des exemples :
 
-| Sous-domaine | Service |
-|---|---|
-| `chat.$DOMAIN` | Open WebUI |
-| `ollama.$DOMAIN` | API Ollama |
-| `rosbridge.$DOMAIN` | `rosbridge-proxy` (NAO, drone statique) |
-| `obs.$DOMAIN` | `obs-agent` : overlay OBS, voix du stream ([ADR 005](decisions/005-avatar-twitch.md)) |
-| `regie.$DOMAIN` | `regie` : suivi en direct des flux entre les composants ([ADR 007](decisions/007-regie-topic-events.md)) |
+| Service | Champ Domains dans Coolify (exemple) | Rôle |
+|---|---|---|
+| `open-webui` | `https://chat.$DOMAIN:8080` | Open WebUI |
+| `ollama` | `https://ollama.$DOMAIN:11434` | API Ollama |
+| `rosbridge-proxy` | `https://rosbridge.$DOMAIN:80` | rosbridge (drone statique, relais du NAO) ; TLS uniquement |
+| `obs-agent` | `https://obs.$DOMAIN:8096` | Overlay OBS, voix du stream ([ADR 005](decisions/005-avatar-twitch.md)) |
+| `regie` | `https://regie.$DOMAIN:8097` | Suivi en direct des flux ([ADR 007](decisions/007-regie-topic-events.md)) |
+
+Chaque domaine choisi doit avoir un enregistrement A vers l'IP du VPS. Le domaine de
+`rosbridge-proxy` est celui à mettre dans `ROSBRIDGE_URL` (`wss://…`) et
+`NAO_RELAY_UPSTREAM` (`https://…`) sur le drone statique.
 
 ---
 
@@ -178,11 +185,11 @@ docker exec -it ollama ollama pull qwen3:1.7b   # modèle par défaut de body-ga
 ```
 
 **Voix du stream dans OBS** ([ADR 005](decisions/005-avatar-twitch.md)) : ajouter une
-**source navigateur** avec l'URL `https://obs.$DOMAIN/overlay?token=$OBS_TOKEN` et cocher
+**source navigateur** avec l'URL `https://<domaine obs-agent>/overlay?token=$OBS_TOKEN` et cocher
 **« Contrôler l'audio via OBS »**. La voix devient une source du mixer, avec sous-titres.
 Le corps `obs_01` n'est connecté (et ne reçoit la parole) que tant que cette source est ouverte.
 
-**Régie** ([ADR 007](decisions/007-regie-topic-events.md)) : ouvrir `https://regie.$DOMAIN/?token=$REGIE_TOKEN`
+**Régie** ([ADR 007](decisions/007-regie-topic-events.md)) : ouvrir `https://<domaine regie>/?token=$REGIE_TOKEN`
 pour voir en direct chaque entrée, la décision du LLM et les actions envoyées à chaque corps.
 
 ---
