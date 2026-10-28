@@ -23,8 +23,13 @@ Authentication:
 Module filtering:
     --modules led,speech,gesture   Enable only the listed modules.
                                    Available: led, speech, audio_out, gesture,
-                                   motion, move, stop (default: all active).
-    --no-audio-capture             Disable wake word detection and VAD capture.
+                                   motion, move, stiffness, stop
+                                   (default: all except speech and audio_out).
+    --audio-capture                Enable wake word detection and VAD capture
+                                   (off by default).
+    --no-audio-capture             Force it off (overrides the provision file).
+    Audio is off by default since ADR 004: the static drone speaks and listens,
+    and the NAO saves the CPU of ALSpeechRecognition and TTS playback.
     The "bridge" section of the --provision file can set the same two options
     ({"modules": [...], "audio_capture": false}); command-line flags win.
 
@@ -35,14 +40,14 @@ TTS method:
         auto : mp3 if NAOqi is available, otherwise text (default).
 
 Examples:
-    # Emotive-only NAO (ADR 004: the static drone speaks, listens and sees):
-    python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --modules led,motion,stiffness,gesture,stop --no-audio-capture
+    # Emotive-only NAO (default: the static drone speaks, listens and sees):
+    python nao_ws_bridge.py --vps ws://DRONE_IP:9090/
 
     # LEDs + speech only, no audio capture:
-    python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --modules led,speech --no-audio-capture
+    python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --modules led,speech
 
-    # All modules active (default behaviour):
-    python nao_ws_bridge.py --vps ws://DRONE_IP:9090/
+    # NAO's own voice and ears (no static drone):
+    python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --modules led,motion,stiffness,gesture,stop,move,speech,audio_out --audio-capture
 
     # Apply post-flash config then start bridge:
     python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --provision
@@ -103,6 +108,9 @@ _SYSTEM_TOPICS = [
     ("/nao/shutdown", "std_msgs/Empty"),
 ]
 ALL_MODULES = frozenset(_MODULE_TOPICS.keys())
+# Voice modules are opt-in: since ADR 004 the static drone speaks for the NAO.
+_AUDIO_MODULES = frozenset(["speech", "audio_out"])
+DEFAULT_MODULES = ALL_MODULES - _AUDIO_MODULES
 
 # ── Motor temperature sampling ────────────────────────────────────────────────
 # One representative joint per group — enough to detect heat without spamming ALMemory.
@@ -671,17 +679,17 @@ class NaoBridge(object):
     Args:
         vps_url       : rosbridge WebSocket URL (e.g. ws://DRONE_IP:9090/, static drone relay).
         token         : shared secret expected by rosbridge-proxy (None = no header).
-        modules       : set of module names to enable (None = all modules).
+        modules       : set of module names to enable (None = DEFAULT_MODULES).
         audio_capture : enable wake word detection and VAD capture.
         tts_method    : "mp3" | "text" | "auto".
                         "auto" → mp3 if NAOqi available, otherwise text.
     """
 
-    def __init__(self, vps_url, modules=None, audio_capture=True, tts_method="auto",
+    def __init__(self, vps_url, modules=None, audio_capture=False, tts_method="auto",
                  token=None):
         self.vps_url = vps_url
         self._token = token
-        self._modules = ALL_MODULES if modules is None else frozenset(modules)
+        self._modules = DEFAULT_MODULES if modules is None else frozenset(modules)
         self._audio_capture_enabled = audio_capture
         self._tts_method_override = tts_method
         self.ws = None
@@ -1341,10 +1349,10 @@ if __name__ == "__main__":
         epilog=(
             "Modules disponibles : {}\n\n"
             "Exemples :\n"
-            "  Tout actif (defaut) :\n"
+            "  NAO emotif, sans audio (defaut) :\n"
             "    python nao_ws_bridge.py --vps ws://DRONE_IP:9090/\n\n"
             "  LED + parole seulement, sans capture audio :\n"
-            "    python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --modules led,speech --no-audio-capture\n\n"
+            "    python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --modules led,speech\n\n"
             "  Gestes + LED uniquement :\n"
             "    python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --modules gesture,led"
         ).format(",".join(sorted(ALL_MODULES)))
@@ -1380,15 +1388,21 @@ if __name__ == "__main__":
         help=(
             "Comma-separated list of modules to enable. "
             "Available: {}. "
-            "Default: all modules active."
-        ).format(", ".join(sorted(ALL_MODULES)))
+            "Default: {}."
+        ).format(", ".join(sorted(ALL_MODULES)), ", ".join(sorted(DEFAULT_MODULES)))
+    )
+    parser.add_argument(
+        "--audio-capture",
+        dest="audio_capture",
+        action="store_true",
+        default=None,
+        help="Enable wake word detection and VAD capture (disabled by default)."
     )
     parser.add_argument(
         "--no-audio-capture",
         dest="audio_capture",
         action="store_false",
-        default=None,
-        help="Disable wake word detection and VAD capture (enabled by default)."
+        help="Disable wake word detection and VAD capture, even if the provision file enables it."
     )
     parser.add_argument(
         "--tts-method",
@@ -1434,7 +1448,7 @@ if __name__ == "__main__":
         modules_arg = ",".join(str(m) for m in bridge_cfg["modules"])
     audio_capture = args.audio_capture
     if audio_capture is None:
-        audio_capture = bool(bridge_cfg.get("audio_capture", True))
+        audio_capture = bool(bridge_cfg.get("audio_capture", False))
 
     # Validate and parse the requested module list.
     if modules_arg is not None:
@@ -1450,7 +1464,7 @@ if __name__ == "__main__":
             )
         active_modules = requested
     else:
-        active_modules = None  # None means all modules (default)
+        active_modules = None  # None means DEFAULT_MODULES
 
     bridge = NaoBridge(args.vps, modules=active_modules, audio_capture=audio_capture,
                        tts_method=args.tts_method, token=args.token)
