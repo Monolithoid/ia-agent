@@ -177,16 +177,20 @@ _head 3 "body-gateway → Ollama (localhost:11434)"
 
 echo -e "  ${BLUE}→${NC} body-gateway (mode host) appelle http://localhost:11434"
 
+# Modèle du cerveau : BRAIN_MODEL de body-gateway, sinon son défaut Ollama.
+MODEL="${BRAIN_MODEL:-$(docker exec body-gateway printenv BRAIN_MODEL 2>/dev/null)}"
+MODEL="${MODEL:-qwen3:1.7b}"
+
 _check "Ollama /api/tags répond" \
     "curl -sf --max-time 10 http://localhost:11434/api/tags | grep -q 'models'"
 
-_check "Ollama liste le modèle qwen2.5:7b" \
-    "curl -sf --max-time 10 http://localhost:11434/api/tags | grep -q 'qwen2.5:7b'"
+_check "Ollama liste le modèle ${MODEL}" \
+    "curl -sf --max-time 10 http://localhost:11434/api/tags | grep -qF '\"${MODEL}\"'"
 
 _check "Ollama /v1/chat/completions (endpoint utilisé par body-gateway)" \
     "curl -sf --max-time 60 -X POST http://localhost:11434/v1/chat/completions \
      -H 'Content-Type: application/json' \
-     -d '{\"model\":\"qwen2.5:7b\",\"messages\":[{\"role\":\"user\",\"content\":\"Réponds uniquement avec le mot: ok\"}],\"stream\":false}' \
+     -d '{\"model\":\"${MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Réponds uniquement avec le mot: ok\"}],\"stream\":false}' \
      | grep -q 'choices'"
 
 # ─────────────────────────────────────────────────────────────────────────────
