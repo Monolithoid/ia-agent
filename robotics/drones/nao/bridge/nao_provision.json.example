@@ -14,12 +14,9 @@
     "audio_capture": false,
     "motion_limits": {
       "max_speed": 0.3,
-      "min_interval": 0.1,
-      "min_move_time": 0.3,
       "joint_margin": 0.05,
       "joint_ranges": {"HeadPitch": [-0.4, 0.3]},
-      "max_motor_temp": 70,
-      "postures": ["Stand", "StandInit", "Sit", "Crouch"]
+      "walk_max": 0.5
     }
   }
 }
