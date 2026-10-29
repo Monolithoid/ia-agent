@@ -180,12 +180,6 @@ Every motion command therefore goes through a guard in `nao_ws_bridge.py`
   These are theoretical no-load figures; under load and with NAOqi's
   acceleration ramps a real move is somewhat slower. Lower `velocity_scale`
   (e.g. 0.8) if moves still get cut short on the robot.
-- **Rest position**: at launch the bridge reads the head and arm angles
-  (sensor values) and keeps them as the single rest position. A joint that
-  received no order for `rest_delay` seconds goes back to it at `rest_speed`;
-  `/nao/stop` sends every moved joint back at once, and so does a clean
-  shutdown (Ctrl+C, `/nao/shutdown`). A new order interrupts a return to rest.
-  Put the robot in the wanted rest pose before starting the script.
 - **Concurrent motions**: joint moves are dropped while a posture change or a
   walk runs (`joints_while_busy`); a posture is refused while walking and the
   other way round. `goToPosture` runs in its own thread, only for the postures
@@ -209,9 +203,6 @@ Defaults, overridable in the `"bridge"` → `"motion_limits"` section of
 | `min_move_time` | 0.3 s | min time a joint keeps its target before the next one |
 | `while_moving` | `"drop"` | order for a joint still moving: dropped, or `"latest"` kept for after the move |
 | `velocity_scale` | 1.0 | share of the joint max velocity really reached, to estimate a move's end (0 = only `min_move_time`) |
-| `rest_return` | true | go back to the launch position after moves |
-| `rest_delay` / `rest_speed` | 3 s / 0.1 | idle time before the return, speed of the return |
-| `rest_tolerance` | 0.02 rad | a joint this close to rest is not moved |
 | `stiffness_max` | 1.0 | max stiffness value |
 | `max_motor_temp` | 70 °C | moves refused above it (0 = off) |
 | `postures` | Stand, StandInit, Sit, Crouch | allowed postures |
@@ -275,7 +266,7 @@ python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --tts-method text
 |---|---|---|---|
 | `/nao/status` | `std_msgs/String` (JSON) | `{"battery": 85}` — battery level heartbeat | Every 30 s |
 | `/nao/audio` | `std_msgs/String` (base64 WAV) | Captured speech after wake word | On demand |
-| `/nao/capabilities` | `std_msgs/String` (JSON) | `{"tts_method": "mp3"}` — TTS negotiation | On connect |
+| `/nao/capabilities` | `std_msgs/String` (JSON) | `{"tts_method": "mp3", "launch_pose": {"HeadYaw": 0.01, ...}}` — TTS negotiation, head/arm angles read at script launch | On connect |
 
 ---
 
@@ -306,6 +297,24 @@ Open WebUI (chat)                   NAO wake word "ok nao"
             │
          NAOqi SDK → speaker, LEDs, motors
 ```
+
+### Rest position (naoqi_driver)
+
+The robot is a puppet: it does not decide where it stands. At launch,
+`nao_ws_bridge.py` only reads its head and arm angles (sensor values) and
+reports them in `/nao/capabilities` (`launch_pose`, sent on every connection).
+The NAO driver (`naoqi_driver_node.py` + `rest_pose.py`) keeps this pose as
+the single rest position: a joint that received no `/nao/motion` order for
+`REST_DELAY` seconds after the estimated end of its move is sent back there at
+`REST_SPEED`. Put the robot in the wanted rest pose before starting the script.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `REST_RETURN` | `1` | `0` disables the return to rest |
+| `REST_DELAY` | 3 s | idle time before a joint goes back to rest |
+| `REST_SPEED` | 0.1 | speed of the return (still capped by the bridge's `max_speed`) |
+
+Tests without ROS 2: `cd robotics/drones/nao/driver && python3 -m unittest discover -s tests -v`.
 
 ### cognitive_renderer
 

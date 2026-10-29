@@ -181,10 +181,6 @@ _MOTION_LIMITS_DEFAULT = {
     "posture_cooldown": 5.0,    # s between two posture changes
     "walk_max":         0.5,    # |x|, |y|, |theta| ceiling for moveToward (normalized)
     "joints_while_busy": False,  # accept joint moves during a posture change or a walk
-    "rest_return":      True,   # joints go back to their angles at script launch
-    "rest_delay":       3.0,    # s without a new order before a joint goes back to rest
-    "rest_speed":       0.1,    # speed of the return to rest (still capped by max_speed)
-    "rest_tolerance":   0.02,   # rad; a joint this close to rest is considered at rest
     "fall_manager":     True,   # force ALMotion fall manager ON at startup
     "arm_collision_protection": True,  # ALMotion self-collision protection for arms
 }
@@ -309,11 +305,7 @@ class _MotionGuard(object):
       (while_moving="drop"), or the latest one waits for the end of the
       move (while_moving="latest");
     - joint moves are dropped while a posture change or a walk is running,
-      and for groups whose motors are too hot;
-    - rest position: the joint angles read at script launch.  A joint that
-      received no order for rest_delay seconds goes back to it at
-      rest_speed; so does every joint on /nao/stop and on shutdown.  A new
-      order interrupts a return to rest (it is never dropped for it).
+      and for groups whose motors are too hot.
     """
 
     def __init__(self, limits, proxy_factory=None):
@@ -327,9 +319,6 @@ class _MotionGuard(object):
         self._hold_until = {}        # joint -> time its current move is expected to end
         self._sent_angle = {}        # joint -> last angle sent to ALMotion
         self._dropped = 0            # orders dropped because their joint was moving
-        self._rest = {}              # joint -> rest angle (read at launch)
-        self._last_order = {}        # joint -> time of its last accepted order
-        self._resting = set()        # joints whose current move is a return to rest
         self._busy = set()           # "posture" / "walk" while running
         self._hot_groups = set()
         self._last_posture = 0.0
@@ -369,66 +358,11 @@ class _MotionGuard(object):
         with self._cond:
             self._pending.clear()
 
-    def set_rest(self, angles):
-        """Set the rest position ({joint: angle}), clamped to the allowed ranges."""
-        joints, values = _clamp_joints(list(angles.keys()), list(angles.values()), self.limits)
-        with self._cond:
-            self._rest = dict(zip(joints, values))
-            self._cond.notify()
-
-    def capture_rest(self):
-        """Read the current head and arm angles as the rest position."""
-        proxy = self._proxy_factory()
-        if proxy is None:
-            print("[motion] position de repos non lue (pas de NAOqi) — retour au repos inactif",
-                  file=sys.stderr)
-            return False
-        names = sorted(_JOINT_HW_LIMITS)
-        try:
-            # True: sensor values, i.e. where the joints really are.
-            angles = proxy.getAngles(names, True)
-        except Exception as e:
-            print("[motion] position de repos non lue : {}".format(e), file=sys.stderr)
-            return False
-        self.set_rest(dict(zip(names, angles)))
-        print("[motion] position de repos enregistree : {}".format(", ".join(
-            "{}={:.2f}".format(j, self._rest[j]) for j in sorted(self._rest))), file=sys.stderr)
-        return True
-
-    def _away_from_rest(self):
-        """Joints whose last sent angle is not their rest angle."""
-        tol = float(self.limits["rest_tolerance"])
-        return [j for j, a in self._sent_angle.items()
-                if j in self._rest and abs(a - self._rest[j]) > tol]
-
-    def _rest_speed(self):
-        return _clamp_speed(self.limits["rest_speed"], self.limits)
-
-    def go_rest(self):
-        """Send every moved joint back to rest now (used by /nao/stop)."""
-        with self._cond:
-            self._pending.clear()
-            if not self.limits["rest_return"] or "posture" in self._busy:
-                return
-            for j in self._away_from_rest():
-                self._pending[j] = (self._rest[j], self._rest_speed(), True)
-                # Stop wins over the move in progress.
-                self._hold_until[j] = 0.0
-            self._cond.notify()
-
-    def stop(self, go_rest=False):
+    def stop(self):
         with self._cond:
             self._stopped = True
             self._pending.clear()
-            joints = self._away_from_rest() if go_rest and self._rest else []
             self._cond.notify()
-        if joints and self._proxy is not None:
-            # Last move, sent from the caller: the worker thread is exiting.
-            try:
-                self._proxy.setAngles(joints, [self._rest[j] for j in joints],
-                                      self._rest_speed())
-            except Exception as e:
-                print("[motion] retour au repos : {}".format(e), file=sys.stderr)
 
     # -- commands --------------------------------------------------------
 
@@ -461,13 +395,11 @@ class _MotionGuard(object):
             for j, a in zip(joints, angles):
                 if _JOINT_TO_GROUP.get(j) in self._hot_groups:
                     continue
-                if (drop_moving and j not in self._resting
-                        and self._hold_until.get(j, 0.0) > now):
+                if drop_moving and self._hold_until.get(j, 0.0) > now:
                     # The joint is finishing its move: this order is lost on purpose.
                     self._dropped += 1
                     continue
-                self._pending[j] = (a, speed, False)
-                self._last_order[j] = now
+                self._pending[j] = (a, speed)
                 accepted += 1
             if accepted:
                 self._cond.notify()
@@ -493,25 +425,7 @@ class _MotionGuard(object):
         return duration
 
     def _ready(self, now):
-        # A real order may cut a return to rest short.
-        return [j for j, p in self._pending.items()
-                if self._hold_until.get(j, 0.0) <= now or (j in self._resting and not p[2])]
-
-    def _queue_due_rest(self, now):
-        """Queue the returns to rest that are due; return the next deadline (or None)."""
-        if not self.limits["rest_return"] or not self._rest or self._busy:
-            return None
-        next_due = None
-        for j in self._away_from_rest():
-            if j in self._pending:
-                continue
-            due = max(self._last_order.get(j, 0.0) + float(self.limits["rest_delay"]),
-                      self._hold_until.get(j, 0.0))
-            if due <= now:
-                self._pending[j] = (self._rest[j], self._rest_speed(), True)
-            elif next_due is None or due < next_due:
-                next_due = due
-        return next_due
+        return [j for j in self._pending if self._hold_until.get(j, 0.0) <= now]
 
     def _take(self):
         """Wait for pending moves whose joint is free and for the rate limit;
@@ -521,18 +435,14 @@ class _MotionGuard(object):
             while True:
                 if self._stopped:
                     return None
-                now = time.time()
-                next_rest = self._queue_due_rest(now)
                 if not self._pending:
-                    self._cond.wait(None if next_rest is None else next_rest - now)
+                    self._cond.wait()
                     continue
+                now = time.time()
                 if self._ready(now):
                     break
                 # Every pending joint is still moving: wake up when the first ends.
-                timeout = min(self._hold_until[j] for j in self._pending) - now
-                if next_rest is not None:
-                    timeout = min(timeout, next_rest - now)
-                self._cond.wait(timeout)
+                self._cond.wait(min(self._hold_until[j] for j in self._pending) - now)
             wait = self._last_send + float(self.limits["min_interval"]) - time.time()
         if wait > 0:
             # Commands arriving meanwhile are merged into the same call.
@@ -542,13 +452,9 @@ class _MotionGuard(object):
             batch = dict((j, self._pending.pop(j)) for j in self._ready(now))
             if batch:
                 speed = min(v[1] for v in batch.values())
-                for j, (a, _, is_rest) in batch.items():
+                for j, (a, _) in batch.items():
                     self._hold_until[j] = now + self._move_duration(j, a, speed)
                     self._sent_angle[j] = a
-                    if is_rest:
-                        self._resting.add(j)
-                    else:
-                        self._resting.discard(j)
                 self._last_send = now
         return batch
 
@@ -1134,6 +1040,9 @@ class NaoBridge(object):
         # Guard rails between incoming motion commands and ALMotion.
         self._limits = _motion_limits(motion_limits)
         self._guard = _MotionGuard(self._limits)
+        # Head and arm angles read at launch, reported to the NAO driver which
+        # uses them as the rest position (the robot itself decides nothing).
+        self._launch_pose = {}
 
     def _get_tts_method(self):
         """Return the effective TTS method.
@@ -1197,12 +1106,17 @@ class NaoBridge(object):
                 proxy.setCollisionProtectionEnabled("Arms", True)
         except Exception as e:
             print("[motion] protections NAOqi : {}".format(e), file=sys.stderr)
-        if self._limits["rest_return"]:
-            self._guard.capture_rest()
+        names = sorted(_JOINT_HW_LIMITS)
+        try:
+            # True: sensor values, i.e. where the joints really are.
+            angles = proxy.getAngles(names, True)
+            self._launch_pose = dict((n, round(float(a), 4)) for n, a in zip(names, angles))
+        except Exception as e:
+            print("[motion] pose de lancement non lue : {}".format(e), file=sys.stderr)
 
     def stop(self):
         self._stop.set()
-        self._guard.stop(go_rest=bool(self._limits["rest_return"]))
+        self._guard.stop()
         self._cleanup_resources()
         if self.ws:
             self.ws.close()
@@ -1268,7 +1182,10 @@ class NaoBridge(object):
 
         # Immediately announce TTS capability so the driver can negotiate the method
         tts_method = self._get_tts_method()
-        cap_payload = json.dumps({"tts_method": tts_method})
+        caps = {"tts_method": tts_method}
+        if self._launch_pose:
+            caps["launch_pose"] = self._launch_pose
+        cap_payload = json.dumps(caps)
         cap_msg = {"op": "publish", "topic": "/nao/capabilities",
                    "msg": {"data": cap_payload}}
         _ws_log(u"→", cap_msg)
@@ -1492,10 +1409,9 @@ class NaoBridge(object):
                 print("[bridge] leds error: {}".format(e), file=sys.stderr)
 
     def _stop_move(self):
-        # "stop" means stop everything: queued moves are dropped and the
-        # joints go back to the rest position (angles at script launch).
+        # Drop queued joint moves too: "stop" means stop everything.
+        self._guard.clear()
         self._guard.set_busy("walk", False)
-        self._guard.go_rest()
         if not HAS_NAOQI:
             print("[MOCK] stop", file=sys.stderr)
             return

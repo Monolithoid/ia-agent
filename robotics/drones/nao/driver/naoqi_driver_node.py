@@ -30,6 +30,14 @@ Environment variables:
   LISTEN_DURATION    audio recording duration in seconds, default 4.0
   NAO_STATUS_TIMEOUT seconds without /nao/status before marking disconnected, default 90
   TTS_VOICE          edge-tts voice name, default "fr-FR-DeniseNeural"
+  REST_RETURN        "0" disables the return to the launch pose, default "1"
+  REST_DELAY         seconds without an order before a joint goes back to rest, default 3
+  REST_SPEED         speed of the return to rest, default 0.1
+
+Rest position (the robot is a puppet: it does not decide where it stands):
+  nao_ws_bridge.py reports its head and arm angles at launch in
+  /nao/capabilities ("launch_pose").  This driver keeps them as the single
+  rest position and sends the joints back there itself (see rest_pose.py).
 """
 
 import base64
@@ -54,11 +62,17 @@ except ImportError:
                                     "..", "..", "..", "shared"))
     import speech_services
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from rest_pose import RestTracker, parse_motion  # noqa: E402
+
 ROBOT_ID = os.environ.get("ROBOT_ID", "nao_01")
 WHISPER_URL = os.environ.get("WHISPER_URL", "")
 LISTEN_DURATION = float(os.environ.get("LISTEN_DURATION", "4.0"))
 NAO_STATUS_TIMEOUT = float(os.environ.get("NAO_STATUS_TIMEOUT", "90.0"))
 TTS_VOICE = os.environ.get("TTS_VOICE", "fr-FR-DeniseNeural")
+REST_RETURN = os.environ.get("REST_RETURN", "1") != "0"
+REST_DELAY = float(os.environ.get("REST_DELAY", "3.0"))
+REST_SPEED = float(os.environ.get("REST_SPEED", "0.1"))
 
 
 class NAOqiDriverNode(Node):
@@ -119,6 +133,11 @@ class NAOqiDriverNode(Node):
 
         # ── Timer: detect NAO disconnection every 15 s ────────────────────────
         self.create_timer(15.0, self._check_connection)
+
+        # ── Rest position: launch pose reported by the robot ─────────────────
+        self._rest = RestTracker(delay=REST_DELAY, speed=REST_SPEED)
+        if REST_RETURN:
+            self.create_timer(0.5, self._rest_tick)
 
         self.get_logger().info(
             f"naoqi_driver2 [{ROBOT_ID}] démarré"
@@ -255,7 +274,12 @@ class NAOqiDriverNode(Node):
             if method in ("mp3", "text"):
                 self._tts_method = method
                 self.get_logger().info(f"[{ROBOT_ID}] TTS method négocié : {method}")
-        except json.JSONDecodeError:
+            pose = cap.get("launch_pose")
+            if isinstance(pose, dict) and pose:
+                self._rest.set_rest(pose)
+                self.get_logger().info(f"[{ROBOT_ID}] position de repos : " + ", ".join(
+                    f"{j}={a:.2f}" for j, a in sorted(self._rest.rest.items())))
+        except (json.JSONDecodeError, TypeError, ValueError):
             pass
 
     def _on_say(self, msg: String):
@@ -301,7 +325,25 @@ class NAOqiDriverNode(Node):
 
     def _on_motion(self, msg: String):
         self.get_logger().info(f"[{ROBOT_ID}] → /nao/motion : {msg.data[:80]!r}")
+        self._publish_motion(msg)
+
+    def _publish_motion(self, msg: String):
+        """Forward a joint command and note it for the return to rest."""
+        try:
+            joints, angles, speed = parse_motion(json.loads(msg.data))
+            self._rest.on_order(joints, angles, speed, time.time())
+        except (json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError):
+            pass
         self.pub_nao_motion.publish(msg)
+
+    def _rest_tick(self):
+        """Send joints idle for REST_DELAY seconds back to the launch pose."""
+        if not self._connected:
+            return
+        cmd = self._rest.due(time.time())
+        if cmd:
+            self.get_logger().info(f"[{ROBOT_ID}] retour au repos : {', '.join(cmd['joints'])}")
+            self.pub_nao_motion.publish(String(data=json.dumps(cmd)))
 
     def _on_leds(self, msg: String):
         self.get_logger().info(f"[{ROBOT_ID}] → /nao/leds")
@@ -331,7 +373,7 @@ class NAOqiDriverNode(Node):
         self.pub_nao_leds.publish(self._normalize_leds(msg.data))
 
     def _on_naoqi_motion(self, msg: String):
-        self.pub_nao_motion.publish(msg)
+        self._publish_motion(msg)
 
     def _on_naoqi_stiffness(self, msg: String):
         """Forward stiffness commands from cognitive_renderer to the bridge.
