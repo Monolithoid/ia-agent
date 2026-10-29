@@ -873,16 +873,20 @@ class NaoBridge(object):
         self._launch_pose = {}
 
     def _get_tts_method(self):
-        """Return the effective TTS method.
+        """Return the effective TTS method, or None when the NAO does not speak.
 
-        "auto" selects mp3 when NAOqi is available (real robot), otherwise
-        falls back to text — useful for development/mock mode on a non-NAO host.
+        "auto" selects mp3 when NAOqi is available (real robot) and audio_out
+        is on, otherwise falls back to text — useful for development/mock mode
+        on a non-NAO host.
         """
+        # Neither speech module on (default since ADR 004): nothing to negotiate.
+        if not self._modules & _AUDIO_MODULES:
+            return None
         # Explicit override takes precedence over auto-detection.
         if self._tts_method_override != "auto":
             return self._tts_method_override
-        # Auto: mp3 requires NAOqi ALAudioPlayer; on mock hosts use text fallback.
-        return "mp3" if HAS_NAOQI else "text"
+        # Auto: mp3 requires NAOqi ALAudioPlayer and the audio_out module.
+        return "mp3" if HAS_NAOQI and "audio_out" in self._modules else "text"
 
     # ------------------------------------------------------------------
     # Connection / auto-reconnect loop
@@ -1009,7 +1013,7 @@ class NaoBridge(object):
 
         # Immediately announce TTS capability so the driver can negotiate the method
         tts_method = self._get_tts_method()
-        caps = {"tts_method": tts_method}
+        caps = {"tts_method": tts_method} if tts_method else {}
         if self._launch_pose:
             caps["launch_pose"] = self._launch_pose
         cap_payload = json.dumps(caps)
@@ -1017,7 +1021,10 @@ class NaoBridge(object):
                    "msg": {"data": cap_payload}}
         _ws_log(u"→", cap_msg)
         ws.send(json.dumps(cap_msg))
-        print("[bridge] Capacites TTS annoncees : {}".format(tts_method), file=sys.stderr)
+        if tts_method:
+            print("[bridge] Capacites TTS annoncees : {}".format(tts_method), file=sys.stderr)
+        else:
+            print("[bridge] Pas de TTS annonce (speech et audio_out coupes).", file=sys.stderr)
 
         print("[bridge] Pret.", file=sys.stderr)
         self._connected.set()
