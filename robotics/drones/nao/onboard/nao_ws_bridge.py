@@ -750,8 +750,13 @@ def _bridge_config(config_path):
     return section
 
 
-def _provision(config_path):
-    """Apply post-flash configuration from config_path (JSON file)."""
+def _provision(config_path, tts=True, asr=True):
+    """Apply post-flash configuration from config_path (JSON file).
+
+    tts / asr: configure the NAOqi TTS / speech recognition language.  Off when
+    the bridge does not use them: setLanguage loads the language engine into
+    NAOqi's memory for nothing (the NAO is silent since ADR 004).
+    """
     try:
         with open(config_path, "r") as f:
             config = json.load(f)
@@ -784,7 +789,9 @@ def _provision(config_path):
     # .pkg files are copied to /tmp (only writable space available on NAO).
     # Installation uses qicli (PackageManager, always present on NAO OS).
     lang_cfg = config.get("language", {})
-    if lang_cfg:
+    if lang_cfg and not (tts or asr):
+        print("[provision] Audio off — TTS/ASR language skipped.", file=sys.stderr)
+    elif lang_cfg:
         import glob as _glob
         import subprocess as _subprocess
         pkgs = sorted(_glob.glob("/tmp/*.pkg"))
@@ -808,7 +815,7 @@ def _provision(config_path):
         else:
             print("[provision] No .pkg files found in /tmp.", file=sys.stderr)
 
-        if "tts" in lang_cfg:
+        if "tts" in lang_cfg and tts:
             lang = str(lang_cfg["tts"])
             proxy = get_proxy("ALTextToSpeech")
             if proxy:
@@ -825,7 +832,7 @@ def _provision(config_path):
                     print("[provision] TTS error: {}".format(e), file=sys.stderr)
                     ok = False
 
-        if "asr" in lang_cfg:
+        if "asr" in lang_cfg and asr:
             lang = str(lang_cfg["asr"])
             proxy = get_proxy("ALSpeechRecognition")
             if proxy:
@@ -1777,13 +1784,6 @@ if __name__ == "__main__":
     NAO_PORT = args.nao_port
     _VERBOSE = args.verbose
 
-    # Apply post-flash provisioning if requested.
-    if args.provision:
-        _provision(args.provision)
-        # When --vps was not given, the user only wanted to provision — exit now.
-        if not args.vps:
-            sys.exit(0)
-
     # "bridge" section of the provisioning file, overridden by the CLI flags.
     bridge_cfg = _bridge_config(args.provision) if args.provision else {}
     modules_arg = args.modules
@@ -1808,6 +1808,15 @@ if __name__ == "__main__":
         active_modules = requested
     else:
         active_modules = None  # None means DEFAULT_MODULES
+
+    # Apply post-flash provisioning if requested; the TTS and ASR languages
+    # only when the modules that use them are on.
+    if args.provision:
+        enabled = DEFAULT_MODULES if active_modules is None else active_modules
+        _provision(args.provision, tts="speech" in enabled, asr=audio_capture)
+        # When --vps was not given, the user only wanted to provision — exit now.
+        if not args.vps:
+            sys.exit(0)
 
     bridge = NaoBridge(args.vps, modules=active_modules, audio_capture=audio_capture,
                        tts_method=args.tts_method, token=args.token,

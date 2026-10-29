@@ -474,6 +474,11 @@ The `"bridge"` section is optional: it gives the default `--modules` and audio
 capture (emotive-only NAO here). Without it, the defaults are the same: every
 module except `speech` and `audio_out`, and no audio capture.
 
+The `"language"` section is applied only when the bridge uses it: the TTS
+language with the `speech` module, the ASR language with audio capture. With
+audio off, `setLanguage` would load the language engine into NAOqi's memory
+for nothing, so it is skipped (`[provision] Audio off — TTS/ASR language skipped.`).
+
 Apply on first boot:
 ```bash
 python /home/nao/nao_ws_bridge.py --provision --vps ws://DRONE_IP:9090/
