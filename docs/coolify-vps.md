@@ -117,7 +117,7 @@ Variables optionnelles (valeurs par défaut dans `docker-compose.yml`, dont l'en
 
 | Groupe | Variables |
 |---|---|
-| Cerveau ([Stack IA](ia-stack.md#fournisseur-du-cerveau-body-gateway)) | `BRAIN_PROVIDER`, `BRAIN_URL`, `BRAIN_MODEL`, `BRAIN_API_KEY`, `BRAIN_EFFORT`, `BRAIN_TIMEOUT` |
+| Cerveau ([Stack IA](ia-stack.md#fournisseur-du-cerveau-body-gateway)) | `BRAIN_PROVIDER`, `BRAIN_URL`, `BRAIN_MODEL`, `BRAIN_API_KEY`, `BRAIN_EFFORT`, `BRAIN_TIMEOUT` (personnalité : fichier `/opt/ia/nao/persona/personnalite.md`) |
 | Corps | `NAO_ROBOT_ID`, `STATIC_DRONE_ID`, `OBS_DRONE_ID` (vide = corps désactivé), `NAO_HEAD_YAW_OFFSET`, `NAO_SPEAKING_SYNC` |
 | Voix | `WAKE_WORD`, `WAKE_WINDOW_S`, `LISTEN_DURATION`, `ASR_MODEL`, `TTS_VOICE` |
 | Twitch | `TWITCH_COMMAND_PREFIX`, `TWITCH_USER_COOLDOWN_S`, `TWITCH_MIN_INTERVAL_S`, `TWITCH_BLOCKLIST`, `TWITCH_MODS_ONLY` |

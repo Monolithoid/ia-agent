@@ -72,6 +72,27 @@ Sans `BRAIN_PROVIDER`, rien ne change : Ollama local et `qwen3:1.7b`, comme avan
 Un abonnement ChatGPT ou Claude.ai ne donne pas accès à l'API. Il faut une clé API,
 facturée à l'usage.
 
+### Personnalité de NAO
+
+Le prompt système commence par la personnalité de NAO : qui il est, son passé,
+sa façon de parler. Elle est lue dans `/opt/ia/nao/persona/personnalite.md` sur le
+VPS (monté en lecture seule dans body-gateway, variable `BRAIN_PERSONA_FILE`).
+
+- Le fichier est relu à chaque appel du LLM : une modification s'applique au
+  message suivant, sans redémarrer body-gateway.
+- Fichier absent ou vide : body-gateway prend le texte par défaut, `DEFAULT_PERSONA`
+  dans `robotics/brain/body_gateway/persona.py`.
+- Texte libre, en français, à la deuxième personne (« Tu es NAO… »). Quelques
+  paragraphes suffisent : il est envoyé à chaque appel et compte dans les tokens.
+- Le cadre technique (JSON strict, actions possibles, règles du tchat Twitch) reste
+  dans le code, après la personnalité : le fichier ne peut pas le remplacer.
+- Le prompt du mode rêve n'utilise pas la personnalité.
+
+```bash
+mkdir -p /opt/ia/nao/persona
+nano /opt/ia/nao/persona/personnalite.md
+```
+
 ### Paramètres Anthropic
 
 Ce qui est envoyé dépend du modèle. Les règles ci-dessous viennent de la documentation Anthropic d'octobre 2026.

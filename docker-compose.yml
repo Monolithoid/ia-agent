@@ -24,6 +24,7 @@ version: "3.8"
 #   mkdir -p /opt/ia/{ollama,webui,n8n,chroma}
 #   mkdir -p /opt/ia/bitterbot/{config,workspace}
 #   mkdir -p /opt/ia/nao/naoqi-sdk
+#   mkdir -p /opt/ia/nao/persona
 #   mkdir -p /opt/ia/whisper
 #   cp core/bitterbot/bitterbot.json /opt/ia/bitterbot/config/bitterbot.json
 #   # Extraire le SDK NAOqi Python 2.7 dans /opt/ia/nao/naoqi-sdk/
@@ -66,6 +67,7 @@ version: "3.8"
 #   BRAIN_MODEL              : vide = qwen3:1.7b / gpt-4o-mini / claude-haiku-4-5
 #   BRAIN_API_KEY            : clé du fournisseur (défaut : OLLAMA_API_KEYS)
 #   BRAIN_EFFORT             : Anthropic uniquement, optionnel (low/medium/high)
+#   Personnalité de NAO      : /opt/ia/nao/persona/personnalite.md (absent = texte par défaut)
 #
 # Firewall (ports exposés publiquement) :
 #   ufw allow 22
@@ -333,6 +335,7 @@ services:
       - BRAIN_MODEL=${BRAIN_MODEL:-}
       - BRAIN_API_KEY=${BRAIN_API_KEY:-${OLLAMA_API_KEYS}}
       - BRAIN_EFFORT=${BRAIN_EFFORT:-}
+      - BRAIN_PERSONA_FILE=/opt/nao/persona/personnalite.md
       - BODY_REGISTRY=${NAO_ROBOT_ID:-nao_01},${STATIC_DRONE_ID:-static_01},${OBS_DRONE_ID:-obs_01}
       - DREAMING_HOUR_START=${DREAMING_HOUR_START:-2}
       - DREAMING_HOUR_END=${DREAMING_HOUR_END:-6}
@@ -347,6 +350,9 @@ services:
       - WEBUI_API_KEY=${WEBUI_API_KEY:-}
       - WEBUI_PIPE_MODEL=${WEBUI_PIPE_MODEL:-nao_brain}
       - WEBUI_VOICE_CHAT_ID=${WEBUI_VOICE_CHAT_ID:-}
+    volumes:
+      # Personnalité de NAO, relue à chaque appel du LLM (persona.py)
+      - /opt/ia/nao/persona:/opt/nao/persona:ro
     depends_on:
       nao-core:
         condition: service_started

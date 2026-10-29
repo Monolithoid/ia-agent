@@ -56,6 +56,8 @@ Environment variables:
   BRAIN_PROVIDER             ollama | openai | anthropic, default ollama (see brain_client.py)
                              BRAIN_URL / BRAIN_MODEL defaults depend on the provider
   BRAIN_EFFORT               Anthropic effort (low/medium/high...), not sent when empty
+  BRAIN_PERSONA_FILE         NAO personality text at the top of the awake prompt,
+                             empty or missing file = persona.DEFAULT_PERSONA
   BODY_REGISTRY              comma-separated body IDs, default "nao_01"
                              (ids starting with "static" are static drones, ADR 004,
                               ids starting with "obs" are stream voices, ADR 005)
@@ -90,6 +92,7 @@ from std_msgs.msg import Bool, Float32, String
 import body_rules
 import brain_client
 import events
+import persona
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
@@ -118,13 +121,17 @@ WEBUI_URL           = os.environ.get("WEBUI_URL",           "")
 WEBUI_API_KEY       = os.environ.get("WEBUI_API_KEY",       "")
 WEBUI_PIPE_MODEL    = os.environ.get("WEBUI_PIPE_MODEL",    "nao_brain")
 WEBUI_VOICE_CHAT_ID = os.environ.get("WEBUI_VOICE_CHAT_ID", "")
+# Read at each LLM call (persona.py): editing the file needs no restart.
+BRAIN_PERSONA_FILE  = os.environ.get("BRAIN_PERSONA_FILE",  "")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # System prompts
 # ─────────────────────────────────────────────────────────────────────────────
 
 _AWAKE_SYSTEM = """\
-Tu es le système nerveux central d'un réseau de corps robotiques.
+{persona}
+
+Tu t'incarnes dans un réseau de corps robotiques.
 Corps disponibles et capacités :
 {bodies}
 
@@ -896,11 +903,13 @@ class BodyGatewayNode(Node):
         return parsed
 
     def _system_prompt(self, template: str) -> str:
-        """Fill the prompt with each body's capabilities and the body that speaks."""
+        """Fill the prompt with the persona, each body's capabilities and the body that speaks."""
         nao_bodies = body_rules.bodies_of_type(BODY_REGISTRY, "nao")
         nao = nao_bodies[0] if nao_bodies else BODY_REGISTRY[0]
         speaker = self._speech_body(nao)
+        # str.format ignores unused keys: the dream prompt has no {persona}.
         return template.format(
+            persona=persona.load_persona(BRAIN_PERSONA_FILE),
             bodies=body_rules.describe_bodies(BODY_REGISTRY, speaker),
             speaker=speaker, nao=nao,
         )
