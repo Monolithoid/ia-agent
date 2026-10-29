@@ -173,6 +173,7 @@ Defaults, overridable in the `"bridge"` → `"motion_limits"` section of
 | `posture_speed` | 0.3 | `goToPosture` speed |
 | `walk_max` | 0.5 | max normalized `moveToward` velocity |
 | `fall_manager` / `arm_collision_protection` | true / true | NAOqi protections turned on at startup |
+| `motion_call` | `"setAngles"` | `"legacy"` restores the pre-limits call (`setStiffnesses` + blocking `angleInterpolationWithSpeed`) to compare when NAOqi crashes |
 
 Tests without a robot (mock mode):
 

@@ -175,6 +175,10 @@ _MOTION_LIMITS_DEFAULT = {
     "walk_max":         0.5,    # |x|, |y|, |theta| ceiling for moveToward (normalized)
     "fall_manager":     True,   # force ALMotion fall manager ON at startup
     "arm_collision_protection": True,  # ALMotion self-collision protection for arms
+    # "setAngles": non-blocking call (default).  "legacy": the call used
+    # before the motion limits (setStiffnesses + blocking
+    # angleInterpolationWithSpeed), to compare when NAOqi crashes.
+    "motion_call":      "setAngles",
 }
 
 # Hardware joint ranges (rad), NAO V5 — same values as motion_engine/nao_joints.py.
@@ -212,6 +216,9 @@ def _motion_limits(section):
         default = limits[key]
         if isinstance(default, bool):
             ok = isinstance(value, bool)
+        elif key == "motion_call":
+            # JSON strings are unicode on Python 2: compare values, not types.
+            ok = value in ("setAngles", "legacy")
         elif isinstance(default, (int, float)):
             ok = isinstance(value, (int, float)) and not isinstance(value, bool)
         else:
@@ -296,9 +303,14 @@ class _MotionGuard(object):
                           file=sys.stderr)
             return len(joints)
         try:
-            proxy.setAngles(joints, angles, speed)
+            if self.limits["motion_call"] == "legacy":
+                for grp in set(_JOINT_TO_GROUP.get(j, "head") for j in joints):
+                    proxy.setStiffnesses(_NAOQI_GROUP[grp], 1.0)
+                proxy.angleInterpolationWithSpeed(joints, angles, speed)
+            else:
+                proxy.setAngles(joints, angles, speed)
         except Exception as e:
-            print("[motion] setAngles error: {}".format(e), file=sys.stderr)
+            print("[motion] {} error: {}".format(self.limits["motion_call"], e), file=sys.stderr)
         return len(joints)
 
 
