@@ -30,14 +30,15 @@ Environment variables:
   LISTEN_DURATION    audio recording duration in seconds, default 4.0
   NAO_STATUS_TIMEOUT seconds without /nao/status before marking disconnected, default 90
   TTS_VOICE          edge-tts voice name, default "fr-FR-DeniseNeural"
-  REST_RETURN        "0" disables the return to the launch pose, default "1"
-  REST_DELAY         seconds without an order before a joint goes back to rest, default 3
-  REST_SPEED         speed of the return to rest, default 0.1
+  MOTION_LIMITS      JSON overriding motion_policy.DEFAULT_LIMITS, e.g.
+                     '{"min_move_time": 0.5, "rest_delay": 5}', default empty
 
-Rest position (the robot is a puppet: it does not decide where it stands):
-  nao_ws_bridge.py reports its head and arm angles at launch in
-  /nao/capabilities ("launch_pose").  This driver keeps them as the single
-  rest position and sends the joints back there itself (see rest_pose.py).
+Motion decisions (the robot is a puppet: it crashes too often to decide):
+  every /nao/motion, /nao/gesture and /nao/cmd_vel order goes through
+  motion_policy.MotionPolicy here — rate, end of move, dropped orders,
+  postures, motor heat and return to the launch pose ("launch_pose" reported
+  by nao_ws_bridge.py in /nao/capabilities).  The robot only keeps hard
+  bounds (angles, speed, stiffness, walk).
 """
 
 import base64
@@ -63,16 +64,14 @@ except ImportError:
     import speech_services
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from rest_pose import RestTracker, parse_motion  # noqa: E402
+from motion_policy import MotionPolicy, load_limits, parse_motion  # noqa: E402
 
 ROBOT_ID = os.environ.get("ROBOT_ID", "nao_01")
 WHISPER_URL = os.environ.get("WHISPER_URL", "")
 LISTEN_DURATION = float(os.environ.get("LISTEN_DURATION", "4.0"))
 NAO_STATUS_TIMEOUT = float(os.environ.get("NAO_STATUS_TIMEOUT", "90.0"))
 TTS_VOICE = os.environ.get("TTS_VOICE", "fr-FR-DeniseNeural")
-REST_RETURN = os.environ.get("REST_RETURN", "1") != "0"
-REST_DELAY = float(os.environ.get("REST_DELAY", "3.0"))
-REST_SPEED = float(os.environ.get("REST_SPEED", "0.1"))
+MOTION_LIMITS = os.environ.get("MOTION_LIMITS", "")
 
 
 class NAOqiDriverNode(Node):
@@ -134,10 +133,17 @@ class NAOqiDriverNode(Node):
         # ── Timer: detect NAO disconnection every 15 s ────────────────────────
         self.create_timer(15.0, self._check_connection)
 
-        # ── Rest position: launch pose reported by the robot ─────────────────
-        self._rest = RestTracker(delay=REST_DELAY, speed=REST_SPEED)
-        if REST_RETURN:
-            self.create_timer(0.5, self._rest_tick)
+        # ── Motion decisions: every joint order goes out from this timer ─────
+        try:
+            section = json.loads(MOTION_LIMITS) if MOTION_LIMITS else {}
+        except json.JSONDecodeError as e:
+            self.get_logger().error(f"MOTION_LIMITS JSON invalide ({e}) — valeurs par défaut")
+            section = {}
+        limits, warnings = load_limits(section)
+        for w in warnings:
+            self.get_logger().warn(f"MOTION_LIMITS : {w} — ignorée")
+        self._motion = MotionPolicy(limits)
+        self.create_timer(float(limits["min_interval"]), self._motion_tick)
 
         self.get_logger().info(
             f"naoqi_driver2 [{ROBOT_ID}] démarré"
@@ -170,6 +176,13 @@ class NAOqiDriverNode(Node):
             # Motor temperatures are present only when the NAO firmware reports them.
             if data.get("motor_temp"):
                 state["motor_temp"] = data["motor_temp"]
+                hot = self._motion.set_motor_temps(data["motor_temp"])
+                if hot:
+                    self.get_logger().warn(f"[{ROBOT_ID}] groupes trop chauds : {', '.join(sorted(hot))}")
+            dropped = self._motion.take_dropped()
+            if dropped:
+                self.get_logger().info(
+                    f"[{ROBOT_ID}] {dropped} ordre(s) ignoré(s) : articulation encore en mouvement")
             # Environment block may contain ambient_light, sound_level, etc.
             if data.get("environment"):
                 state.update(data["environment"])
@@ -276,9 +289,9 @@ class NAOqiDriverNode(Node):
                 self.get_logger().info(f"[{ROBOT_ID}] TTS method négocié : {method}")
             pose = cap.get("launch_pose")
             if isinstance(pose, dict) and pose:
-                self._rest.set_rest(pose)
+                self._motion.set_rest(pose)
                 self.get_logger().info(f"[{ROBOT_ID}] position de repos : " + ", ".join(
-                    f"{j}={a:.2f}" for j, a in sorted(self._rest.rest.items())))
+                    f"{j}={a:.2f}" for j, a in sorted(self._motion.rest.items())))
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
 
@@ -328,21 +341,20 @@ class NAOqiDriverNode(Node):
         self._publish_motion(msg)
 
     def _publish_motion(self, msg: String):
-        """Forward a joint command and note it for the return to rest."""
+        """Hand a joint order to the motion policy; _motion_tick sends it."""
         try:
             joints, angles, speed = parse_motion(json.loads(msg.data))
-            self._rest.on_order(joints, angles, speed, time.time())
-        except (json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError):
-            pass
-        self.pub_nao_motion.publish(msg)
+        except (json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError) as e:
+            self.get_logger().error(f"motion JSON invalide: {e}")
+            return
+        self._motion.submit(joints, angles, speed, time.time())
 
-    def _rest_tick(self):
-        """Send joints idle for REST_DELAY seconds back to the launch pose."""
+    def _motion_tick(self):
+        """Send what the motion policy allows now (orders and returns to rest)."""
         if not self._connected:
             return
-        cmd = self._rest.due(time.time())
+        cmd = self._motion.take(time.time())
         if cmd:
-            self.get_logger().info(f"[{ROBOT_ID}] retour au repos : {', '.join(cmd['joints'])}")
             self.pub_nao_motion.publish(String(data=json.dumps(cmd)))
 
     def _on_leds(self, msg: String):
@@ -350,6 +362,10 @@ class NAOqiDriverNode(Node):
         self.pub_nao_leds.publish(self._normalize_leds(msg.data))
 
     def _on_posture(self, msg: String):
+        ok, why = self._motion.posture_allowed(msg.data, time.time())
+        if not ok:
+            self.get_logger().warn(f"[{ROBOT_ID}] posture {msg.data!r} refusée : {why}")
+            return
         self.get_logger().info(f"[{ROBOT_ID}] → /nao/gesture : {msg.data!r}")
         self.pub_nao_gesture.publish(msg)
 
@@ -363,6 +379,12 @@ class NAOqiDriverNode(Node):
         twist.linear.x  = float(data.get("x",     0.0))
         twist.linear.y  = float(data.get("y",     0.0))
         twist.angular.z = float(data.get("theta", 0.0))
+        walking = bool(twist.linear.x or twist.linear.y or twist.angular.z)
+        if walking and not self._motion.walk_allowed(time.time()):
+            self.get_logger().warn(f"[{ROBOT_ID}] marche refusée : changement de posture en cours")
+            return
+        # Gestes bloqués tant que le robot marche (équilibre).
+        self._motion.set_walking(walking)
         self.pub_nao_cmd_vel.publish(twist)
 
     # ─────────────────────────────────────────────────────────────────────────

@@ -61,7 +61,7 @@ For a NAO without a drone, see [SSL / WSS](#ssl--wss).
 - **Wake word detection** — "ok nao" / "okay nao" via ALSpeechRecognition
 - **VAD audio capture** — records speech after wake word, publishes WAV on `/nao/audio`
 - **TTS method negotiation** — announces `mp3` or `text` to the VPS on connect
-- **Motion limits** — speed, amplitude, rate, posture and heat guard rails before ALMotion (see [Motion limits](#motion-limits))
+- **Motion bounds** — hard angle, speed, stiffness and walk bounds before ALMotion; motion decisions live in the NAO driver (see [Motion bounds](#motion-bounds-robot-side))
 - **Post-flash provisioning** — applies autonomous life state, language, volume from JSON,
   plus the bridge's default modules and audio capture (`"bridge"` section)
 
@@ -141,55 +141,25 @@ default), either with `--modules ...,speech,audio_out --audio-capture` or with:
 then restart the bridge. The NAO audio code (TTS, MP3 playback, wake word, VAD)
 is still in `nao_ws_bridge.py`.
 
-### Motion limits
+### Motion bounds (robot side)
 
-NAOqi gets unstable when it receives fast, frequent or blocking motion calls.
-Every motion command therefore goes through a guard in `nao_ws_bridge.py`
-(`_MotionGuard`) before reaching `ALMotion`, whatever its source
-(`cognitive_renderer`, `motion_engine`, `body-gateway`):
+The robot is a puppet: NAOqi crashes too often for the robot to decide
+where it stands. Motion **decisions** (rate, end of move, dropped orders,
+postures, motor heat, return to rest) are taken by the NAO driver on the VPS,
+see [Motion decisions](#motion-decisions-naoqi_driver). The bridge only keeps
+hard **bounds**, a last safety net for an order that would bypass the driver:
 
-- **Speed**: clamped to `[min_speed, max_speed]` (fraction of the motor's max speed).
-- **Amplitude**: each angle is clamped to the NAO V5 hardware range shrunk by
-  `joint_margin`, optionally narrowed per joint by `joint_ranges`.
-  Leg joints and unknown joints are refused.
-- **Frequency**: commands are merged per joint (latest target wins) and sent
-  with the non-blocking `ALMotion.setAngles`, at most once every `min_interval`
-  seconds. A 20 Hz stream becomes one call every 100 ms, and the WebSocket
-  receive thread never waits on a motion.
-- **Finish the move first**: like a person who completes a gesture before
-  starting the next one, a joint keeps its target for at least
-  `min_move_time`, or longer when the move needs it (distance ÷
-  (speed × joint max velocity × `velocity_scale`)). Orders for that joint
-  arriving meanwhile are dropped on purpose and counted in the log every 30 s
-  (`while_moving: "drop"`, default), or the latest one waits for the end of
-  the move (`"latest"`). Other joints are not held.
+- angles clamped to the NAO V5 hardware range shrunk by `joint_margin`,
+  optionally narrowed per joint by `joint_ranges`; leg and unknown joints refused;
+- joint speed clamped to `[min_speed, max_speed]`, posture speed `posture_speed`;
+- `/nao/stiffness` values capped at `stiffness_max`;
+- `moveToward` velocities capped at `walk_max`;
+- NAOqi fall manager and arm self-collision protection turned on at startup.
 
-  Joint max velocities (no-load motor speed 11 900 rpm ÷ gearbox ratio,
-  Aldebaran H25 motors doc) and the time of a full-range move:
-
-  | Joint | Range (rad) | Max velocity (rad/s) | Full range at speed 1.0 | at 0.3 (`max_speed`) |
-  |---|---|---|---|---|
-  | HeadYaw | ±2.09 | 8.29 | 0.50 s | 1.7 s |
-  | HeadPitch | −0.67 … 0.51 | 7.19 | 0.17 s | 0.55 s |
-  | ShoulderPitch | ±2.09 | 8.29 | 0.50 s | 1.7 s |
-  | ShoulderRoll | 1.64 wide | 7.19 | 0.23 s | 0.76 s |
-  | ElbowYaw | ±2.09 | 8.29 | 0.50 s | 1.7 s |
-  | ElbowRoll | 1.51 wide | 7.19 | 0.21 s | 0.70 s |
-  | WristYaw | ±1.82 | 24.62 | 0.15 s | 0.49 s |
-
-  These are theoretical no-load figures; under load and with NAOqi's
-  acceleration ramps a real move is somewhat slower. Lower `velocity_scale`
-  (e.g. 0.8) if moves still get cut short on the robot.
-- **Concurrent motions**: joint moves are dropped while a posture change or a
-  walk runs (`joints_while_busy`); a posture is refused while walking and the
-  other way round. `goToPosture` runs in its own thread, only for the postures
-  in `postures`, at `posture_speed`, with `posture_cooldown` between two changes.
-- **Stiffness**: `/nao/stiffness` values are capped at `stiffness_max`; moves
-  no longer call `setStiffnesses` on every command.
-- **Heat**: a group (head, left arm, right arm) whose hottest motor reaches
-  `max_motor_temp` °C refuses new moves until it cools down (read every 30 s).
-- **Balance**: `moveToward` velocities are capped at `walk_max`; the NAOqi fall
-  manager and arm self-collision protection are turned on at startup.
+Joint moves are sent with the non-blocking `ALMotion.setAngles` and postures
+run in their own thread, so the WebSocket receive thread never waits on a
+motion. At launch the bridge also reads its head and arm angles and reports
+them to the driver (`launch_pose` in `/nao/capabilities`).
 
 Defaults, overridable in the `"bridge"` → `"motion_limits"` section of
 `nao_provision.json` (used with `--provision`):
@@ -199,16 +169,9 @@ Defaults, overridable in the `"bridge"` → `"motion_limits"` section of
 | `max_speed` / `min_speed` | 0.3 / 0.02 | joint speed fraction range |
 | `joint_margin` | 0.05 rad | distance kept from each mechanical stop |
 | `joint_ranges` | `{}` | per-joint `[min, max]` in rad, can only narrow the range |
-| `min_interval` | 0.1 s | min delay between two `setAngles` calls (10 Hz) |
-| `min_move_time` | 0.3 s | min time a joint keeps its target before the next one |
-| `while_moving` | `"drop"` | order for a joint still moving: dropped, or `"latest"` kept for after the move |
-| `velocity_scale` | 1.0 | share of the joint max velocity really reached, to estimate a move's end (0 = only `min_move_time`) |
 | `stiffness_max` | 1.0 | max stiffness value |
-| `max_motor_temp` | 70 °C | moves refused above it (0 = off) |
-| `postures` | Stand, StandInit, Sit, Crouch | allowed postures |
-| `posture_speed` / `posture_cooldown` | 0.3 / 5 s | `goToPosture` speed, delay between two changes |
+| `posture_speed` | 0.3 | `goToPosture` speed |
 | `walk_max` | 0.5 | max normalized `moveToward` velocity |
-| `joints_while_busy` | false | accept joint moves during a posture change or walk |
 | `fall_manager` / `arm_collision_protection` | true / true | NAOqi protections turned on at startup |
 
 Tests without a robot (mock mode):
@@ -298,21 +261,48 @@ Open WebUI (chat)                   NAO wake word "ok nao"
          NAOqi SDK → speaker, LEDs, motors
 ```
 
-### Rest position (naoqi_driver)
+### Motion decisions (naoqi_driver)
 
-The robot is a puppet: it does not decide where it stands. At launch,
-`nao_ws_bridge.py` only reads its head and arm angles (sensor values) and
-reports them in `/nao/capabilities` (`launch_pose`, sent on every connection).
-The NAO driver (`naoqi_driver_node.py` + `rest_pose.py`) keeps this pose as
-the single rest position: a joint that received no `/nao/motion` order for
-`REST_DELAY` seconds after the estimated end of its move is sent back there at
-`REST_SPEED`. Put the robot in the wanted rest pose before starting the script.
+Every `/nao/motion`, `/nao/gesture` and `/nao/cmd_vel` order goes through
+`motion_policy.py` in the NAO driver before reaching the robot:
 
-| Variable | Default | Meaning |
+- **Rate**: orders are merged per joint (latest wins) and sent at most once
+  every `min_interval` seconds (10 Hz).
+- **Finish the move first**: a joint stays busy for `min_move_time`, or the
+  estimated move duration (distance ÷ (speed × joint max velocity ×
+  `velocity_scale`)). Orders for a busy joint are dropped on purpose and counted
+  in the log on every robot heartbeat (`while_moving: "drop"`), or the latest
+  waits for the end of the move (`"latest"`). Other joints are not held.
+- **Postures**: only `postures` are allowed, `posture_cooldown` seconds apart;
+  joint moves are blocked for `posture_block` seconds after a change, and during
+  a walk. A posture is refused while walking, a walk during a posture change.
+- **Heat**: a group (head, left arm, right arm) whose hottest motor reaches
+  `max_motor_temp` °C (from `/nao/status`) refuses orders until it cools down.
+- **Rest position**: the angles the robot reports at script launch
+  (`launch_pose`) are the single rest position. A joint idle for `rest_delay`
+  seconds after the end of its move goes back there at `rest_speed`; a new order
+  interrupts a return to rest. Put the robot in the wanted rest pose before
+  starting the script.
+
+Joint max velocities (no-load motor speed 11 900 rpm ÷ gearbox ratio,
+Aldebaran H25 motors doc): 8.29 rad/s for HeadYaw, ShoulderPitch, ElbowYaw;
+7.19 rad/s for HeadPitch, ShoulderRoll, ElbowRoll; 24.62 rad/s for WristYaw.
+
+Settings: the `MOTION_LIMITS` environment variable (JSON) overrides these defaults:
+
+| Key | Default | Meaning |
 |---|---|---|
-| `REST_RETURN` | `1` | `0` disables the return to rest |
-| `REST_DELAY` | 3 s | idle time before a joint goes back to rest |
-| `REST_SPEED` | 0.1 | speed of the return (still capped by the bridge's `max_speed`) |
+| `min_interval` | 0.1 s | min delay between two `/nao/motion` commands |
+| `min_move_time` | 0.3 s | min time a joint keeps its target |
+| `velocity_scale` | 1.0 | share of the joint max velocity really reached (0 = only `min_move_time`) |
+| `while_moving` | `"drop"` | order for a busy joint: dropped, or `"latest"` kept for after the move |
+| `max_motor_temp` | 70 °C | orders refused above it (0 = off) |
+| `postures` | Stand, StandInit, Sit, Crouch | allowed postures |
+| `posture_cooldown` / `posture_block` | 5 s / 5 s | delay between two postures, joints blocked after one |
+| `joints_while_busy` | false | accept joint moves during a posture change or walk |
+| `rest_return` | true | go back to the launch pose |
+| `rest_delay` / `rest_speed` | 3 s / 0.1 | idle time before the return, speed of the return |
+| `rest_tolerance` | 0.02 rad | a joint this close to rest is not moved |
 
 Tests without ROS 2: `cd robotics/drones/nao/driver && python3 -m unittest discover -s tests -v`.
 

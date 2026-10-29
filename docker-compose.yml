@@ -41,6 +41,8 @@ version: "3.8"
 #   ROSBRIDGE_TOKEN          : openssl rand -hex 32 (jeton exigé par rosbridge-proxy,
 #                              à passer aussi au NAO : nao_ws_bridge.py --token)
 #   NAO_ROBOT_ID             : nao_01 (identifiant ROS2 du corps)
+#   NAO_MOTION_LIMITS        : JSON des décisions de mouvement du driver NAO (défaut: vide,
+#                              ex. {"rest_delay": 5}, cf. docs/nao.md « Motion decisions »)
 #   STATIC_DRONE_ID          : static_01 (identifiant ROS2 du drone statique, ADR 004)
 #   NAO_HEAD_YAW_OFFSET      : décalage en degrés pour tourner la tête du NAO vers la voix
 #                              entendue par le drone statique (défaut: 0)
@@ -305,6 +307,7 @@ services:
       - WHISPER_URL=http://localhost:9000
       - LISTEN_DURATION=${LISTEN_DURATION:-4.0}
       - NAO_STATUS_TIMEOUT=${NAO_STATUS_TIMEOUT:-90}
+      - MOTION_LIMITS=${NAO_MOTION_LIMITS:-}
       - TTS_VOICE=${TTS_VOICE:-fr-FR-DeniseNeural}
       - DRONE_ID=${STATIC_DRONE_ID:-static_01}
       - DRONE_STATUS_TIMEOUT=${DRONE_STATUS_TIMEOUT:-90}
