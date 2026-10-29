@@ -159,8 +159,25 @@ Every motion command therefore goes through a guard in `nao_ws_bridge.py`
 - **Finish the move first**: like a person who completes a gesture before
   starting the next one, a joint keeps its target for at least
   `min_move_time`, or longer when the move needs it (distance ÷
-  (speed × `joint_max_velocity`), a rough estimate). Newer commands for that
+  (speed × joint max velocity × `velocity_scale`)). Newer commands for that
   joint wait meanwhile (latest one wins); other joints are not held.
+
+  Joint max velocities (no-load motor speed 11 900 rpm ÷ gearbox ratio,
+  Aldebaran H25 motors doc) and the time of a full-range move:
+
+  | Joint | Range (rad) | Max velocity (rad/s) | Full range at speed 1.0 | at 0.3 (`max_speed`) |
+  |---|---|---|---|---|
+  | HeadYaw | ±2.09 | 8.29 | 0.50 s | 1.7 s |
+  | HeadPitch | −0.67 … 0.51 | 7.19 | 0.17 s | 0.55 s |
+  | ShoulderPitch | ±2.09 | 8.29 | 0.50 s | 1.7 s |
+  | ShoulderRoll | 1.64 wide | 7.19 | 0.23 s | 0.76 s |
+  | ElbowYaw | ±2.09 | 8.29 | 0.50 s | 1.7 s |
+  | ElbowRoll | 1.51 wide | 7.19 | 0.21 s | 0.70 s |
+  | WristYaw | ±1.82 | 24.62 | 0.15 s | 0.49 s |
+
+  These are theoretical no-load figures; under load and with NAOqi's
+  acceleration ramps a real move is somewhat slower. Lower `velocity_scale`
+  (e.g. 0.8) if moves still get cut short on the robot.
 - **Concurrent motions**: joint moves are dropped while a posture change or a
   walk runs (`joints_while_busy`); a posture is refused while walking and the
   other way round. `goToPosture` runs in its own thread, only for the postures
@@ -182,7 +199,7 @@ Defaults, overridable in the `"bridge"` → `"motion_limits"` section of
 | `joint_ranges` | `{}` | per-joint `[min, max]` in rad, can only narrow the range |
 | `min_interval` | 0.1 s | min delay between two `setAngles` calls (10 Hz) |
 | `min_move_time` | 0.3 s | min time a joint keeps its target before the next one |
-| `joint_max_velocity` | 7.0 rad/s | joint velocity at speed 1.0, to estimate a move's end (0 = only `min_move_time`) |
+| `velocity_scale` | 1.0 | share of the joint max velocity really reached, to estimate a move's end (0 = only `min_move_time`) |
 | `stiffness_max` | 1.0 | max stiffness value |
 | `max_motor_temp` | 70 °C | moves refused above it (0 = off) |
 | `postures` | Stand, StandInit, Sit, Crouch | allowed postures |

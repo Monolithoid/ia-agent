@@ -85,7 +85,7 @@ class TestClamp(unittest.TestCase):
 class TestGuard(unittest.TestCase):
 
     def test_burst_is_coalesced_per_joint(self):
-        g, proxy = guard(min_interval=0.2, min_move_time=0, joint_max_velocity=0)
+        g, proxy = guard(min_interval=0.2, min_move_time=0, velocity_scale=0)
         # Premier envoi immédiat, puis une rafale fusionnée en un seul appel.
         g.submit(["HeadYaw"], [0.1], 0.1)
         wait_calls(proxy, 1)
@@ -102,7 +102,7 @@ class TestGuard(unittest.TestCase):
         self.assertEqual(speed, 0.05)  # la vitesse la plus lente gagne
 
     def test_rate_limit(self):
-        g, proxy = guard(min_interval=0.15, min_move_time=0, joint_max_velocity=0)
+        g, proxy = guard(min_interval=0.15, min_move_time=0, velocity_scale=0)
         t0 = time.time()
         for i in range(3):
             g.submit(["HeadYaw"], [0.1 * i], 0.1)
@@ -111,7 +111,7 @@ class TestGuard(unittest.TestCase):
         self.assertGreaterEqual(time.time() - t0, 0.29)
 
     def test_joint_finishes_its_move_first(self):
-        g, proxy = guard(min_interval=0.0, min_move_time=0.4, joint_max_velocity=0)
+        g, proxy = guard(min_interval=0.0, min_move_time=0.4, velocity_scale=0)
         t0 = time.time()
         g.submit(["HeadYaw"], [0.1], 0.1)
         wait_calls(proxy, 1)
@@ -129,9 +129,12 @@ class TestGuard(unittest.TestCase):
         self.assertEqual(len(proxy.calls), 3)
 
     def test_move_duration_from_distance(self):
-        g, _ = guard(min_move_time=0.3, joint_max_velocity=5.0)
+        g, _ = guard(min_move_time=0.3)
         g._sent_angle["HeadYaw"] = 0.0
-        self.assertAlmostEqual(g._move_duration("HeadYaw", 1.0, 0.1), 2.0)
+        g._sent_angle["RElbowRoll"] = 0.0
+        g._sent_angle["LHand"] = 0.0
+        self.assertAlmostEqual(g._move_duration("HeadYaw", 0.829, 0.1), 1.0)
+        self.assertAlmostEqual(g._move_duration("RElbowRoll", 0.719, 0.1), 1.0)
         self.assertAlmostEqual(g._move_duration("HeadYaw", 0.05, 0.1), 0.3)
         self.assertAlmostEqual(g._move_duration("LHand", 1.0, 0.1), 0.3)
         g.stop()

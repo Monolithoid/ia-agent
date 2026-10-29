@@ -172,7 +172,7 @@ _MOTION_LIMITS_DEFAULT = {
     "joint_ranges":     {},     # per-joint [min, max] overrides (rad), e.g. {"HeadPitch": [-0.4, 0.3]}
     "min_interval":     0.1,    # s between two ALMotion.setAngles calls (10 Hz max)
     "min_move_time":    0.3,    # s a joint keeps its target before accepting a new one
-    "joint_max_velocity": 7.0,  # rad/s at speed 1.0, to estimate when a move ends (0 = no estimate)
+    "velocity_scale":   1.0,    # share of _JOINT_MAX_VELOCITY really reached (0 = no estimate)
     "stiffness_max":    1.0,    # ceiling for /nao/stiffness values
     "max_motor_temp":   70,     # °C; a group hotter than this refuses new moves (0 = off)
     "postures":         ["Stand", "StandInit", "Sit", "Crouch"],  # allowed ALRobotPosture names
@@ -201,6 +201,17 @@ _JOINT_HW_LIMITS = {
     "RElbowRoll":     ( 0.0349,  1.5446),
     "RWristYaw":      (-1.8238,  1.8238),
     "RHand":          ( 0.0,     1.0),
+}
+
+# Joint max velocity (rad/s) at fractionMaxSpeed 1.0: no-load speed of the
+# head/arm motor (RE-Max 17, 11 900 rpm = 1246 rad/s) divided by the gearbox
+# ratio (Aldebaran "H25 - Motors" doc: type A 150.27, B 173.22, C 50.61).
+# Used to estimate when a move ends; the hands (0..1 ratio) are not listed.
+_JOINT_MAX_VELOCITY = {
+    "HeadYaw":   8.29, "HeadPitch":     7.19,
+    "ShoulderPitch": 8.29, "ShoulderRoll": 7.19,
+    "ElbowYaw":  8.29, "ElbowRoll":     7.19,
+    "WristYaw": 24.62,
 }
 
 
@@ -387,10 +398,11 @@ class _MotionGuard(object):
     def _move_duration(self, joint, angle, speed):
         """Time the joint needs to reach angle, at least min_move_time."""
         duration = float(self.limits["min_move_time"])
-        vmax = float(self.limits["joint_max_velocity"])
+        # "LShoulderPitch" -> "ShoulderPitch"; hands are absent: min_move_time only.
+        key = joint[1:] if joint[:1] in ("L", "R") else joint
+        vmax = _JOINT_MAX_VELOCITY.get(key, 0.0) * float(self.limits["velocity_scale"])
         prev = self._sent_angle.get(joint)
-        # Hands are an opening ratio, not an angle: only min_move_time applies.
-        if vmax > 0 and prev is not None and not joint.endswith("Hand"):
+        if vmax > 0 and prev is not None:
             duration = max(duration, abs(angle - prev) / (speed * vmax))
         return duration
 
