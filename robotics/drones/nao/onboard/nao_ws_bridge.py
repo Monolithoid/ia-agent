@@ -171,6 +171,8 @@ _MOTION_LIMITS_DEFAULT = {
     "joint_margin":     0.05,   # rad kept away from each mechanical stop
     "joint_ranges":     {},     # per-joint [min, max] overrides (rad), e.g. {"HeadPitch": [-0.4, 0.3]}
     "min_interval":     0.1,    # s between two ALMotion.setAngles calls (10 Hz max)
+    "min_move_time":    0.3,    # s a joint keeps its target before accepting a new one
+    "joint_max_velocity": 7.0,  # rad/s at speed 1.0, to estimate when a move ends (0 = no estimate)
     "stiffness_max":    1.0,    # ceiling for /nao/stiffness values
     "max_motor_temp":   70,     # °C; a group hotter than this refuses new moves (0 = off)
     "postures":         ["Stand", "StandInit", "Sit", "Crouch"],  # allowed ALRobotPosture names
@@ -282,6 +284,10 @@ class _MotionGuard(object):
     - a worker thread sends the pending target with the non-blocking
       ALMotion.setAngles, at most once every min_interval seconds, so the
       WebSocket receive thread never waits on a motion;
+    - a joint finishes its move before starting the next one: once sent, a
+      target is held for max(min_move_time, estimated move duration); newer
+      commands for that joint wait meanwhile (latest wins) instead of
+      cutting the move short;
     - joint moves are dropped while a posture change or a walk is running,
       and for groups whose motors are too hot.
     """
@@ -294,6 +300,8 @@ class _MotionGuard(object):
         self._cond = threading.Condition()
         self._pending = {}           # joint -> (angle, speed)
         self._last_send = 0.0
+        self._hold_until = {}        # joint -> time its current move is expected to end
+        self._sent_angle = {}        # joint -> last angle sent to ALMotion
         self._busy = set()           # "posture" / "walk" while running
         self._hot_groups = set()
         self._last_posture = 0.0
@@ -376,20 +384,48 @@ class _MotionGuard(object):
 
     # -- worker ----------------------------------------------------------
 
+    def _move_duration(self, joint, angle, speed):
+        """Time the joint needs to reach angle, at least min_move_time."""
+        duration = float(self.limits["min_move_time"])
+        vmax = float(self.limits["joint_max_velocity"])
+        prev = self._sent_angle.get(joint)
+        # Hands are an opening ratio, not an angle: only min_move_time applies.
+        if vmax > 0 and prev is not None and not joint.endswith("Hand"):
+            duration = max(duration, abs(angle - prev) / (speed * vmax))
+        return duration
+
+    def _ready(self, now):
+        return [j for j in self._pending if self._hold_until.get(j, 0.0) <= now]
+
     def _take(self):
-        """Wait for pending moves and the rate limit; return them (or None to exit)."""
+        """Wait for pending moves whose joint is free and for the rate limit;
+        return them (or None to exit).  Moves of joints still finishing
+        their previous move stay pending."""
         with self._cond:
-            while not self._pending and not self._stopped:
-                self._cond.wait()
-            if self._stopped:
-                return None
+            while True:
+                if self._stopped:
+                    return None
+                if not self._pending:
+                    self._cond.wait()
+                    continue
+                now = time.time()
+                if self._ready(now):
+                    break
+                # Every pending joint is still moving: wake up when the first ends.
+                self._cond.wait(min(self._hold_until[j] for j in self._pending) - now)
             wait = self._last_send + float(self.limits["min_interval"]) - time.time()
         if wait > 0:
             # Commands arriving meanwhile are merged into the same call.
             time.sleep(wait)
         with self._cond:
-            batch, self._pending = self._pending, {}
-            self._last_send = time.time()
+            now = time.time()
+            batch = dict((j, self._pending.pop(j)) for j in self._ready(now))
+            if batch:
+                speed = min(v[1] for v in batch.values())
+                for j, (a, _) in batch.items():
+                    self._hold_until[j] = now + self._move_duration(j, a, speed)
+                    self._sent_angle[j] = a
+                self._last_send = now
         return batch
 
     def _loop(self):

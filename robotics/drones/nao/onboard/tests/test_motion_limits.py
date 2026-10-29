@@ -85,7 +85,7 @@ class TestClamp(unittest.TestCase):
 class TestGuard(unittest.TestCase):
 
     def test_burst_is_coalesced_per_joint(self):
-        g, proxy = guard(min_interval=0.2)
+        g, proxy = guard(min_interval=0.2, min_move_time=0, joint_max_velocity=0)
         # Premier envoi immédiat, puis une rafale fusionnée en un seul appel.
         g.submit(["HeadYaw"], [0.1], 0.1)
         wait_calls(proxy, 1)
@@ -102,13 +102,39 @@ class TestGuard(unittest.TestCase):
         self.assertEqual(speed, 0.05)  # la vitesse la plus lente gagne
 
     def test_rate_limit(self):
-        g, proxy = guard(min_interval=0.15)
+        g, proxy = guard(min_interval=0.15, min_move_time=0, joint_max_velocity=0)
         t0 = time.time()
         for i in range(3):
             g.submit(["HeadYaw"], [0.1 * i], 0.1)
             wait_calls(proxy, i + 1)
         g.stop()
         self.assertGreaterEqual(time.time() - t0, 0.29)
+
+    def test_joint_finishes_its_move_first(self):
+        g, proxy = guard(min_interval=0.0, min_move_time=0.4, joint_max_velocity=0)
+        t0 = time.time()
+        g.submit(["HeadYaw"], [0.1], 0.1)
+        wait_calls(proxy, 1)
+        # Pendant le mouvement : la tête attend, le bras (libre) part tout de suite.
+        g.submit(["HeadYaw"], [0.2], 0.1)
+        g.submit(["HeadYaw"], [0.3], 0.1)
+        g.submit(["LShoulderPitch"], [1.0], 0.1)
+        wait_calls(proxy, 2)
+        self.assertEqual(proxy.calls[1][0], ["LShoulderPitch"])
+        calls = wait_calls(proxy, 3)
+        g.stop()
+        self.assertGreaterEqual(time.time() - t0, 0.39)
+        self.assertEqual(calls[2][0], ["HeadYaw"])
+        self.assertAlmostEqual(calls[2][1][0], 0.3)  # la dernière cible gagne
+        self.assertEqual(len(proxy.calls), 3)
+
+    def test_move_duration_from_distance(self):
+        g, _ = guard(min_move_time=0.3, joint_max_velocity=5.0)
+        g._sent_angle["HeadYaw"] = 0.0
+        self.assertAlmostEqual(g._move_duration("HeadYaw", 1.0, 0.1), 2.0)
+        self.assertAlmostEqual(g._move_duration("HeadYaw", 0.05, 0.1), 0.3)
+        self.assertAlmostEqual(g._move_duration("LHand", 1.0, 0.1), 0.3)
+        g.stop()
 
     def test_busy_drops_moves(self):
         g, proxy = guard()
