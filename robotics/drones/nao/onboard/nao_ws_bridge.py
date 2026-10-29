@@ -173,6 +173,7 @@ _MOTION_LIMITS_DEFAULT = {
     "min_interval":     0.1,    # s between two ALMotion.setAngles calls (10 Hz max)
     "min_move_time":    0.3,    # s a joint keeps its target before accepting a new one
     "velocity_scale":   1.0,    # share of _JOINT_MAX_VELOCITY really reached (0 = no estimate)
+    "while_moving":     "drop",  # order for a joint still moving: "drop" it, or keep the "latest"
     "stiffness_max":    1.0,    # ceiling for /nao/stiffness values
     "max_motor_temp":   70,     # °C; a group hotter than this refuses new moves (0 = off)
     "postures":         ["Stand", "StandInit", "Sit", "Crouch"],  # allowed ALRobotPosture names
@@ -231,6 +232,9 @@ def _motion_limits(section):
         default = limits[key]
         if isinstance(default, bool):
             ok = isinstance(value, bool)
+        elif key == "while_moving":
+            # JSON strings are unicode on Python 2: compare values, not types.
+            ok = value in ("drop", "latest")
         elif isinstance(default, (int, float)):
             ok = isinstance(value, (int, float)) and not isinstance(value, bool)
         else:
@@ -296,9 +300,10 @@ class _MotionGuard(object):
       ALMotion.setAngles, at most once every min_interval seconds, so the
       WebSocket receive thread never waits on a motion;
     - a joint finishes its move before starting the next one: once sent, a
-      target is held for max(min_move_time, estimated move duration); newer
-      commands for that joint wait meanwhile (latest wins) instead of
-      cutting the move short;
+      target is held for max(min_move_time, estimated move duration); orders
+      for that joint arriving meanwhile are dropped and counted
+      (while_moving="drop"), or the latest one waits for the end of the
+      move (while_moving="latest");
     - joint moves are dropped while a posture change or a walk is running,
       and for groups whose motors are too hot.
     """
@@ -313,6 +318,7 @@ class _MotionGuard(object):
         self._last_send = 0.0
         self._hold_until = {}        # joint -> time its current move is expected to end
         self._sent_angle = {}        # joint -> last angle sent to ALMotion
+        self._dropped = 0            # orders dropped because their joint was moving
         self._busy = set()           # "posture" / "walk" while running
         self._hot_groups = set()
         self._last_posture = 0.0
@@ -384,14 +390,26 @@ class _MotionGuard(object):
             if self._busy and not self.limits["joints_while_busy"]:
                 return 0
             accepted = 0
+            now = time.time()
+            drop_moving = self.limits["while_moving"] != "latest"
             for j, a in zip(joints, angles):
                 if _JOINT_TO_GROUP.get(j) in self._hot_groups:
+                    continue
+                if drop_moving and self._hold_until.get(j, 0.0) > now:
+                    # The joint is finishing its move: this order is lost on purpose.
+                    self._dropped += 1
                     continue
                 self._pending[j] = (a, speed)
                 accepted += 1
             if accepted:
                 self._cond.notify()
             return accepted
+
+    def take_dropped(self):
+        """Number of orders dropped since the last call."""
+        with self._cond:
+            n, self._dropped = self._dropped, 0
+        return n
 
     # -- worker ----------------------------------------------------------
 
@@ -1648,6 +1666,10 @@ class NaoBridge(object):
                         pass
             motor_temp  = self._read_motor_temps()
             self._guard.set_motor_temps(motor_temp)
+            dropped = self._guard.take_dropped()
+            if dropped:
+                print("[motion] {} ordre(s) ignore(s) : articulation encore en mouvement".format(
+                    dropped), file=sys.stderr)
             environment = self._read_environment()
             payload = json.dumps({"battery": level, "motor_temp": motor_temp,
                                   "environment": environment})

@@ -52,6 +52,10 @@ class TestLimitsConfig(unittest.TestCase):
         self.assertTrue(lim["fall_manager"])
         self.assertNotIn("inconnu", lim)
 
+    def test_while_moving_values(self):
+        self.assertEqual(b._motion_limits({"while_moving": u"latest"})["while_moving"], "latest")
+        self.assertEqual(b._motion_limits({"while_moving": "garder"})["while_moving"], "drop")
+
 
 class TestClamp(unittest.TestCase):
 
@@ -110,8 +114,25 @@ class TestGuard(unittest.TestCase):
         g.stop()
         self.assertGreaterEqual(time.time() - t0, 0.29)
 
-    def test_joint_finishes_its_move_first(self):
+    def test_orders_dropped_while_moving(self):
         g, proxy = guard(min_interval=0.0, min_move_time=0.4, velocity_scale=0)
+        g.submit(["HeadYaw"], [0.1], 0.1)
+        wait_calls(proxy, 1)
+        # Tête en mouvement : ordres perdus ; bras libre : envoyé.
+        self.assertEqual(g.submit(["HeadYaw"], [0.2], 0.1), 0)
+        self.assertEqual(g.submit(["HeadYaw", "LShoulderPitch"], [0.3, 1.0], 0.1), 1)
+        wait_calls(proxy, 2)
+        time.sleep(0.5)
+        self.assertEqual(g.take_dropped(), 2)
+        self.assertEqual(g.take_dropped(), 0)
+        self.assertEqual([c[0] for c in proxy.calls], [["HeadYaw"], ["LShoulderPitch"]])
+        # Mouvement terminé : la tête accepte de nouveau.
+        self.assertEqual(g.submit(["HeadYaw"], [0.3], 0.1), 1)
+        g.stop()
+
+    def test_latest_waits_for_end_of_move(self):
+        g, proxy = guard(min_interval=0.0, min_move_time=0.4, velocity_scale=0,
+                         while_moving="latest")
         t0 = time.time()
         g.submit(["HeadYaw"], [0.1], 0.1)
         wait_calls(proxy, 1)

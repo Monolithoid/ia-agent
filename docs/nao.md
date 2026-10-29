@@ -159,8 +159,10 @@ Every motion command therefore goes through a guard in `nao_ws_bridge.py`
 - **Finish the move first**: like a person who completes a gesture before
   starting the next one, a joint keeps its target for at least
   `min_move_time`, or longer when the move needs it (distance ÷
-  (speed × joint max velocity × `velocity_scale`)). Newer commands for that
-  joint wait meanwhile (latest one wins); other joints are not held.
+  (speed × joint max velocity × `velocity_scale`)). Orders for that joint
+  arriving meanwhile are dropped on purpose and counted in the log every 30 s
+  (`while_moving: "drop"`, default), or the latest one waits for the end of
+  the move (`"latest"`). Other joints are not held.
 
   Joint max velocities (no-load motor speed 11 900 rpm ÷ gearbox ratio,
   Aldebaran H25 motors doc) and the time of a full-range move:
@@ -199,6 +201,7 @@ Defaults, overridable in the `"bridge"` → `"motion_limits"` section of
 | `joint_ranges` | `{}` | per-joint `[min, max]` in rad, can only narrow the range |
 | `min_interval` | 0.1 s | min delay between two `setAngles` calls (10 Hz) |
 | `min_move_time` | 0.3 s | min time a joint keeps its target before the next one |
+| `while_moving` | `"drop"` | order for a joint still moving: dropped, or `"latest"` kept for after the move |
 | `velocity_scale` | 1.0 | share of the joint max velocity really reached, to estimate a move's end (0 = only `min_move_time`) |
 | `stiffness_max` | 1.0 | max stiffness value |
 | `max_motor_temp` | 70 °C | moves refused above it (0 = off) |
