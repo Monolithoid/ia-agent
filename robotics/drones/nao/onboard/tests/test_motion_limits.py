@@ -183,6 +183,71 @@ class TestGuard(unittest.TestCase):
         g.stop()
 
 
+class TestRest(unittest.TestCase):
+
+    def rest_guard(self, **overrides):
+        opts = dict(min_interval=0.0, min_move_time=0.1, velocity_scale=0,
+                    rest_delay=0.3, rest_speed=0.1)
+        opts.update(overrides)
+        g, proxy = guard(**opts)
+        g.set_rest({"HeadYaw": 0.0, "LShoulderPitch": 1.5})
+        return g, proxy
+
+    def test_capture_rest_reads_sensors(self):
+        class Reader(FakeMotion):
+            def getAngles(self, names, use_sensors):
+                self.sensors = use_sensors
+                return [0.5 if n == "HeadYaw" else 0.0 for n in names]
+        proxy = Reader()
+        g = b._MotionGuard(b._motion_limits({}), proxy_factory=lambda: proxy)
+        self.assertTrue(g.capture_rest())
+        self.assertTrue(proxy.sensors)
+        self.assertAlmostEqual(g._rest["HeadYaw"], 0.5)
+        # LElbowRoll 0.0 est hors plage : ramené dans la plage autorisée.
+        self.assertAlmostEqual(g._rest["LElbowRoll"], -0.0349 - 0.05)
+        g.stop()
+
+    def test_returns_to_rest_after_delay(self):
+        g, proxy = self.rest_guard()
+        t0 = time.time()
+        g.submit(["HeadYaw"], [0.4], 0.2)
+        calls = wait_calls(proxy, 2)
+        g.stop()
+        self.assertGreaterEqual(time.time() - t0, 0.29)
+        self.assertEqual(calls[1], (["HeadYaw"], [0.0], 0.1))
+        self.assertEqual(len(proxy.calls), 2)  # une seule fois
+
+    def test_new_order_interrupts_rest(self):
+        g, proxy = self.rest_guard(min_move_time=1.0)
+        g.submit(["HeadYaw"], [0.4], 0.2)
+        wait_calls(proxy, 1)
+        # Mouvement en cours : l'ordre est perdu.
+        self.assertEqual(g.submit(["HeadYaw"], [0.2], 0.2), 0)
+        g.go_rest()
+        wait_calls(proxy, 2)
+        self.assertEqual(proxy.calls[1][1], [0.0])
+        # Retour au repos en cours : un nouvel ordre passe.
+        self.assertEqual(g.submit(["HeadYaw"], [0.3], 0.2), 1)
+        calls = wait_calls(proxy, 3)
+        g.stop()
+        self.assertEqual(calls[2][1], [0.3])
+
+    def test_no_rest_when_disabled(self):
+        g, proxy = self.rest_guard(rest_return=False)
+        g.submit(["HeadYaw"], [0.4], 0.2)
+        wait_calls(proxy, 1)
+        time.sleep(0.5)
+        g.stop()
+        self.assertEqual(len(proxy.calls), 1)
+
+    def test_stop_sends_rest(self):
+        g, proxy = self.rest_guard(rest_delay=10)
+        g.submit(["LShoulderPitch"], [0.5], 0.2)
+        wait_calls(proxy, 1)
+        g.stop(go_rest=True)
+        self.assertEqual(proxy.calls[-1], (["LShoulderPitch"], [1.5], 0.1))
+
+
 class TestBridge(unittest.TestCase):
 
     def setUp(self):
