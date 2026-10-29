@@ -206,3 +206,28 @@ def head_yaw_rad(azimuth_deg: float, offset_deg: float = 0.0) -> float:
     """
     yaw = math.radians(-float(azimuth_deg) + float(offset_deg))
     return max(-HEAD_YAW_LIMIT_RAD, min(HEAD_YAW_LIMIT_RAD, yaw))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NAO motor ranges (motor profile calibrated from the régie)
+# ─────────────────────────────────────────────────────────────────────────────
+
+CHAIN_LABELS = {"head": "tête", "larm": "bras gauche", "rarm": "bras droit"}
+
+
+def motor_ranges_label(ranges: dict) -> str:
+    """Lines for the LLM prompt: each joint the NAO may move and its range (rad).
+
+    `ranges` is {chain: {joint: [min, max]}} as published by the NAO driver on
+    /bodies/{id}/sensors/motor_ranges.  Empty: the NAO is not calibrated.
+    """
+    lines = []
+    for chain in ("head", "larm", "rarm"):
+        joints = ranges.get(chain) if isinstance(ranges, dict) else None
+        if not isinstance(joints, dict) or not joints:
+            continue
+        items = ", ".join(f"{j} [{lo:+.2f}, {hi:+.2f}]" for j, (lo, hi) in joints.items())
+        lines.append(f"- {CHAIN_LABELS[chain]} : {items}")
+    if not lines:
+        return "Aucune articulation disponible (NAO non calibré) : n'envoie pas d'action motion."
+    return "\n".join(lines)

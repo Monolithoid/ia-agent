@@ -65,6 +65,8 @@ def action_detail(action: dict) -> str:
             return action["name"]
         if "joint" in action:
             return f"{action['joint']} {action.get('angle', 0)}"
+        if isinstance(action.get("joints"), list):
+            return " ".join(f"{j} {a}" for j, a in zip(action["joints"], action.get("angles", [])))
         return ""
     if kind == "leds":
         return action.get("color", "")

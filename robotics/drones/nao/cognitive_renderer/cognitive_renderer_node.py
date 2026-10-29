@@ -29,6 +29,9 @@ Environment variables:
   SPEAKING_SYNC     "0" disables the speaking animation, default "1"
   SPEAKING_TIMEOUT  seconds after which the animation stops if no
                     speaking=false arrives, default 120 (0 = never)
+  RENDERER_ARMS     "1" lets the profiles and the speaking animation move the
+                    arms, default "0": in the constrained motor universe the
+                    arms only follow the LLM orders (rest → start → target)
 """
 
 import json
@@ -50,6 +53,7 @@ OBS_DRONE_ID = os.environ.get("OBS_DRONE_ID", "")
 VOICE_IDS = [b for b in (DRONE_ID, OBS_DRONE_ID) if b]
 SPEAKING_SYNC = os.environ.get("SPEAKING_SYNC", "1") != "0"
 SPEAKING_TIMEOUT = float(os.environ.get("SPEAKING_TIMEOUT", "120"))
+RENDERER_ARMS = os.environ.get("RENDERER_ARMS", "0") == "1"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # State → rendering profile
@@ -269,7 +273,8 @@ class CognitiveRendererNode(Node):
         r, g, b, pulse, head_mode, arm_mode = _PROFILES.get(state, _PROFILES["idle"])
         self._render_leds(r, g, b, pulse)
         self._render_head(head_mode)
-        self._render_arms(arm_mode)
+        if RENDERER_ARMS:
+            self._render_arms(arm_mode)
 
     def _speaking_loop(self):
         """While the static drone speaks: eyes + light gestures every
@@ -295,7 +300,8 @@ class CognitiveRendererNode(Node):
                 leds, motions = speaking_frame(tick)
                 self.pub_leds.publish(String(data=json.dumps(leds)))
                 for m in motions:
-                    self.pub_motion.publish(String(data=json.dumps(m)))
+                    if RENDERER_ARMS or "joint" in m:   # arm commands are multi-joint
+                        self.pub_motion.publish(String(data=json.dumps(m)))
                 tick += 1
                 time.sleep(SPEAKING_PERIOD)
             # Head back level (idle profiles only drive HeadYaw), then the profile.

@@ -91,6 +91,14 @@ _VERBOSE = False
 _PROVISION_DEFAULT = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "nao_provision.json"
 )
+# Motor profile written by the calibration (régie), and NAOqi components
+# switched on or off from the régie.  Both next to this script.
+_MOTOR_PROFILE_DEFAULT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "nao_motor_profile.json"
+)
+_COMPONENTS_DEFAULT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "nao_components.json"
+)
 
 # Mapping: module name → (ROS topic, message type)
 _MODULE_TOPICS = {
@@ -105,7 +113,9 @@ _MODULE_TOPICS = {
 }
 # System topics always subscribed regardless of module filtering
 _SYSTEM_TOPICS = [
-    ("/nao/shutdown", "std_msgs/Empty"),
+    ("/nao/shutdown",    "std_msgs/Empty"),
+    ("/nao/calibration", "std_msgs/String"),   # calibration steps, from the régie
+    ("/nao/components",  "std_msgs/String"),   # NAOqi components on/off, from the régie
 ]
 ALL_MODULES = frozenset(_MODULE_TOPICS.keys())
 # Voice modules are opt-in: since ADR 004 the static drone speaks for the NAO.
@@ -173,8 +183,12 @@ _MOTION_LIMITS_DEFAULT = {
     "stiffness_max":    1.0,    # ceiling for /nao/stiffness values
     "posture_speed":    0.3,    # goToPosture speed
     "walk_max":         0.5,    # |x|, |y|, |theta| ceiling for moveToward (normalized)
-    "fall_manager":     True,   # force ALMotion fall manager ON at startup
-    "arm_collision_protection": True,  # ALMotion self-collision protection for arms
+    # Startup state of the two NAOqi protections (True = on, False = off),
+    # overridden by nao_components.json once switched from the régie.  Off
+    # by default: both are a likely cause of NAOqi crashes on this NAO.
+    "fall_manager":     False,  # ALMotion fall manager
+    "arm_collision_protection": False,  # ALMotion self-collision protection for arms
+    "range_margin":     0.02,   # rad taken off each end of a range shown in calibration
     # "setAngles": non-blocking call (default).  "legacy": the call used
     # before the motion limits (setStiffnesses + blocking
     # angleInterpolationWithSpeed), to compare when NAOqi crashes.
@@ -230,10 +244,14 @@ def _motion_limits(section):
     return limits
 
 
-def _joint_range(joint, limits):
+def _joint_range(joint, limits, box=None):
     """Allowed [min, max] for a joint: hardware range shrunk by joint_margin,
-    then narrowed by a joint_ranges override.  None for an unknown joint."""
+    then narrowed by a joint_ranges override and by the motor profile box
+    (see _profile_box).  None for an unknown joint, or for a joint outside
+    the profile when there is one."""
     if joint not in _JOINT_HW_LIMITS:
+        return None
+    if box is not None and joint not in box:
         return None
     lo, hi = _JOINT_HW_LIMITS[joint]
     margin = float(limits["joint_margin"])
@@ -248,6 +266,10 @@ def _joint_range(joint, limits):
             hi = min(hi, float(override[1]))
         except (TypeError, ValueError):
             pass
+    if box is not None:
+        lo, hi = max(lo, box[joint][0]), min(hi, box[joint][1])
+        if lo > hi:   # box outside the hardware range: hold its nearest end
+            lo = hi = _clamp(box[joint][0], *_JOINT_HW_LIMITS[joint])
     return lo, hi
 
 
@@ -259,20 +281,166 @@ def _clamp_speed(speed, limits):
     return _clamp(float(speed), float(limits["min_speed"]), float(limits["max_speed"]))
 
 
-def _clamp_joints(joints, angles, limits):
+def _clamp_joints(joints, angles, limits, box=None):
     """Return (joints, angles) clamped to their allowed range.
 
     Unknown joints and leg joints are dropped; NaN angles too.
     """
     out_j, out_a = [], []
     for j, a in zip(joints, angles):
-        rng = _joint_range(j, limits)
+        rng = _joint_range(j, limits, box)
         if rng is None or a != a:  # a != a: NaN
             print("[motion] joint refuse : {}".format(j), file=sys.stderr)
             continue
         out_j.append(j)
         out_a.append(_clamp(float(a), rng[0], rng[1]))
     return out_j, out_a
+
+
+# ── Motor profile ─────────────────────────────────────────────────────────────
+# Constrained motor universe: the NAO stays seated and only moves three chains.
+# For each one the profile gives a rest pose, a start pose, a [min, max] range
+# per joint and a speed.  Every move is rest -> start -> target -> start -> rest
+# (decided by the NAO driver); the bridge only refuses anything outside the
+# box that holds the range, the rest pose and the start pose.  Same chains as
+# motion_policy.CHAINS in the driver.  No wrist or hand in this universe.
+_CHAINS = {
+    "head": ("HeadYaw", "HeadPitch"),
+    "larm": ("LShoulderPitch", "LShoulderRoll", "LElbowYaw", "LElbowRoll"),
+    "rarm": ("RShoulderPitch", "RShoulderRoll", "RElbowYaw", "RElbowRoll"),
+}
+
+
+def _validate_chain(name, cfg, limits):
+    """Return (clean chain, error).  Clean = floats, ranges inside the
+    hardware range, start pose inside its range, speed within the limits."""
+    if name not in _CHAINS or not isinstance(cfg, dict):
+        return None, "chaine inconnue : {}".format(name)
+    joints = _CHAINS[name]
+    try:
+        rest = dict((j, float(cfg["rest"][j])) for j in joints)
+        start = dict((j, float(cfg["start"][j])) for j in joints)
+        rng = dict((j, [float(cfg["range"][j][0]), float(cfg["range"][j][1])]) for j in joints)
+        speed = float(cfg["speed"])
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None, "{} : repos, depart, plage ou vitesse manquant".format(name)
+    for j in joints:
+        hw_lo, hw_hi = _JOINT_HW_LIMITS[j]
+        lo, hi = rng[j]
+        if not hw_lo <= lo <= hi <= hw_hi:
+            return None, "{} : plage de {} invalide".format(name, j)
+        if not lo - 1e-3 <= start[j] <= hi + 1e-3:
+            return None, "{} : depart de {} hors plage".format(name, j)
+        if not hw_lo <= rest[j] <= hw_hi:
+            return None, "{} : repos de {} hors limites".format(name, j)
+    if speed != speed or speed <= 0:
+        return None, "{} : vitesse invalide".format(name)
+    speed = _clamp_speed(speed, limits)
+    return {"rest": rest, "start": start, "range": rng, "speed": speed}, ""
+
+
+def _validate_profile(profile, limits):
+    """Return (clean profile or None, errors).  Invalid chains are left out:
+    they do not move.  None when no chain is valid."""
+    if not isinstance(profile, dict) or not isinstance(profile.get("chains"), dict):
+        return None, ["profil sans chaines"]
+    chains, errors = {}, []
+    for name, cfg in profile["chains"].items():
+        clean, error = _validate_chain(name, cfg, limits)
+        if clean is None:
+            errors.append(error)
+        else:
+            chains[name] = clean
+    if not chains:
+        return None, errors
+    out = dict(profile)
+    out["chains"] = chains
+    return out, errors
+
+
+def _profile_box(profile):
+    """{joint: (min, max)} holding each chain's range, rest and start poses."""
+    box = {}
+    for cfg in profile["chains"].values():
+        for j, (lo, hi) in cfg["range"].items():
+            box[j] = (min(lo, cfg["rest"][j], cfg["start"][j]),
+                      max(hi, cfg["rest"][j], cfg["start"][j]))
+    return box
+
+
+def _load_json(path):
+    """Content of a JSON file, None if absent or unreadable."""
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except IOError:
+        return None
+    except ValueError as e:
+        print("[bridge] {} illisible : {}".format(path, e), file=sys.stderr)
+        return None
+
+
+def _write_json(path, data):
+    """Write through a temporary file: a crash mid-write keeps the old file."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+    os.rename(tmp, path)
+
+
+# ── NAOqi components switched from the régie ──────────────────────────────────
+# (name, label, default).  Everything that moves the robot on its own is off by
+# default; smart stiffness and the diagnosis effect protect the motors, so
+# they stay on unless switched off from the régie.  fall_manager and
+# arm_collision_protection take their default from motion_limits.
+_COMPONENTS = [
+    ("fall_manager",             "Fall manager (protection de chute)", False),
+    ("arm_collision_protection", "Anti-collision des bras", False),
+    ("external_collision",       "Anti-collision externe", False),
+    ("push_recovery",            "Rattrapage de poussee", False),
+    ("breath",                   "Respiration", False),
+    ("idle_posture",             "Posture d'attente", False),
+    ("basic_awareness",          "Basic awareness (suivi visages et sons)", False),
+    ("expressive_listening",     "Ecoute expressive", False),
+    ("smart_stiffness",          "Smart stiffness (moins de raideur a l'arret)", True),
+    ("diagnosis_effect",         "Effet de diagnostic (relache un moteur en defaut)", True),
+]
+_COMPONENT_NAMES = [c[0] for c in _COMPONENTS]
+
+
+def _set_component(name, on, proxy_factory):
+    """Switch one NAOqi component; raises on a NAOqi error (e.g. the fall
+    manager cannot be disabled until allowed in the robot's web page)."""
+    on = bool(on)
+    if name == "basic_awareness":
+        proxy = proxy_factory("ALBasicAwareness")
+        if proxy:
+            (proxy.startAwareness if on else proxy.stopAwareness)()
+        return
+    if name == "expressive_listening":
+        proxy = proxy_factory("ALAutonomousMoves")
+        if proxy:
+            proxy.setExpressiveListeningEnabled(on)
+        return
+    motion = proxy_factory("ALMotion")
+    if not motion:
+        return
+    if name == "fall_manager":
+        motion.setFallManagerEnabled(on)
+    elif name == "arm_collision_protection":
+        motion.setCollisionProtectionEnabled("Arms", on)
+    elif name == "external_collision":
+        motion.setExternalCollisionProtectionEnabled("All", on)
+    elif name == "push_recovery":
+        motion.setPushRecoveryEnabled(on)
+    elif name == "breath":
+        motion.setBreathEnabled("Body", on)
+    elif name == "idle_posture":
+        motion.setIdlePostureEnabled("Body", on)
+    elif name == "smart_stiffness":
+        motion.setSmartStiffnessEnabled(on)
+    elif name == "diagnosis_effect":
+        motion.setDiagnosisEffectEnabled(on)
 
 
 class _MotionGuard(object):
@@ -286,12 +454,13 @@ class _MotionGuard(object):
 
     def __init__(self, limits, proxy_factory=None):
         self.limits = limits
+        self.box = None   # motor profile box, None without a profile
         self._proxy_factory = proxy_factory or (
             lambda: get_proxy("ALMotion") if HAS_NAOQI else None)
 
     def submit(self, joints, angles, speed):
         """Clamp then send a joint move; returns the number of joints sent."""
-        joints, angles = _clamp_joints(joints, angles, self.limits)
+        joints, angles = _clamp_joints(joints, angles, self.limits, self.box)
         if not joints:
             return 0
         speed = _clamp_speed(speed, self.limits)
@@ -845,10 +1014,14 @@ class NaoBridge(object):
         audio_capture : enable wake word detection and VAD capture.
         tts_method    : "mp3" | "text" | "auto".
                         "auto" → mp3 if NAOqi available, otherwise text.
+        motion_limits : "motion_limits" section of the provisioning file.
+        motor_profile : path of the motor profile (written by the calibration).
+        components    : path of the NAOqi components state (switched from the régie).
     """
 
     def __init__(self, vps_url, modules=None, audio_capture=False, tts_method="auto",
-                 token=None, motion_limits=None):
+                 token=None, motion_limits=None, motor_profile=_MOTOR_PROFILE_DEFAULT,
+                 components=_COMPONENTS_DEFAULT):
         self.vps_url = vps_url
         self._token = token
         self._modules = DEFAULT_MODULES if modules is None else frozenset(modules)
@@ -868,9 +1041,20 @@ class NaoBridge(object):
         # Guard rails between incoming motion commands and ALMotion.
         self._limits = _motion_limits(motion_limits)
         self._guard = _MotionGuard(self._limits)
-        # Head and arm angles read at launch, reported to the NAO driver which
-        # uses them as the rest position (the robot itself decides nothing).
+        # Head and arm angles read at launch, reported for information.
         self._launch_pose = {}
+        # NAOqi proxies, replaceable in tests.
+        self._proxy = lambda name: get_proxy(name) if HAS_NAOQI else None
+        # Run a long step (calibration capture, replay) off the WebSocket thread.
+        self._spawn = lambda fn, *args: threading.Thread(target=fn, args=args).start()
+        self._sleep = time.sleep
+        self._profile_path = motor_profile
+        self._profile = None
+        self._load_profile()
+        self._components_path = components
+        self._components = {}   # name -> {"enabled", "ok", "error"}
+        self._calib = None      # calibration in progress, see _calibration()
+        self._calib_lock = threading.Lock()
 
     def _get_tts_method(self):
         """Return the effective TTS method, or None when the NAO does not speak.
@@ -922,22 +1106,14 @@ class NaoBridge(object):
                 time.sleep(RECONNECT_DELAY)
 
     def _apply_motion_safety(self):
-        """Turn on the NAOqi protections the motion limits rely on."""
+        """Switch the NAOqi components, read the launch pose, go to rest."""
         print("[motion] Bornes : vitesse <= {}, marge {} rad, marche <= {}".format(
             self._limits["max_speed"], self._limits["joint_margin"],
             self._limits["walk_max"]), file=sys.stderr)
-        if not HAS_NAOQI:
-            return
-        proxy = get_proxy("ALMotion")
+        self._apply_components()
+        proxy = self._proxy("ALMotion")
         if not proxy:
             return
-        try:
-            if self._limits["fall_manager"]:
-                proxy.setFallManagerEnabled(True)
-            if self._limits["arm_collision_protection"]:
-                proxy.setCollisionProtectionEnabled("Arms", True)
-        except Exception as e:
-            print("[motion] protections NAOqi : {}".format(e), file=sys.stderr)
         names = sorted(_JOINT_HW_LIMITS)
         try:
             # True: sensor values, i.e. where the joints really are.
@@ -945,6 +1121,114 @@ class NaoBridge(object):
             self._launch_pose = dict((n, round(float(a), 4)) for n, a in zip(names, angles))
         except Exception as e:
             print("[motion] pose de lancement non lue : {}".format(e), file=sys.stderr)
+        self._go_to_rest(sorted(self._profile["chains"]) if self._profile else [])
+
+    # ------------------------------------------------------------------
+    # Motor profile
+    # ------------------------------------------------------------------
+
+    def _load_profile(self):
+        """Read the motor profile; without one, no joint moves (driver and bridge)."""
+        raw = _load_json(self._profile_path)
+        profile, errors = _validate_profile(raw, self._limits) if raw is not None else (None, [])
+        for e in errors:
+            print("[motion] profil moteur : {}".format(e), file=sys.stderr)
+        self._set_profile(profile)
+        if profile is None:
+            print("[motion] pas de profil moteur ({}) : aucun geste avant un calibrage "
+                  "depuis la regie.".format(self._profile_path), file=sys.stderr)
+        else:
+            print("[motion] profil moteur : {}".format(", ".join(sorted(profile["chains"]))),
+                  file=sys.stderr)
+
+    def _set_profile(self, profile):
+        self._profile = profile
+        # Without a profile the box is empty: the guard refuses every joint.
+        self._guard.box = _profile_box(profile) if profile else {}
+
+    def _hold_here(self, motion, joints):
+        """Stiffness on without a jump: first make the current position the target."""
+        group = _NAOQI_GROUP[_JOINT_TO_GROUP[joints[0]]]
+        angles = motion.getAngles(list(joints), True)
+        motion.setAngles(list(joints), [float(a) for a in angles], float(self._limits["min_speed"]))
+        motion.setStiffnesses(group, float(self._limits["stiffness_max"]))
+
+    def _go_to_rest(self, chains):
+        """Stiffness on and back to the rest pose of each chain (blocking).
+
+        At startup (after a crash too) and at the end of a calibration: the
+        NAO driver resets its sequences on the next /nao/capabilities and
+        assumes the robot is at rest.
+        """
+        motion = self._proxy("ALMotion")
+        for name in chains:
+            cfg = self._profile["chains"][name] if self._profile else None
+            if not cfg:
+                continue
+            joints = list(_CHAINS[name])
+            with self._stiffness_lock:
+                self._stiffness_enabled.add(name)
+            if not motion:
+                print("[MOCK] repos {}".format(name), file=sys.stderr)
+                continue
+            try:
+                self._hold_here(motion, joints)
+                motion.angleInterpolationWithSpeed(
+                    joints, [cfg["rest"][j] for j in joints], cfg["speed"])
+            except Exception as e:
+                print("[motion] retour au repos {} : {}".format(name, e), file=sys.stderr)
+
+    def _capabilities(self):
+        tts_method = self._get_tts_method()
+        caps = {"tts_method": tts_method} if tts_method else {}
+        if self._launch_pose:
+            caps["launch_pose"] = self._launch_pose
+        caps["motor_profile"] = self._profile
+        return caps
+
+    def _publish(self, topic, payload):
+        self._send({"op": "publish", "topic": topic, "msg": {"data": json.dumps(payload)}})
+
+    # ------------------------------------------------------------------
+    # NAOqi components (régie)
+    # ------------------------------------------------------------------
+
+    def _apply_components(self):
+        """Put every component in its saved state (or its default)."""
+        saved = _load_json(self._components_path)
+        saved = saved if isinstance(saved, dict) else {}
+        for name, _label, default in _COMPONENTS:
+            if name in ("fall_manager", "arm_collision_protection"):
+                default = bool(self._limits[name])
+            self._switch_component(name, bool(saved.get(name, default)))
+
+    def _switch_component(self, name, on):
+        error = ""
+        try:
+            _set_component(name, on, self._proxy)
+            if not HAS_NAOQI:
+                print("[MOCK] composant {} -> {}".format(name, on), file=sys.stderr)
+        except Exception as e:
+            error = str(e)
+            print("[motion] composant {} -> {} : {}".format(name, on, e), file=sys.stderr)
+        self._components[name] = {"enabled": bool(on), "ok": not error, "error": error}
+
+    def _components_state(self):
+        return {"components": [dict(self._components.get(n, {}), name=n, label=label)
+                               for n, label, _ in _COMPONENTS]}
+
+    def _components_command(self, payload):
+        """/nao/components : {"name": "...", "enabled": bool} or {"op": "status"}."""
+        name = payload.get("name")
+        if name in _COMPONENT_NAMES and isinstance(payload.get("enabled"), bool):
+            self._switch_component(name, payload["enabled"])
+            try:
+                _write_json(self._components_path, dict(
+                    (n, c["enabled"]) for n, c in self._components.items()))
+            except (IOError, OSError) as e:
+                print("[motion] {} non ecrit : {}".format(self._components_path, e),
+                      file=sys.stderr)
+        self._publish("/nao/components_state", self._components_state())
 
     def stop(self):
         self._stop.set()
@@ -1003,7 +1287,8 @@ class NaoBridge(object):
             ws.send(json.dumps(sub_msg))
 
         # Advertise topics published by this bridge
-        advertised = ["/nao/status", "/nao/capabilities"]
+        advertised = ["/nao/status", "/nao/capabilities",
+                      "/nao/calibration_state", "/nao/components_state"]
         if self._audio_capture_enabled:
             advertised.append("/nao/audio")
         for topic in advertised:
@@ -1011,11 +1296,10 @@ class NaoBridge(object):
             _ws_log(u"→", adv_msg)
             ws.send(json.dumps(adv_msg))
 
-        # Immediately announce TTS capability so the driver can negotiate the method
+        # Immediately announce TTS capability so the driver can negotiate the
+        # method, and the motor profile the driver builds its sequences on.
         tts_method = self._get_tts_method()
-        caps = {"tts_method": tts_method} if tts_method else {}
-        if self._launch_pose:
-            caps["launch_pose"] = self._launch_pose
+        caps = self._capabilities()
         cap_payload = json.dumps(caps)
         cap_msg = {"op": "publish", "topic": "/nao/capabilities",
                    "msg": {"data": cap_payload}}
@@ -1028,6 +1312,8 @@ class NaoBridge(object):
 
         print("[bridge] Pret.", file=sys.stderr)
         self._connected.set()
+        self._publish("/nao/components_state", self._components_state())
+        self._publish("/nao/calibration_state", self._calibration_state())
         # Started once: a thread per connection used to pile up on every reconnect.
         if not self._status_started:
             self._status_started = True
@@ -1110,6 +1396,17 @@ class NaoBridge(object):
             # Always handled regardless of module filtering
             print("[bridge] /nao/shutdown received — clean shutdown.", file=sys.stderr)
             threading.Thread(target=self.stop).start()
+        elif topic in ("/nao/calibration", "/nao/components"):
+            try:
+                payload = json.loads(data.get("data", "{}"))
+            except ValueError:
+                return
+            if not isinstance(payload, dict):
+                return
+            if topic == "/nao/calibration":
+                self._calibration(payload)
+            else:
+                self._components_command(payload)
         elif topic == "/nao/motion" and "motion" in self._modules:
             try:
                 payload = json.loads(data.get("data", "{}"))
@@ -1136,8 +1433,10 @@ class NaoBridge(object):
             groups = payload.get("groups", [])
             value  = float(payload.get("value", 0.0))
             # Guard: groups must be a list (single-group string would iterate chars).
+            # The chain being calibrated keeps the stiffness the calibration sets.
             if isinstance(groups, list):
-                self._set_stiffness(groups, value)
+                calib = self._calib_chain()
+                self._set_stiffness([g for g in groups if g != calib], value)
 
     # ------------------------------------------------------------------
     # NAOqi command implementations
@@ -1293,6 +1592,11 @@ class NaoBridge(object):
                 print("[bridge] motion bloque: joints de jambe {}".format(list(joints)),
                       file=sys.stderr)
             return
+        # The chain being calibrated is moved by hand or by the calibration only.
+        calib = self._calib_chain()
+        filtered = [(j, a) for j, a in filtered if _JOINT_TO_GROUP.get(j) != calib]
+        if not filtered:
+            return
         joints = [j for j, _ in filtered]
         angles = [a for _, a in filtered]
         grps_needed = set(_JOINT_TO_GROUP.get(j, "head") for j in joints)
@@ -1306,6 +1610,278 @@ class NaoBridge(object):
         # Stiffness is already on (set by _set_stiffness): no setStiffnesses
         # call per move, which only added load on NAOqi.
         self._guard.submit(joints, angles, speed)
+
+    # ------------------------------------------------------------------
+    # Calibration of the motor profile (driven from the régie)
+    # ------------------------------------------------------------------
+    #
+    # /nao/calibration carries one step at a time, {"op": ...}:
+    #   status                 publish the state (current profile included)
+    #   start {chain}          calibrate head, larm or rarm; eyes turn orange
+    #   release / hold         stiffness off (to place the chain by hand) / on
+    #   capture {what}         what = rest | start: average of the sensors
+    #   range_start/range_stop stiffness off, record min and max of each joint
+    #   speed {value}          speed of the chain
+    #   replay                 rest -> start -> min and max of each joint -> start -> rest
+    #   save                   after a replay: write the profile, announce it
+    #   cancel                 leave without writing; the chain goes back to rest
+    # The state is published on /nao/calibration_state after each step, and
+    # every 0.5 s with the live angles while a calibration is open.
+
+    def _calib_chain(self):
+        calib = self._calib
+        return calib["chain"] if calib else None
+
+    def _calibration_state(self):
+        calib = self._calib
+        state = {"active": calib is not None, "profile": self._profile,
+                 "chains": dict((n, list(j)) for n, j in _CHAINS.items())}
+        if calib:
+            state.update(dict((k, v) for k, v in calib.items() if not k.startswith("_")))
+        return state
+
+    def _calib_publish(self, message=None, error=None):
+        calib = self._calib
+        if calib is not None:
+            if message is not None:
+                calib["message"] = message
+            calib["error"] = error or ""
+        state = self._calibration_state()
+        state["error"] = error or ""
+        self._publish("/nao/calibration_state", state)
+
+    def _calib_angles(self, joints):
+        motion = self._proxy("ALMotion")
+        if not motion:
+            return dict((j, 0.0) for j in joints)
+        angles = motion.getAngles(list(joints), True)
+        return dict((j, round(float(a), 4)) for j, a in zip(joints, angles))
+
+    def _calib_stiffness(self, chain, on):
+        motion = self._proxy("ALMotion")
+        if motion:
+            if on:
+                self._hold_here(motion, _CHAINS[chain])
+            else:
+                motion.setStiffnesses(_NAOQI_GROUP[chain], 0.0)
+        with self._stiffness_lock:
+            (self._stiffness_enabled.add if on else self._stiffness_enabled.discard)(chain)
+
+    def _calibration(self, payload):
+        op = payload.get("op", "")
+        with self._calib_lock:
+            try:
+                error = self._calibration_step(op, payload)
+            except Exception as e:
+                error = "{} : {}".format(op, e)
+        if error:
+            print("[calibration] {}".format(error), file=sys.stderr)
+        self._calib_publish(error=error)
+
+    def _calibration_step(self, op, payload):
+        """Run one step; returns an error message or ''."""
+        calib = self._calib
+        if op == "status":
+            return ""
+        if op == "start":
+            chain = payload.get("chain")
+            if chain not in _CHAINS:
+                return "chaine inconnue : {}".format(chain)
+            if calib:
+                return "" if calib["chain"] == chain else \
+                    "calibrage de {} en cours".format(calib["chain"])
+            old = (self._profile or {}).get("chains", {}).get(chain, {})
+            self._calib = {"chain": chain, "step": "hold", "message": "", "error": "",
+                           "rest": dict(old.get("rest", {})), "start": dict(old.get("start", {})),
+                           "range": dict(old.get("range", {})),
+                           "speed": old.get("speed", 0.1), "replayed": False,
+                           "angles": {}, "_recording": False}
+            self._calib_stiffness(chain, True)
+            self._leds("FaceLeds", 1.0, 0.4, 0.0)
+            self._spawn(self._calib_live_loop)
+            self._calib["message"] = "Calibrage de {} ouvert".format(chain)
+            return ""
+        if calib is None:
+            return "aucun calibrage ouvert"
+        chain = calib["chain"]
+        joints = _CHAINS[chain]
+        if calib["step"] in ("capturing", "replaying") and op != "cancel":
+            return "etape en cours : {}".format(calib["step"])
+        if op == "release":
+            self._calib_stiffness(chain, False)
+            calib.update(step="released", message="Raideur coupee : place la chaine a la main")
+        elif op == "hold":
+            self._calib_stiffness(chain, True)
+            calib.update(step="hold", message="Raideur remise")
+        elif op == "capture":
+            what = payload.get("what")
+            if what not in ("rest", "start"):
+                return "capture : rest ou start"
+            calib["step"] = "capturing"
+            self._spawn(self._calib_capture, what)
+        elif op == "range_start":
+            self._calib_stiffness(chain, False)
+            calib.update(step="recording", _recording=True, range={},
+                         message="Enregistrement : parcours la zone permise")
+        elif op == "range_stop":
+            if calib["step"] != "recording":
+                return "pas d'enregistrement en cours"
+            calib["_recording"] = False
+            self._calib_finish_range()
+            self._calib_stiffness(chain, True)
+            calib.update(step="hold", replayed=False, message="Plage enregistree")
+        elif op == "speed":
+            try:
+                calib["speed"] = _clamp_speed(float(payload.get("value")), self._limits)
+            except (TypeError, ValueError):
+                return "vitesse invalide"
+            calib.update(replayed=False, message="Vitesse : {}".format(calib["speed"]))
+        elif op == "replay":
+            clean, error = _validate_chain(chain, calib, self._limits)
+            if clean is None:
+                return error
+            calib["step"] = "replaying"
+            self._spawn(self._calib_replay, clean)
+        elif op == "save":
+            return self._calib_save()
+        elif op == "cancel":
+            calib["_recording"] = False
+            self._calib = None
+            self._calib_end(chain)
+            print("[calibration] {} annule".format(chain), file=sys.stderr)
+        else:
+            return "etape inconnue : {}".format(op)
+        return ""
+
+    def _calib_live_loop(self):
+        """While a calibration is open: live angles, min/max when recording."""
+        while not self._stop.is_set():
+            calib = self._calib
+            if calib is None:
+                return
+            try:
+                angles = self._calib_angles(_CHAINS[calib["chain"]])
+            except Exception as e:
+                print("[calibration] angles non lus : {}".format(e), file=sys.stderr)
+                angles = {}
+            calib["angles"] = angles
+            if calib["_recording"]:
+                self._calib_record(calib, angles)
+            if self._connected.is_set():
+                self._calib_publish()
+            self._stop.wait(0.05 if calib["_recording"] else 0.5)
+
+    def _calib_record(self, calib, angles):
+        rng = calib["range"]
+        for j, a in angles.items():
+            lo, hi = rng.get(j, [a, a])
+            rng[j] = [min(lo, a), max(hi, a)]
+
+    def _calib_finish_range(self):
+        """Recorded min/max -> range: margin off, inside the hardware range,
+        and holding the start pose."""
+        calib = self._calib
+        m = float(self._limits["range_margin"])
+        for j in _CHAINS[calib["chain"]]:
+            if j not in calib["range"]:
+                continue
+            lo, hi = calib["range"][j]
+            if hi - lo > 2 * m:
+                lo, hi = lo + m, hi - m
+            hw_lo, hw_hi = _joint_range(j, self._limits)
+            lo, hi = _clamp(lo, hw_lo, hw_hi), _clamp(hi, hw_lo, hw_hi)
+            if j in calib["start"]:
+                lo, hi = min(lo, calib["start"][j]), max(hi, calib["start"][j])
+            calib["range"][j] = [round(lo, 4), round(hi, 4)]
+
+    def _calib_capture(self, what):
+        """Average of 5 sensor reads, 0.1 s apart (off the WebSocket thread)."""
+        calib = self._calib
+        error = ""
+        try:
+            joints = _CHAINS[calib["chain"]]
+            samples = []
+            for _ in range(5):
+                samples.append(self._calib_angles(joints))
+                self._sleep(0.1)
+            calib[what] = dict((j, round(sum(s[j] for s in samples) / len(samples), 4))
+                               for j in joints)
+            calib.update(replayed=False, message="Position {} capturee".format(
+                "de repos" if what == "rest" else "de depart"))
+        except Exception as e:
+            error = "capture : {}".format(e)
+        calib["step"] = "released" if calib["chain"] not in self._stiffness_enabled else "hold"
+        self._calib_publish(error=error)
+
+    def _calib_replay(self, cfg):
+        """Play the chain through its whole range at its speed (blocking calls)."""
+        calib = self._calib
+        joints = list(_CHAINS[calib["chain"]])
+        poses = [cfg["rest"], cfg["start"]]
+        for j in joints:
+            for end in cfg["range"][j]:
+                pose = dict(cfg["start"])
+                pose[j] = end
+                poses.append(pose)
+        poses += [cfg["start"], cfg["rest"]]
+        error = ""
+        try:
+            self._calib_stiffness(calib["chain"], True)
+            motion = self._proxy("ALMotion")
+            for i, pose in enumerate(poses):
+                if self._calib is not calib:
+                    return   # cancelled meanwhile
+                calib["message"] = "Rejeu {}/{}".format(i + 1, len(poses))
+                self._calib_publish()
+                if motion:
+                    motion.angleInterpolationWithSpeed(
+                        joints, [pose[j] for j in joints], cfg["speed"])
+                else:
+                    print("[MOCK] rejeu {} -> {}".format(joints, [pose[j] for j in joints]),
+                          file=sys.stderr)
+            calib.update(replayed=True, message="Rejeu termine : enregistrer ou annuler")
+        except Exception as e:
+            error = "rejeu : {}".format(e)
+        calib["step"] = "hold"
+        self._calib_publish(error=error)
+
+    def _calib_save(self):
+        calib = self._calib
+        if not calib["replayed"]:
+            return "rejouer avant d'enregistrer"
+        clean, error = _validate_chain(calib["chain"], calib, self._limits)
+        if clean is None:
+            return error
+        profile = dict(self._profile or {})
+        chains = dict(profile.get("chains", {}))
+        chains[calib["chain"]] = clean
+        profile.update(chains=chains, posture="Sit",
+                       version=int(profile.get("version", 0)) + 1,
+                       calibrated_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+        try:
+            if self._profile is not None:
+                _write_json("{}.{}.bak".format(self._profile_path, self._profile.get("version", 0)),
+                            self._profile)
+            _write_json(self._profile_path, profile)
+        except (IOError, OSError) as e:
+            return "profil non ecrit : {}".format(e)
+        self._set_profile(profile)
+        self._calib = None
+        self._calib_end(calib["chain"])
+        print("[calibration] {} enregistre (version {})".format(
+            calib["chain"], profile["version"]), file=sys.stderr)
+        return ""
+
+    def _calib_end(self, chain):
+        """Back to rest (when the chain has a profile), eyes back, profile
+        announced: the NAO driver resets its sequences."""
+        self._calib_stiffness(chain, True)
+        self._spawn(self._calib_back_to_rest, chain)
+
+    def _calib_back_to_rest(self, chain):
+        self._go_to_rest([chain])
+        self._leds("FaceLeds", 1.0, 1.0, 1.0)
+        self._publish("/nao/capabilities", self._capabilities())
 
     # ------------------------------------------------------------------
     # Wake word detection → audio recording → publish /nao/audio
@@ -1502,8 +2078,11 @@ class NaoBridge(object):
                         pass
             motor_temp  = self._read_motor_temps()
             environment = self._read_environment()
+            # The motor profile is repeated so that a NAO driver started after
+            # the robot (it missed /nao/capabilities) still gets it.
             payload = json.dumps({"battery": level, "motor_temp": motor_temp,
-                                  "environment": environment})
+                                  "environment": environment,
+                                  "motor_profile": self._profile})
             try:
                 self._send({
                     "op": "publish",
@@ -1549,6 +2128,10 @@ if __name__ == "__main__":
             "Without --vps, exits after provisioning."
         ),
     )
+    parser.add_argument("--motor-profile", default=_MOTOR_PROFILE_DEFAULT, metavar="FILE",
+                        help="Motor profile written by the calibration (default: "
+                             "nao_motor_profile.json next to this script). Without it, "
+                             "no joint moves until a calibration from the regie.")
     parser.add_argument("--verbose", action="store_true",
                         help="Also log every /nao/motion and /nao/status message (costs CPU).")
     parser.add_argument("--nao-ip", default="127.0.0.1",
@@ -1644,7 +2227,8 @@ if __name__ == "__main__":
 
     bridge = NaoBridge(args.vps, modules=active_modules, audio_capture=audio_capture,
                        tts_method=args.tts_method, token=args.token,
-                       motion_limits=bridge_cfg.get("motion_limits"))
+                       motion_limits=bridge_cfg.get("motion_limits"),
+                       motor_profile=args.motor_profile)
     try:
         bridge.run()
     except KeyboardInterrupt:
