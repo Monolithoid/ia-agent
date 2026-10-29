@@ -154,6 +154,7 @@ Whisper and edge-tts calls live in `robotics/shared/speech_services.py`, shared 
 | `BRAIN_API_KEY` | Provider API key (compose default: `OLLAMA_API_KEYS`) |
 | `BRAIN_TIMEOUT` | Stream timeout in seconds, default 120 (compose: 60) |
 | `BRAIN_EFFORT` | Anthropic only, optional |
+| `BRAIN_PERSONA_FILE` | NAO personality file at the top of the system prompt, re-read on each LLM call; empty or missing = `persona.DEFAULT_PERSONA` (compose: `/opt/ia/nao/persona/personnalite.md` on the VPS) — see [ia-stack.md](ia-stack.md#personnalité-de-nao) |
 | `BODY_REGISTRY` | Comma-separated body IDs, default `nao_01` (compose: `nao_01,static_01,obs_01`). IDs starting with `static` are static drones, `obs` stream voices, all others are NAOs |
 | `WAKE_WORD` | Wake word required in the static drone's speech, default `ok nao` |
 | `WAKE_WINDOW_S` | Seconds during which a lone wake word stays valid for the next sentence, default 10 |
