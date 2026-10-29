@@ -24,6 +24,12 @@ class FakeMotion(object):
     def setAngles(self, joints, angles, speed):
         self.calls.append((list(joints), list(angles), speed))
 
+    def setStiffnesses(self, group, value):
+        self.calls.append(("stiffness", group, value))
+
+    def angleInterpolationWithSpeed(self, joints, angles, speed):
+        self.calls.append(("interpolation", list(joints), list(angles), speed))
+
 
 class TestLimitsConfig(unittest.TestCase):
 
@@ -95,6 +101,14 @@ class TestBridge(unittest.TestCase):
         self.bridge._motion_joint("HeadYaw", 0.1, 0.1)
         self.bridge._motion_joint("HeadYaw", 0.2, 0.1)
         self.assertEqual(len(self.proxy.calls), 2)
+
+    def test_legacy_call(self):
+        bridge = b.NaoBridge("ws://test/", motion_limits={"motion_call": u"legacy"})
+        bridge._guard._proxy_factory = lambda: self.proxy
+        bridge._set_stiffness(["head"], 1.0)
+        bridge._motion_joint("HeadYaw", 0.1, 0.1)
+        self.assertEqual(self.proxy.calls, [("stiffness", "Head", 1.0),
+                                            ("interpolation", ["HeadYaw"], [0.1], 0.1)])
 
     def test_stiffness_capped_and_legs_blocked(self):
         bridge = b.NaoBridge("ws://test/", motion_limits={"stiffness_max": 0.6})

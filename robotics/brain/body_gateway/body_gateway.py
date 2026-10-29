@@ -142,9 +142,8 @@ Réponds UNIQUEMENT en JSON strict — aucun texte en dehors du JSON :
   "energy": "very-low|low|medium|high|very-high",
   "actions": [
     {{"body": "{speaker}", "type": "speech",  "text": "ce que tu dis à voix haute"}},
-    {{"body": "{nao}", "type": "motion",  "name": "wave|bow|sit|stand"}},
+    {{"body": "{nao}", "type": "motion",  "name": "wave|bow|raise_right_arm|raise_left_arm"}},
     {{"body": "{nao}", "type": "leds",    "color": "blue|green|white|red|yellow|purple|off"}},
-    {{"body": "{nao}", "type": "move",    "x": 0.0, "y": 0.0, "theta": 0.0}},
     {{"body": "{nao}", "type": "look",    "yaw": 0.0}}
   ]
 }}
@@ -227,6 +226,12 @@ _COLORS = {
 _MOTION_PRESETS = {
     "wave": {"joints": ["LShoulderPitch", "RShoulderPitch"], "angles": [-1.0, -1.0], "speed": 0.35},
     "bow":  {"joint": "HeadPitch",                           "angle":   0.5,         "speed": 0.20},
+    # Bras seul, levé devant au-dessus de l'horizontale, coude presque tendu.
+    # Pas de jambes : ce NAO ne bouge pas les jambes (postures et marche coupées).
+    "raise_right_arm": {"joints": ["RShoulderPitch", "RShoulderRoll", "RElbowRoll"],
+                        "angles": [-1.2, -0.2, 0.1], "speed": 0.2},
+    "raise_left_arm":  {"joints": ["LShoulderPitch", "LShoulderRoll", "LElbowRoll"],
+                        "angles": [-1.2, 0.2, -0.1], "speed": 0.2},
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

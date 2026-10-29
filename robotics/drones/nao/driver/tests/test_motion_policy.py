@@ -80,22 +80,44 @@ class TestRateAndMoves(unittest.TestCase):
 
 class TestPostureWalkHeat(unittest.TestCase):
 
+    def test_legs_off_by_default(self):
+        p = policy()
+        self.assertFalse(p.posture_allowed("Stand", 0.0)[0])
+        self.assertFalse(p.move_decision(True, 0.0)[0])
+        self.assertFalse(p.move_decision(False, 0.0)[0])
+
+    def test_regie_crash_scenario(self):
+        # « stand » puis « move 0,0,0 » : le move ne part pas pendant la posture.
+        p = policy(postures=["Stand"], walk=True)
+        self.assertTrue(p.posture_allowed("Stand", 0.0)[0])
+        ok, why = p.move_decision(False, 0.1)
+        self.assertFalse(ok)
+        self.assertIn("posture", why)
+
+    def test_zero_move_only_stops_a_walk(self):
+        p = policy(walk=True)
+        self.assertFalse(p.move_decision(False, 0.0)[0])
+        self.assertTrue(p.move_decision(True, 0.0)[0])
+        self.assertEqual(p.submit(["HeadYaw"], [0.1], 0.1, now=0.0), 0)
+        self.assertTrue(p.move_decision(False, 1.0)[0])
+        self.assertEqual(p.submit(["HeadYaw"], [0.1], 0.1, now=1.0), 1)
+
     def test_posture_whitelist_cooldown_and_block(self):
-        p = policy(posture_cooldown=5.0, posture_block=4.0)
+        p = policy(postures=["Stand", "Sit"], walk=True, posture_cooldown=5.0, posture_block=4.0)
         self.assertFalse(p.posture_allowed("LyingBack", 0.0)[0])
         self.assertTrue(p.posture_allowed("Stand", 0.0)[0])
         self.assertEqual(p.submit(["HeadYaw"], [0.1], 0.1, now=1.0), 0)
-        self.assertFalse(p.walk_allowed(1.0))
+        self.assertFalse(p.move_decision(True, 1.0)[0])
         self.assertFalse(p.posture_allowed("Sit", 3.0)[0])
         self.assertTrue(p.posture_allowed("Sit", 6.0)[0])
         self.assertEqual(p.submit(["HeadYaw"], [0.1], 0.1, now=10.1), 1)
 
     def test_walk_blocks_joints_and_postures(self):
-        p = policy()
-        p.set_walking(True)
+        p = policy(postures=["Stand"], walk=True)
+        p.move_decision(True, 0.0)
         self.assertEqual(p.submit(["HeadYaw"], [0.1], 0.1, now=0.0), 0)
         self.assertFalse(p.posture_allowed("Stand", 0.0)[0])
-        p.set_walking(False)
+        p.move_decision(False, 0.0)
         self.assertEqual(p.submit(["HeadYaw"], [0.1], 0.1, now=0.0), 1)
 
     def test_hot_group(self):

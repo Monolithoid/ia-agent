@@ -12,9 +12,11 @@ Décisions prises ici :
   - fin du geste : une articulation reste occupée max(min_move_time, durée
     estimée du geste) ; un ordre reçu pendant ce temps est perdu et compté
     (while_moving="drop") ou attend la fin du geste ("latest") ;
-  - postures : liste autorisée, délai entre deux changements, articulations
-    bloquées pendant posture_block secondes ;
-  - marche : articulations bloquées tant que le robot marche ;
+  - jambes : postures et marche bougent les jambes, que ce NAO ne bouge pas.
+    Elles sont donc coupées par défaut (postures vides, walk=false).  Une
+    fois réactivées : liste de postures, délai entre deux changements,
+    gestes bloqués pendant posture_block secondes et pendant la marche, pas
+    de marche pendant une posture ni de posture pendant la marche ;
   - chaleur : un groupe trop chaud (motor_temp de /nao/status) refuse les ordres ;
   - repos : la pose de lancement annoncée par le robot (launch_pose) est la
     position de repos unique ; une articulation inactive depuis rest_delay
@@ -27,7 +29,8 @@ DEFAULT_LIMITS = {
     "velocity_scale":    1.0,    # part de JOINT_MAX_VELOCITY réellement atteinte (0 = pas d'estimation)
     "while_moving":      "drop",  # ordre pour une articulation en mouvement : "drop" ou "latest"
     "max_motor_temp":    70,     # °C ; au-delà le groupe refuse les ordres (0 = désactivé)
-    "postures":          ["Stand", "StandInit", "Sit", "Crouch"],
+    "postures":          [],     # postures autorisées (ex. ["Stand", "Sit"]) ; vide = aucune
+    "walk":              False,  # autoriser /nao/cmd_vel (marche)
     "posture_cooldown":  5.0,    # s entre deux changements de posture
     "posture_block":     5.0,    # s pendant lesquelles un changement de posture bloque les gestes
     "joints_while_busy": False,  # accepter les gestes pendant une posture ou une marche
@@ -146,6 +149,8 @@ class MotionPolicy:
 
     def posture_allowed(self, name: str, now: float) -> tuple[bool, str]:
         """(autorisée ?, raison du refus).  Une posture autorisée bloque les gestes."""
+        if not self.limits["postures"]:
+            return False, "postures désactivées (jambes)"
         if name not in self.limits["postures"]:
             return False, "hors liste"
         if self._walking:
@@ -157,8 +162,21 @@ class MotionPolicy:
         self._pending.clear()
         return True, ""
 
-    def walk_allowed(self, now: float) -> bool:
-        return now >= self._posture_until
+    def move_decision(self, walking: bool, now: float) -> tuple[bool, str]:
+        """(envoyer ?, raison du refus) pour un ordre de marche.
+
+        Un ordre à vitesse nulle n'est envoyé que pour arrêter une marche en
+        cours : sinon moveToward(0, 0, 0) réveille le moteur de marche pour
+        rien, et pendant un changement de posture il fait planter NAOqi.
+        """
+        if not self.limits["walk"]:
+            return False, "marche désactivée (jambes)"
+        if now < self._posture_until:
+            return False, "changement de posture en cours"
+        if not walking and not self._walking:
+            return False, "vitesse nulle, le robot ne marche pas"
+        self.set_walking(walking)
+        return True, ""
 
     def submit(self, joints, angles, speed: float, now: float) -> int:
         """Retient un geste ; retourne le nombre d'articulations acceptées."""
