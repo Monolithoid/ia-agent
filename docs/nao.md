@@ -180,6 +180,12 @@ Every motion command therefore goes through a guard in `nao_ws_bridge.py`
   These are theoretical no-load figures; under load and with NAOqi's
   acceleration ramps a real move is somewhat slower. Lower `velocity_scale`
   (e.g. 0.8) if moves still get cut short on the robot.
+- **Rest position**: at launch the bridge reads the head and arm angles
+  (sensor values) and keeps them as the single rest position. A joint that
+  received no order for `rest_delay` seconds goes back to it at `rest_speed`;
+  `/nao/stop` sends every moved joint back at once, and so does a clean
+  shutdown (Ctrl+C, `/nao/shutdown`). A new order interrupts a return to rest.
+  Put the robot in the wanted rest pose before starting the script.
 - **Concurrent motions**: joint moves are dropped while a posture change or a
   walk runs (`joints_while_busy`); a posture is refused while walking and the
   other way round. `goToPosture` runs in its own thread, only for the postures
@@ -203,6 +209,9 @@ Defaults, overridable in the `"bridge"` → `"motion_limits"` section of
 | `min_move_time` | 0.3 s | min time a joint keeps its target before the next one |
 | `while_moving` | `"drop"` | order for a joint still moving: dropped, or `"latest"` kept for after the move |
 | `velocity_scale` | 1.0 | share of the joint max velocity really reached, to estimate a move's end (0 = only `min_move_time`) |
+| `rest_return` | true | go back to the launch position after moves |
+| `rest_delay` / `rest_speed` | 3 s / 0.1 | idle time before the return, speed of the return |
+| `rest_tolerance` | 0.02 rad | a joint this close to rest is not moved |
 | `stiffness_max` | 1.0 | max stiffness value |
 | `max_motor_temp` | 70 °C | moves refused above it (0 = off) |
 | `postures` | Stand, StandInit, Sit, Crouch | allowed postures |

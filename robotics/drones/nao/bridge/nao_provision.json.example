@@ -16,6 +16,8 @@
       "max_speed": 0.3,
       "min_interval": 0.1,
       "min_move_time": 0.3,
+      "rest_return": true,
+      "rest_delay": 3.0,
       "joint_margin": 0.05,
       "joint_ranges": {"HeadPitch": [-0.4, 0.3]},
       "max_motor_temp": 70,
