@@ -159,6 +159,333 @@ for _g, _naoqi in _NAOQI_GROUP.items():
                    "RAnklePitch", "RAnkleRoll"):
             _JOINT_TO_GROUP[_j] = _g
 
+# ── Motion limits ─────────────────────────────────────────────────────────────
+# Guard rails applied to every motion command before it reaches ALMotion.
+# NAOqi tends to become unstable when it receives fast, frequent or blocking
+# motion calls; these limits keep the load and the movements within a safe
+# envelope.  Every value can be overridden in the "motion_limits" section of
+# the provisioning file (see nao_provision.json.example).
+_MOTION_LIMITS_DEFAULT = {
+    "max_speed":        0.3,    # fractionMaxSpeed ceiling for joint moves
+    "min_speed":        0.02,   # floor: 0 or negative speeds are rejected by NAOqi
+    "joint_margin":     0.05,   # rad kept away from each mechanical stop
+    "joint_ranges":     {},     # per-joint [min, max] overrides (rad), e.g. {"HeadPitch": [-0.4, 0.3]}
+    "min_interval":     0.1,    # s between two ALMotion.setAngles calls (10 Hz max)
+    "min_move_time":    0.3,    # s a joint keeps its target before accepting a new one
+    "velocity_scale":   1.0,    # share of _JOINT_MAX_VELOCITY really reached (0 = no estimate)
+    "while_moving":     "drop",  # order for a joint still moving: "drop" it, or keep the "latest"
+    "stiffness_max":    1.0,    # ceiling for /nao/stiffness values
+    "max_motor_temp":   70,     # °C; a group hotter than this refuses new moves (0 = off)
+    "postures":         ["Stand", "StandInit", "Sit", "Crouch"],  # allowed ALRobotPosture names
+    "posture_speed":    0.3,    # goToPosture speed
+    "posture_cooldown": 5.0,    # s between two posture changes
+    "walk_max":         0.5,    # |x|, |y|, |theta| ceiling for moveToward (normalized)
+    "joints_while_busy": False,  # accept joint moves during a posture change or a walk
+    "fall_manager":     True,   # force ALMotion fall manager ON at startup
+    "arm_collision_protection": True,  # ALMotion self-collision protection for arms
+}
+
+# Hardware joint ranges (rad), NAO V5 — same values as motion_engine/nao_joints.py.
+# Legs are absent on purpose: leg joints are never commanded by this bridge.
+_JOINT_HW_LIMITS = {
+    "HeadYaw":        (-2.0857,  2.0857),
+    "HeadPitch":      (-0.6720,  0.5149),
+    "LShoulderPitch": (-2.0857,  2.0857),
+    "LShoulderRoll":  (-0.3142,  1.3265),
+    "LElbowYaw":      (-2.0857,  2.0857),
+    "LElbowRoll":     (-1.5446, -0.0349),
+    "LWristYaw":      (-1.8238,  1.8238),
+    "LHand":          ( 0.0,     1.0),
+    "RShoulderPitch": (-2.0857,  2.0857),
+    "RShoulderRoll":  (-1.3265,  0.3142),
+    "RElbowYaw":      (-2.0857,  2.0857),
+    "RElbowRoll":     ( 0.0349,  1.5446),
+    "RWristYaw":      (-1.8238,  1.8238),
+    "RHand":          ( 0.0,     1.0),
+}
+
+# Joint max velocity (rad/s) at fractionMaxSpeed 1.0: no-load speed of the
+# head/arm motor (RE-Max 17, 11 900 rpm = 1246 rad/s) divided by the gearbox
+# ratio (Aldebaran "H25 - Motors" doc: type A 150.27, B 173.22, C 50.61).
+# Used to estimate when a move ends; the hands (0..1 ratio) are not listed.
+_JOINT_MAX_VELOCITY = {
+    "HeadYaw":   8.29, "HeadPitch":     7.19,
+    "ShoulderPitch": 8.29, "ShoulderRoll": 7.19,
+    "ElbowYaw":  8.29, "ElbowRoll":     7.19,
+    "WristYaw": 24.62,
+}
+
+
+def _motion_limits(section):
+    """Merge a "motion_limits" provisioning section over the defaults.
+
+    Unknown keys and values of the wrong type are ignored (with a warning)
+    so a typo in the file never disables a guard rail.
+    """
+    limits = dict(_MOTION_LIMITS_DEFAULT)
+    if not isinstance(section, dict):
+        return limits
+    for key, value in section.items():
+        if key not in limits:
+            print("[motion] motion_limits.{} : cle inconnue — ignoree.".format(key), file=sys.stderr)
+            continue
+        default = limits[key]
+        if isinstance(default, bool):
+            ok = isinstance(value, bool)
+        elif key == "while_moving":
+            # JSON strings are unicode on Python 2: compare values, not types.
+            ok = value in ("drop", "latest")
+        elif isinstance(default, (int, float)):
+            ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+        else:
+            ok = isinstance(value, type(default))
+        if not ok:
+            print("[motion] motion_limits.{} : type invalide — ignoree.".format(key), file=sys.stderr)
+            continue
+        limits[key] = value
+    return limits
+
+
+def _joint_range(joint, limits):
+    """Allowed [min, max] for a joint: hardware range shrunk by joint_margin,
+    then narrowed by a joint_ranges override.  None for an unknown joint."""
+    if joint not in _JOINT_HW_LIMITS:
+        return None
+    lo, hi = _JOINT_HW_LIMITS[joint]
+    margin = float(limits["joint_margin"])
+    # The hands are a 0..1 opening ratio, not an angle — no margin there.
+    if not joint.endswith("Hand") and hi - lo > 2 * margin:
+        lo, hi = lo + margin, hi - margin
+    override = limits["joint_ranges"].get(joint)
+    if isinstance(override, list) and len(override) == 2:
+        try:
+            # An override can only narrow the range, never widen it.
+            lo = max(lo, float(override[0]))
+            hi = min(hi, float(override[1]))
+        except (TypeError, ValueError):
+            pass
+    return lo, hi
+
+
+def _clamp(value, lo, hi):
+    return max(lo, min(hi, value))
+
+
+def _clamp_speed(speed, limits):
+    return _clamp(float(speed), float(limits["min_speed"]), float(limits["max_speed"]))
+
+
+def _clamp_joints(joints, angles, limits):
+    """Return (joints, angles) clamped to their allowed range.
+
+    Unknown joints and leg joints are dropped; NaN angles too.
+    """
+    out_j, out_a = [], []
+    for j, a in zip(joints, angles):
+        rng = _joint_range(j, limits)
+        if rng is None or a != a:  # a != a: NaN
+            print("[motion] joint refuse : {}".format(j), file=sys.stderr)
+            continue
+        out_j.append(j)
+        out_a.append(_clamp(float(a), rng[0], rng[1]))
+    return out_j, out_a
+
+
+class _MotionGuard(object):
+    """Single gateway between the bridge and ALMotion for joint moves.
+
+    - commands are clamped (angle, speed) then merged into a pending target
+      per joint: a burst of commands collapses into one call (latest wins);
+    - a worker thread sends the pending target with the non-blocking
+      ALMotion.setAngles, at most once every min_interval seconds, so the
+      WebSocket receive thread never waits on a motion;
+    - a joint finishes its move before starting the next one: once sent, a
+      target is held for max(min_move_time, estimated move duration); orders
+      for that joint arriving meanwhile are dropped and counted
+      (while_moving="drop"), or the latest one waits for the end of the
+      move (while_moving="latest");
+    - joint moves are dropped while a posture change or a walk is running,
+      and for groups whose motors are too hot.
+    """
+
+    def __init__(self, limits, proxy_factory=None):
+        self.limits = limits
+        self._proxy_factory = proxy_factory or (
+            lambda: get_proxy("ALMotion") if HAS_NAOQI else None)
+        self._proxy = None
+        self._cond = threading.Condition()
+        self._pending = {}           # joint -> (angle, speed)
+        self._last_send = 0.0
+        self._hold_until = {}        # joint -> time its current move is expected to end
+        self._sent_angle = {}        # joint -> last angle sent to ALMotion
+        self._dropped = 0            # orders dropped because their joint was moving
+        self._busy = set()           # "posture" / "walk" while running
+        self._hot_groups = set()
+        self._last_posture = 0.0
+        self._stopped = False
+        t = threading.Thread(target=self._loop)
+        t.daemon = True
+        t.start()
+
+    # -- state updates ---------------------------------------------------
+
+    def set_busy(self, reason, busy):
+        with self._cond:
+            if busy:
+                self._busy.add(reason)
+                # Drop moves queued before the posture/walk: they no longer apply.
+                self._pending.clear()
+            else:
+                self._busy.discard(reason)
+
+    def busy_with(self, reason):
+        with self._cond:
+            return reason in self._busy
+
+    def set_motor_temps(self, temps):
+        """temps: {"head"|"larm"|"rarm": °C} as read by the status loop."""
+        max_temp = self.limits["max_motor_temp"]
+        if not max_temp:
+            return
+        hot = set(g for g, t in temps.items() if t >= max_temp)
+        with self._cond:
+            if hot != self._hot_groups:
+                print("[motion] groupes trop chauds (>= {} C) : {}".format(
+                    max_temp, ", ".join(sorted(hot)) or "aucun"), file=sys.stderr)
+            self._hot_groups = hot
+
+    def clear(self):
+        with self._cond:
+            self._pending.clear()
+
+    def stop(self):
+        with self._cond:
+            self._stopped = True
+            self._pending.clear()
+            self._cond.notify()
+
+    # -- commands --------------------------------------------------------
+
+    def posture_allowed(self, name, now=None):
+        """True if the posture is whitelisted and the cooldown has elapsed."""
+        now = time.time() if now is None else now
+        if name not in self.limits["postures"]:
+            print("[motion] posture refusee (hors liste) : {}".format(name), file=sys.stderr)
+            return False
+        with self._cond:
+            if "posture" in self._busy:
+                print("[motion] posture refusee : changement deja en cours", file=sys.stderr)
+                return False
+            if now - self._last_posture < float(self.limits["posture_cooldown"]):
+                print("[motion] posture refusee : cooldown", file=sys.stderr)
+                return False
+            self._last_posture = now
+        return True
+
+    def submit(self, joints, angles, speed):
+        """Queue a joint move; returns the number of joints accepted."""
+        joints, angles = _clamp_joints(joints, angles, self.limits)
+        speed = _clamp_speed(speed, self.limits)
+        with self._cond:
+            if self._busy and not self.limits["joints_while_busy"]:
+                return 0
+            accepted = 0
+            now = time.time()
+            drop_moving = self.limits["while_moving"] != "latest"
+            for j, a in zip(joints, angles):
+                if _JOINT_TO_GROUP.get(j) in self._hot_groups:
+                    continue
+                if drop_moving and self._hold_until.get(j, 0.0) > now:
+                    # The joint is finishing its move: this order is lost on purpose.
+                    self._dropped += 1
+                    continue
+                self._pending[j] = (a, speed)
+                accepted += 1
+            if accepted:
+                self._cond.notify()
+            return accepted
+
+    def take_dropped(self):
+        """Number of orders dropped since the last call."""
+        with self._cond:
+            n, self._dropped = self._dropped, 0
+        return n
+
+    # -- worker ----------------------------------------------------------
+
+    def _move_duration(self, joint, angle, speed):
+        """Time the joint needs to reach angle, at least min_move_time."""
+        duration = float(self.limits["min_move_time"])
+        # "LShoulderPitch" -> "ShoulderPitch"; hands are absent: min_move_time only.
+        key = joint[1:] if joint[:1] in ("L", "R") else joint
+        vmax = _JOINT_MAX_VELOCITY.get(key, 0.0) * float(self.limits["velocity_scale"])
+        prev = self._sent_angle.get(joint)
+        if vmax > 0 and prev is not None:
+            duration = max(duration, abs(angle - prev) / (speed * vmax))
+        return duration
+
+    def _ready(self, now):
+        return [j for j in self._pending if self._hold_until.get(j, 0.0) <= now]
+
+    def _take(self):
+        """Wait for pending moves whose joint is free and for the rate limit;
+        return them (or None to exit).  Moves of joints still finishing
+        their previous move stay pending."""
+        with self._cond:
+            while True:
+                if self._stopped:
+                    return None
+                if not self._pending:
+                    self._cond.wait()
+                    continue
+                now = time.time()
+                if self._ready(now):
+                    break
+                # Every pending joint is still moving: wake up when the first ends.
+                self._cond.wait(min(self._hold_until[j] for j in self._pending) - now)
+            wait = self._last_send + float(self.limits["min_interval"]) - time.time()
+        if wait > 0:
+            # Commands arriving meanwhile are merged into the same call.
+            time.sleep(wait)
+        with self._cond:
+            now = time.time()
+            batch = dict((j, self._pending.pop(j)) for j in self._ready(now))
+            if batch:
+                speed = min(v[1] for v in batch.values())
+                for j, (a, _) in batch.items():
+                    self._hold_until[j] = now + self._move_duration(j, a, speed)
+                    self._sent_angle[j] = a
+                self._last_send = now
+        return batch
+
+    def _loop(self):
+        while True:
+            batch = self._take()
+            if batch is None:
+                return
+            if batch:
+                self._send(batch)
+
+    def _send(self, batch):
+        joints = sorted(batch)
+        angles = [batch[j][0] for j in joints]
+        # setAngles takes one speed: the slowest request wins (safer).
+        speed = min(batch[j][1] for j in joints)
+        if self._proxy is None:
+            self._proxy = self._proxy_factory()
+        if self._proxy is None:
+            if not HAS_NAOQI:
+                for j, a in zip(joints, angles):
+                    print("[MOCK] motion_joint: {} -> {:.3f} rad speed={}".format(j, a, speed),
+                          file=sys.stderr)
+            return
+        try:
+            self._proxy.setAngles(joints, angles, speed)
+        except Exception as e:
+            print("[motion] setAngles error: {}".format(e), file=sys.stderr)
+            # The proxy may be dead (NAOqi restarted): rebuild it next time.
+            self._proxy = None
+
 _BROKER      = None  # ALBroker instance — must stay alive for NAOqi callbacks
 _CAPTURE_REF = None  # strong ref to active _AudioCapture, prevents GC during recording
 
@@ -686,7 +1013,7 @@ class NaoBridge(object):
     """
 
     def __init__(self, vps_url, modules=None, audio_capture=False, tts_method="auto",
-                 token=None):
+                 token=None, motion_limits=None):
         self.vps_url = vps_url
         self._token = token
         self._modules = DEFAULT_MODULES if modules is None else frozenset(modules)
@@ -703,6 +1030,9 @@ class NaoBridge(object):
         # Groups whose stiffness has been explicitly enabled (others are skipped for motion)
         self._stiffness_enabled = set()
         self._stiffness_lock = threading.Lock()
+        # Guard rails between incoming motion commands and ALMotion.
+        self._limits = _motion_limits(motion_limits)
+        self._guard = _MotionGuard(self._limits)
 
     def _get_tts_method(self):
         """Return the effective TTS method.
@@ -727,6 +1057,7 @@ class NaoBridge(object):
         RECONNECT_DELAY seconds before retrying (exponential backoff is not
         needed here — the NAO network is typically on a stable LAN).
         """
+        self._apply_motion_safety()
         while not self._stop.is_set():
             print("[bridge] Connexion a {} ...".format(self.vps_url), file=sys.stderr)
             try:
@@ -748,8 +1079,27 @@ class NaoBridge(object):
                 print("[bridge] Reconnexion dans {}s ...".format(RECONNECT_DELAY), file=sys.stderr)
                 time.sleep(RECONNECT_DELAY)
 
+    def _apply_motion_safety(self):
+        """Turn on the NAOqi protections the motion limits rely on."""
+        print("[motion] Limites : vitesse <= {}, {} Hz max, postures {}".format(
+            self._limits["max_speed"], round(1.0 / max(self._limits["min_interval"], 0.001), 1),
+            ", ".join(self._limits["postures"])), file=sys.stderr)
+        if not HAS_NAOQI:
+            return
+        proxy = get_proxy("ALMotion")
+        if not proxy:
+            return
+        try:
+            if self._limits["fall_manager"]:
+                proxy.setFallManagerEnabled(True)
+            if self._limits["arm_collision_protection"]:
+                proxy.setCollisionProtectionEnabled("Arms", True)
+        except Exception as e:
+            print("[motion] protections NAOqi : {}".format(e), file=sys.stderr)
+
     def stop(self):
         self._stop.set()
+        self._guard.stop()
         self._cleanup_resources()
         if self.ws:
             self.ws.close()
@@ -979,6 +1329,15 @@ class NaoBridge(object):
             print("[bridge] play_audio error: {}".format(e), file=sys.stderr)
 
     def _move(self, x, y, theta):
+        # moveToward takes normalized velocities in [-1, 1]; walk_max caps them.
+        cap = float(self._limits["walk_max"])
+        x, y, theta = (_clamp(v, -cap, cap) for v in (x, y, theta))
+        walking = bool(x or y or theta)
+        if walking and self._guard.busy_with("posture"):
+            print("[motion] marche refusee : changement de posture en cours", file=sys.stderr)
+            return
+        # Arms stay still while walking (balance), unless joints_while_busy.
+        self._guard.set_busy("walk", walking)
         if not HAS_NAOQI:
             print("[MOCK] move: x={} y={} theta={}".format(x, y, theta), file=sys.stderr)
             return
@@ -990,15 +1349,33 @@ class NaoBridge(object):
                 print("[bridge] move error: {}".format(e), file=sys.stderr)
 
     def _posture(self, name):
-        if not HAS_NAOQI:
-            print("[MOCK] posture: {}".format(name), file=sys.stderr)
+        """Start a whitelisted posture change in its own thread.
+
+        goToPosture blocks for several seconds: running it on the WebSocket
+        receive thread would stall every other command meanwhile.
+        """
+        name = str(name)
+        if self._guard.busy_with("walk"):
+            print("[motion] posture refusee : marche en cours", file=sys.stderr)
             return
-        proxy = get_proxy("ALRobotPosture")
-        if proxy:
-            try:
-                proxy.goToPosture(str(name), 0.5)
-            except Exception as e:
-                print("[bridge] posture error: {}".format(e), file=sys.stderr)
+        if not self._guard.posture_allowed(name):
+            return
+        self._guard.set_busy("posture", True)
+        threading.Thread(target=self._run_posture, args=(name,)).start()
+
+    def _run_posture(self, name):
+        try:
+            if not HAS_NAOQI:
+                print("[MOCK] posture: {}".format(name), file=sys.stderr)
+                return
+            proxy = get_proxy("ALRobotPosture")
+            if proxy:
+                try:
+                    proxy.goToPosture(name, float(self._limits["posture_speed"]))
+                except Exception as e:
+                    print("[bridge] posture error: {}".format(e), file=sys.stderr)
+        finally:
+            self._guard.set_busy("posture", False)
 
     def _leds(self, group, r, g, b):
         if not HAS_NAOQI:
@@ -1012,6 +1389,9 @@ class NaoBridge(object):
                 print("[bridge] leds error: {}".format(e), file=sys.stderr)
 
     def _stop_move(self):
+        # Drop queued joint moves too: "stop" means stop everything.
+        self._guard.clear()
+        self._guard.set_busy("walk", False)
         if not HAS_NAOQI:
             print("[MOCK] stop", file=sys.stderr)
             return
@@ -1028,6 +1408,7 @@ class NaoBridge(object):
         Leg group stiffness is permanently blocked — lower-body motors must
         never be commanded to avoid unintended movement.
         """
+        value = _clamp(value, 0.0, float(self._limits["stiffness_max"]))
         with self._stiffness_lock:
             for grp in groups:
                 grp = grp.lower()
@@ -1059,79 +1440,36 @@ class NaoBridge(object):
                         print("[bridge] stiffness error {}: {}".format(grp, e), file=sys.stderr)
 
     def _motion_joint(self, joint, angle, speed):
-        """Move a single joint to the given angle (radians) at the given speed fraction.
-
-        Leg joints are permanently blocked. Other joints are skipped when their
-        group stiffness has not been enabled.
-        """
-        grp = _JOINT_TO_GROUP.get(joint, "head")
-        if grp == "legs":
-            print("[bridge] motion_joint bloque: joint de jambe '{}'".format(joint),
-                  file=sys.stderr)
-            return
-        with self._stiffness_lock:
-            enabled = grp in self._stiffness_enabled
-        # Do not attempt to move a joint whose group stiffness is off —
-        # NAOqi would ignore the command and the joint would stay limp.
-        if not enabled:
-            if not HAS_NAOQI:
-                print("[MOCK] motion_joint skipped (stiffness off): {}".format(joint),
-                      file=sys.stderr)
-            return
-        # Mock mode: log the command instead of calling NAOqi.
-        if not HAS_NAOQI:
-            print("[MOCK] motion_joint: {} -> {:.3f} rad speed={}".format(joint, angle, speed),
-                  file=sys.stderr)
-            return
-        proxy = get_proxy("ALMotion")
-        if proxy:
-            try:
-                proxy.setStiffnesses(_NAOQI_GROUP[grp], 1.0)
-                proxy.angleInterpolationWithSpeed([joint], [angle], speed)
-            except Exception as e:
-                print("[bridge] motion_joint error: {}".format(e), file=sys.stderr)
+        """Move a single joint to the given angle (radians) at the given speed fraction."""
+        self._motion_joints([joint], [angle], speed)
 
     def _motion_joints(self, joints, angles, speed):
-        """Move multiple joints simultaneously; all joints must share enabled groups.
+        """Move joints through the motion guard (clamped, rate-limited, non-blocking).
 
-        Leg joints are silently filtered out before processing.
+        Leg joints are filtered out unconditionally.  The whole command is
+        rejected if any group it needs has stiffness off: a partial move
+        with some limp joints would produce unexpected poses.
         """
-        # Guard: empty joint list — nothing to do.
-        if not joints:
-            return
-        # Filter leg joints unconditionally — lower-body motors must never be commanded.
         filtered = [(j, a) for j, a in zip(joints, angles)
                     if _JOINT_TO_GROUP.get(j, "head") != "legs"]
         if not filtered:
+            if joints:
+                print("[bridge] motion bloque: joints de jambe {}".format(list(joints)),
+                      file=sys.stderr)
             return
-        joints, angles = zip(*filtered)
-        joints = list(joints)
-        angles = list(angles)
-        # Determine which groups need to be active and check they're all enabled.
+        joints = [j for j, _ in filtered]
+        angles = [a for _, a in filtered]
         grps_needed = set(_JOINT_TO_GROUP.get(j, "head") for j in joints)
         with self._stiffness_lock:
             disabled = grps_needed - self._stiffness_enabled
-        # Reject the entire multi-joint command if any group is not stiffened.
-        # Sending a partial move with some limp joints would produce unexpected poses.
         if disabled:
             if not HAS_NAOQI:
-                print("[MOCK] motion_joints skipped (stiffness off): {}".format(
-                    list(disabled)), file=sys.stderr)
-            return
-        # Mock mode: log each joint individually.
-        if not HAS_NAOQI:
-            for j, a in zip(joints, angles):
-                print("[MOCK] motion_joint: {} -> {:.3f} rad speed={}".format(j, a, speed),
+                print("[MOCK] motion skipped (stiffness off): {}".format(sorted(disabled)),
                       file=sys.stderr)
             return
-        proxy = get_proxy("ALMotion")
-        if proxy:
-            try:
-                for grp in grps_needed:
-                    proxy.setStiffnesses(_NAOQI_GROUP[grp], 1.0)
-                proxy.angleInterpolationWithSpeed(joints, angles, speed)
-            except Exception as e:
-                print("[bridge] motion_joints error: {}".format(e), file=sys.stderr)
+        # Stiffness is already on (set by _set_stiffness): no setStiffnesses
+        # call per move, which only added load on NAOqi.
+        self._guard.submit(joints, angles, speed)
 
     # ------------------------------------------------------------------
     # Wake word detection → audio recording → publish /nao/audio
@@ -1327,6 +1665,11 @@ class NaoBridge(object):
                     except Exception:
                         pass
             motor_temp  = self._read_motor_temps()
+            self._guard.set_motor_temps(motor_temp)
+            dropped = self._guard.take_dropped()
+            if dropped:
+                print("[motion] {} ordre(s) ignore(s) : articulation encore en mouvement".format(
+                    dropped), file=sys.stderr)
             environment = self._read_environment()
             payload = json.dumps({"battery": level, "motor_temp": motor_temp,
                                   "environment": environment})
@@ -1467,7 +1810,8 @@ if __name__ == "__main__":
         active_modules = None  # None means DEFAULT_MODULES
 
     bridge = NaoBridge(args.vps, modules=active_modules, audio_capture=audio_capture,
-                       tts_method=args.tts_method, token=args.token)
+                       tts_method=args.tts_method, token=args.token,
+                       motion_limits=bridge_cfg.get("motion_limits"))
     try:
         bridge.run()
     except KeyboardInterrupt:
