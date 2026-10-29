@@ -380,11 +380,10 @@ class NAOqiDriverNode(Node):
         twist.linear.y  = float(data.get("y",     0.0))
         twist.angular.z = float(data.get("theta", 0.0))
         walking = bool(twist.linear.x or twist.linear.y or twist.angular.z)
-        if walking and not self._motion.walk_allowed(time.time()):
-            self.get_logger().warn(f"[{ROBOT_ID}] marche refusée : changement de posture en cours")
+        ok, why = self._motion.move_decision(walking, time.time())
+        if not ok:
+            self.get_logger().warn(f"[{ROBOT_ID}] marche refusée : {why}")
             return
-        # Gestes bloqués tant que le robot marche (équilibre).
-        self._motion.set_walking(walking)
         self.pub_nao_cmd_vel.publish(twist)
 
     # ─────────────────────────────────────────────────────────────────────────

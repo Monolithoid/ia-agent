@@ -274,9 +274,13 @@ Every `/nao/motion`, `/nao/gesture` and `/nao/cmd_vel` order goes through
   `velocity_scale`)). Orders for a busy joint are dropped on purpose and counted
   in the log on every robot heartbeat (`while_moving: "drop"`), or the latest
   waits for the end of the move (`"latest"`). Other joints are not held.
-- **Postures**: only `postures` are allowed, `posture_cooldown` seconds apart;
+- **Legs (postures and walk)**: off by default, since this NAO does not move
+  its legs (`postures` empty, `walk` false). A posture change running at the
+  same time as `moveToward(0, 0, 0)` crashed NAOqi (2026-10-29). Once turned
+  back on: only `postures` are allowed, `posture_cooldown` seconds apart;
   joint moves are blocked for `posture_block` seconds after a change, and during
-  a walk. A posture is refused while walking, a walk during a posture change.
+  a walk; a posture is refused while walking, a walk during a posture change;
+  a zero-velocity `move` is only sent to stop a walk in progress.
 - **Heat**: a group (head, left arm, right arm) whose hottest motor reaches
   `max_motor_temp` °C (from `/nao/status`) refuses orders until it cools down.
 - **Rest position**: the angles the robot reports at script launch
@@ -298,7 +302,8 @@ Settings: the `MOTION_LIMITS` environment variable (JSON) overrides these defaul
 | `velocity_scale` | 1.0 | share of the joint max velocity really reached (0 = only `min_move_time`) |
 | `while_moving` | `"drop"` | order for a busy joint: dropped, or `"latest"` kept for after the move |
 | `max_motor_temp` | 70 °C | orders refused above it (0 = off) |
-| `postures` | Stand, StandInit, Sit, Crouch | allowed postures |
+| `postures` | `[]` | allowed postures, e.g. `["Stand", "Sit"]` (empty = none) |
+| `walk` | false | allow `/nao/cmd_vel` (walk) |
 | `posture_cooldown` / `posture_block` | 5 s / 5 s | delay between two postures, joints blocked after one |
 | `joints_while_busy` | false | accept joint moves during a posture change or walk |
 | `rest_return` | true | go back to the launch pose |
