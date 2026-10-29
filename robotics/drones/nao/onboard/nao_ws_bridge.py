@@ -1652,8 +1652,8 @@ class NaoBridge(object):
 
     def _calib_angles(self, joints):
         motion = self._proxy("ALMotion")
-        if not motion:
-            return dict((j, 0.0) for j in joints)
+        if not motion:   # MOCK: middle of the hardware range
+            return dict((j, round(sum(_JOINT_HW_LIMITS[j]) / 2.0, 4)) for j in joints)
         angles = motion.getAngles(list(joints), True)
         return dict((j, round(float(a), 4)) for j, a in zip(joints, angles))
 
@@ -1704,7 +1704,6 @@ class NaoBridge(object):
         if calib is None:
             return "aucun calibrage ouvert"
         chain = calib["chain"]
-        joints = _CHAINS[chain]
         if calib["step"] in ("capturing", "replaying") and op != "cancel":
             return "etape en cours : {}".format(calib["step"])
         if op == "release":

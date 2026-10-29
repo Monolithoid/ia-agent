@@ -14,7 +14,7 @@ NAO (Wi-Fi, local network)
         └─► Outbound WebSocket ws://DRONE_IP:9090 (local network, no token)
               └─► static drone relay (Caddy): wss://rosbridge.$DOMAIN + token
                     └─► rosbridge-proxy → ros2-bridge (ROS 2 Humble, VPS)
-                    └─► nao-core (naoqi_driver + cognitive_renderer + motion_engine)
+                    └─► nao-core (naoqi_driver + cognitive_renderer [+ motion_engine si MOTION_ENGINE=1])
                           └─► body_gateway → Ollama (LLM)
 ```
 
@@ -99,7 +99,7 @@ listening and the camera. The NAO only renders emotions with its motors and LEDs
 
 | Module / feature | Emotive-only NAO | Why |
 |---|---|---|
-| `led`, `motion`, `stiffness` | **on** | eyes, head and arms driven by `cognitive_renderer` and `motion_engine` |
+| `led`, `motion`, `stiffness` | **on** | eyes and head driven by `cognitive_renderer`, head and arms by the LLM orders |
 | `gesture`, `stop` | **on** | postures (`/nao/gesture`) and the safety stop |
 | `speech`, `audio_out` | off | the static drone's speaker talks |
 | audio capture (wake word ASR + VAD) | off (`--no-audio-capture`) | the static drone's microphones listen, `body-gateway` checks "ok nao" |
@@ -122,8 +122,8 @@ or, with the same values in the `"bridge"` section of `nao_provision.json`
 python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --provision
 ```
 
-While the static drone (or the stream voice) speaks, `cognitive_renderer` makes the NAO move its eyes,
-head and arms so it looks like the one talking (see
+While the static drone (or the stream voice) speaks, `cognitive_renderer` makes the NAO move its eyes
+and head so it looks like the one talking (see
 [cognitive_renderer](#cognitive_renderer)).
 
 **Back to the NAO's own voice** (no static drone): nothing to change on the VPS,
@@ -141,25 +141,109 @@ default), either with `--modules ...,speech,audio_out --audio-capture` or with:
 then restart the bridge. The NAO audio code (TTS, MP3 playback, wake word, VAD)
 is still in `nao_ws_bridge.py`.
 
+### Constrained motor universe (motor profile)
+
+NAOqi motor control crashes too easily, so the NAO lives in a small, fixed
+motor universe. It **stays seated** (no posture change, no walk) and only moves
+three chains: the head (`HeadYaw`, `HeadPitch`), the left arm and the right arm
+(`ShoulderPitch`, `ShoulderRoll`, `ElbowYaw`, `ElbowRoll`). No wrist, no hand.
+
+The **motor profile** `nao_motor_profile.json`, next to the script on the
+robot, gives for each chain:
+
+| Field | Meaning | Known by the LLM |
+|---|---|---|
+| `rest` | rest pose, one angle per joint | no |
+| `start` | start pose, where every gesture leaves from | no |
+| `range` | `[min, max]` per joint (rad), holds `start` | yes |
+| `speed` | speed fraction of every move of the chain | no |
+
+Every gesture is **rest → start → target → start → rest**. The LLM gives the
+target as joint positions; a joint it does not give keeps its start value; a
+target out of range is clamped. Because each range is a box holding the start
+pose, the straight move from start to any target stays inside the range.
+Sequences are run by the NAO driver ([Motion decisions](#motion-decisions-naoqi_driver)).
+
+The profile is written by the **calibration**, run from the régie page
+`/robot` ([below](#calibration-from-the-régie)). **Without a profile no
+joint moves**: calibrate each chain once after installing the bridge. The
+previous profile is kept as `nao_motor_profile.json.<version>.bak` at each save.
+
+```json
+{
+  "version": 3, "calibrated_at": "2026-10-29T19:30:00", "posture": "Sit",
+  "chains": {
+    "head": {"rest":  {"HeadYaw": 0.0, "HeadPitch": 0.1},
+             "start": {"HeadYaw": 0.0, "HeadPitch": -0.05},
+             "range": {"HeadYaw": [-0.8, 0.8], "HeadPitch": [-0.3, 0.2]},
+             "speed": 0.12},
+    "larm": {...}, "rarm": {...}
+  }
+}
+```
+
+### Calibration from the régie
+
+The régie page `/robot?token=REGIE_TOKEN` drives the calibration, chain by
+chain. The bridge runs it on the robot (no VPS latency) and publishes its state
+on `/nao/calibration_state` (live angles every 0.5 s). While a chain is being
+calibrated, the bridge ignores every `/nao/motion` and `/nao/stiffness` order
+for it and the eyes turn orange.
+
+1. **Rest pose**: cut the stiffness of the chain, place it by hand, capture
+   (average of 5 sensor reads).
+2. **Start pose**: same.
+3. **Ranges**: start the recording (stiffness off), sweep the allowed zone of
+   each joint by hand, stop. The recorded min/max lose `range_margin` at each
+   end, stay inside the hardware range and are widened to hold the start pose.
+4. **Speed**: fraction of the motor max speed, capped by `max_speed`.
+5. **Replay**: the robot plays rest → start → min then max of each joint →
+   start → rest at that speed.
+6. **Save** (only after a replay) writes the profile atomically: a crash
+   during the calibration keeps the old one. **Cancel** keeps the old profile.
+   Either way the chain goes back to its rest pose and the bridge announces
+   the profile again (`/nao/capabilities`): the driver resets its sequences.
+
+### NAOqi components (régie)
+
+The same page switches the NAOqi components; their state is kept on the robot
+in `nao_components.json` and applied when the bridge starts. Everything that
+moves the robot on its own is **off by default**; smart stiffness and the
+diagnosis effect protect the motors and stay on unless switched off.
+
+| Component | Default | NAOqi call |
+|---|---|---|
+| `fall_manager` | off | `ALMotion.setFallManagerEnabled` (NAOqi refuses to turn it off until allowed in the robot's web page: the régie shows the error) |
+| `arm_collision_protection` | off | `ALMotion.setCollisionProtectionEnabled("Arms")` |
+| `external_collision` | off | `ALMotion.setExternalCollisionProtectionEnabled("All")` |
+| `push_recovery` | off | `ALMotion.setPushRecoveryEnabled` |
+| `breath` / `idle_posture` | off | `ALMotion.setBreathEnabled("Body")` / `setIdlePostureEnabled("Body")` |
+| `basic_awareness` | off | `ALBasicAwareness.startAwareness` / `stopAwareness` |
+| `expressive_listening` | off | `ALAutonomousMoves.setExpressiveListeningEnabled` |
+| `smart_stiffness` | on | `ALMotion.setSmartStiffnessEnabled` |
+| `diagnosis_effect` | on | `ALMotion.setDiagnosisEffectEnabled` |
+
 ### Motion bounds (robot side)
 
-The robot is a puppet: NAOqi crashes too often for the robot to decide
-where it stands. Motion **decisions** (rate, end of move, dropped orders,
-postures, motor heat, return to rest) are taken by the NAO driver on the VPS,
-see [Motion decisions](#motion-decisions-naoqi_driver). The bridge only keeps
+The robot is a puppet: motion **decisions** (sequences, postures, motor heat)
+are taken by the NAO driver on the VPS, see
+[Motion decisions](#motion-decisions-naoqi_driver). The bridge only keeps
 hard **bounds**, a last safety net for an order that would bypass the driver:
 
 - angles clamped to the NAO V5 hardware range shrunk by `joint_margin`,
-  optionally narrowed per joint by `joint_ranges`; leg and unknown joints refused;
+  optionally narrowed per joint by `joint_ranges`, then to the motor profile
+  box (range, rest and start pose of each chain); joints outside the profile,
+  leg and unknown joints refused; no profile = every joint refused;
 - joint speed clamped to `[min_speed, max_speed]`, posture speed `posture_speed`;
 - `/nao/stiffness` values capped at `stiffness_max`;
-- `moveToward` velocities capped at `walk_max`;
-- NAOqi fall manager and arm self-collision protection turned on at startup.
+- `moveToward` velocities capped at `walk_max`.
 
 Joint moves are sent with the non-blocking `ALMotion.setAngles` and postures
 run in their own thread, so the WebSocket receive thread never waits on a
-motion. At launch the bridge also reads its head and arm angles and reports
-them to the driver (`launch_pose` in `/nao/capabilities`).
+motion. At startup (after a crash too) the bridge switches the NAOqi
+components, turns the stiffness of each calibrated chain on without a jump
+(current angles as target first) and moves it to its rest pose. It announces
+the profile in `/nao/capabilities` and repeats it in every `/nao/status`.
 
 Defaults, overridable in the `"bridge"` → `"motion_limits"` section of
 `nao_provision.json` (used with `--provision`):
@@ -172,8 +256,12 @@ Defaults, overridable in the `"bridge"` → `"motion_limits"` section of
 | `stiffness_max` | 1.0 | max stiffness value |
 | `posture_speed` | 0.3 | `goToPosture` speed |
 | `walk_max` | 0.5 | max normalized `moveToward` velocity |
-| `fall_manager` / `arm_collision_protection` | true / true | NAOqi protections turned on at startup |
+| `fall_manager` / `arm_collision_protection` | false / false | startup state of these two NAOqi protections, until switched from the régie |
+| `range_margin` | 0.02 rad | taken off each end of a range recorded in calibration |
 | `motion_call` | `"setAngles"` | `"legacy"` restores the pre-limits call (`setStiffnesses` + blocking `angleInterpolationWithSpeed`) to compare when NAOqi crashes |
+
+`--motor-profile FILE` changes the profile path (default
+`nao_motor_profile.json` next to the script).
 
 Tests without a robot (mock mode):
 
@@ -213,24 +301,28 @@ python nao_ws_bridge.py --vps ws://DRONE_IP:9090/ --tts-method text
 | `/nao/motion` | `std_msgs/String` (JSON) | `motion` | `ALMotion.angleInterpolationWithSpeed()` |
 | `/nao/stop` | `std_msgs/Empty` | `stop` | `ALMotion.stopMove()` |
 | `/nao/shutdown` | `std_msgs/Empty` | *(always active)* | Clean bridge shutdown |
+| `/nao/calibration` | `std_msgs/String` (JSON) | *(always active)* | Calibration step from the régie, `{"op": "start", "chain": "rarm"}` … |
+| `/nao/components` | `std_msgs/String` (JSON) | *(always active)* | NAOqi component on/off from the régie, `{"name": "breath", "enabled": false}` |
 
 **LED payload format:**
 ```json
 {"name": "AllLeds", "r": 0.0, "g": 0.0, "b": 1.0, "duration": 0.5}
 ```
 
-**Motion payload format:**
+**Motion payload format** (sent by the driver, one chain per message):
 ```json
-{"joint": "HeadYaw", "angle": 0.15, "speed": 0.08}
+{"joints": ["HeadYaw", "HeadPitch"], "angles": [0.15, -0.05], "speed": 0.12}
 ```
 
 ### NAO → VPS (sensors / telemetry)
 
 | Topic | Type | Content | Interval |
 |---|---|---|---|
-| `/nao/status` | `std_msgs/String` (JSON) | `{"battery": 85}` — battery level heartbeat | Every 30 s |
+| `/nao/status` | `std_msgs/String` (JSON) | `{"battery": 85, "motor_temp": {...}, "environment": {...}, "motor_profile": {...}}` — heartbeat | Every 30 s |
 | `/nao/audio` | `std_msgs/String` (base64 WAV) | Captured speech after wake word | On demand |
-| `/nao/capabilities` | `std_msgs/String` (JSON) | `{"tts_method": "mp3", "launch_pose": {"HeadYaw": 0.01, ...}}` — TTS negotiation, head/arm angles read at script launch | On connect |
+| `/nao/capabilities` | `std_msgs/String` (JSON) | `{"tts_method": "mp3", "launch_pose": {...}, "motor_profile": {...}}` — TTS negotiation, angles read at launch, motor profile (`null` = not calibrated) | On connect, after a calibration |
+| `/nao/calibration_state` | `std_msgs/String` (JSON) | calibration step, live angles, pending and saved profile | After each step, every 0.5 s during a calibration |
+| `/nao/components_state` | `std_msgs/String` (JSON) | each NAOqi component: on/off, NAOqi error | On connect, after a switch |
 
 ---
 
@@ -267,27 +359,32 @@ Open WebUI (chat)                   NAO wake word "ok nao"
 Every `/nao/motion`, `/nao/gesture` and `/nao/cmd_vel` order goes through
 `motion_policy.py` in the NAO driver before reaching the robot:
 
-- **Rate**: orders are merged per joint (latest wins) and sent at most once
-  every `min_interval` seconds (10 Hz).
-- **Finish the move first**: a joint stays busy for `min_move_time`, or the
-  estimated move duration (distance ÷ (speed × joint max velocity ×
-  `velocity_scale`)). Orders for a busy joint are dropped on purpose and counted
-  in the log on every robot heartbeat (`while_moving: "drop"`), or the latest
-  waits for the end of the move (`"latest"`). Other joints are not held.
-- **Legs (postures and walk)**: off by default, since this NAO does not move
-  its legs (`postures` empty, `walk` false). A posture change running at the
-  same time as `moveToward(0, 0, 0)` crashed NAOqi (2026-10-29). Once turned
-  back on: only `postures` are allowed, `posture_cooldown` seconds apart;
-  joint moves are blocked for `posture_block` seconds after a change, and during
-  a walk; a posture is refused while walking, a walk during a posture change;
-  a zero-velocity `move` is only sent to stop a walk in progress.
-- **Heat**: a group (head, left arm, right arm) whose hottest motor reaches
-  `max_motor_temp` °C (from `/nao/status`) refuses orders until it cools down.
-- **Rest position**: the angles the robot reports at script launch
-  (`launch_pose`) are the single rest position. A joint idle for `rest_delay`
-  seconds after the end of its move goes back there at `rest_speed`; a new order
-  interrupts a return to rest. Put the robot in the wanted rest pose before
-  starting the script.
+- **Sequences**: from the motor profile announced by the robot, each chain
+  (head, left arm, right arm) runs rest → start → target → start → rest. The
+  target is the start pose with the ordered joints, clamped to their range;
+  orders for the same chain within `merge_window` seconds form one target (the
+  LLM often sends one action per joint). A new order during a gesture chains
+  target → start → new target, without going back to rest. A chain idle for
+  `rest_delay` seconds after its last step goes back to rest through the start
+  pose. Chains move together, one `/nao/motion` message each.
+- **Step duration**: `min_move_time`, or the estimated duration (largest
+  distance ÷ (speed × joint max velocity × `velocity_scale`)); the next step
+  leaves after it.
+- **Refused**: everything without a profile, joints outside the three chains,
+  and new orders for a chain whose hottest motor reaches `max_motor_temp` °C
+  (from `/nao/status`; it can still go back to rest). Refused joints are
+  counted in the log on every robot heartbeat.
+- **Legs (postures and walk)**: off (`postures` empty, `walk` false): the NAO
+  stays seated. A posture change running at the same time as
+  `moveToward(0, 0, 0)` crashed NAOqi (2026-10-29). Once turned back on: only
+  `postures` are allowed, `posture_cooldown` seconds apart; joint moves are
+  blocked for `posture_block` seconds after a change, and during a walk; a
+  posture is refused while walking, a walk during a posture change; a
+  zero-velocity `move` is only sent to stop a walk in progress.
+
+The driver publishes the ranges on `/bodies/{id}/sensors/motor_ranges`
+(`{chain: {joint: [min, max]}}`, every 15 s): `body-gateway` writes them in the
+LLM prompt. The LLM never sees the rest and start poses.
 
 Joint max velocities (no-load motor speed 11 900 rpm ÷ gearbox ratio,
 Aldebaran H25 motors doc): 8.29 rad/s for HeadYaw, ShoulderPitch, ElbowYaw;
@@ -297,24 +394,23 @@ Settings: the `MOTION_LIMITS` environment variable (JSON) overrides these defaul
 
 | Key | Default | Meaning |
 |---|---|---|
-| `min_interval` | 0.1 s | min delay between two `/nao/motion` commands |
-| `min_move_time` | 0.3 s | min time a joint keeps its target |
+| `min_interval` | 0.1 s | min delay between two sends of `/nao/motion` |
+| `min_move_time` | 0.3 s | min duration of a sequence step |
 | `velocity_scale` | 1.0 | share of the joint max velocity really reached (0 = only `min_move_time`) |
-| `while_moving` | `"drop"` | order for a busy joint: dropped, or `"latest"` kept for after the move |
-| `max_motor_temp` | 70 °C | orders refused above it (0 = off) |
+| `merge_window` | 0.3 s | orders of a chain within this delay form one target |
+| `max_motor_temp` | 70 °C | new orders refused above it (0 = off) |
 | `postures` | `[]` | allowed postures, e.g. `["Stand", "Sit"]` (empty = none) |
 | `walk` | false | allow `/nao/cmd_vel` (walk) |
 | `posture_cooldown` / `posture_block` | 5 s / 5 s | delay between two postures, joints blocked after one |
 | `joints_while_busy` | false | accept joint moves during a posture change or walk |
-| `rest_return` | true | go back to the launch pose |
-| `rest_delay` / `rest_speed` | 3 s / 0.1 | idle time before the return, speed of the return |
-| `rest_tolerance` | 0.02 rad | a joint this close to rest is not moved |
+| `rest_return` | true | go back to the rest pose when idle |
+| `rest_delay` | 3 s | idle time after the last step before the return |
 
 Tests without ROS 2: `cd robotics/drones/nao/driver && python3 -m unittest discover -s tests -v`.
 
 ### cognitive_renderer
 
-The `cognitive_renderer_node.py` runs an animation loop (1 tick/minute) that maps cognitive state to LED colours and head movements:
+The `cognitive_renderer_node.py` runs an animation loop (1 tick/minute) that maps cognitive state to LED colours and head movements (head orders go through the driver sequences like any other). Its arm poses are off by default: in the constrained motor universe the arms only follow the LLM (`RENDERER_ARMS=1` brings them back).
 
 | State | LEDs | Head |
 |---|---|---|
@@ -330,10 +426,10 @@ The `cognitive_renderer_node.py` runs an animation loop (1 tick/minute) that map
 `/bodies/{id}/sensors/speaking` for every voice body, `DRONE_ID` and
 `OBS_DRONE_ID` (relayed by `static_driver` from `/drones/{id}/speaking`).
 While any of them is `true`, every 1.5 s it blinks the
-eyes (`FaceLeds`, bright/dim white), nods the head slightly (`HeadPitch`) and
-raises one forearm then the other, so the NAO looks like it is the one speaking.
-When none is speaking, the NAO goes back to its cognitive state profile. Arm
-gestures only play when arm stiffness is on (energy `medium` or above).
+eyes (`FaceLeds`, bright/dim white) and nods the head slightly (`HeadPitch`),
+so the NAO looks like it is the one speaking (with `RENDERER_ARMS=1` it also
+raises one forearm then the other). When none is speaking, the NAO goes back to
+its cognitive state profile.
 
 | Variable (container `nao-core`) | Default | Role |
 |---|---|---|
@@ -341,6 +437,8 @@ gestures only play when arm stiffness is on (energy `medium` or above).
 | `OBS_DRONE_ID` | empty (compose: `obs_01`) | stream voice to mimic too ([ADR 005](decisions/005-avatar-twitch.md)) |
 | `SPEAKING_SYNC` | `1` (`NAO_SPEAKING_SYNC`) | `0` disables the speaking animation |
 | `SPEAKING_TIMEOUT` | `120` | stop after this many seconds without `speaking=false` (0 = never) |
+| `RENDERER_ARMS` | `0` | `1` lets the profiles and the speaking animation move the arms |
+| `MOTION_ENGINE` | `0` | `1` starts `motion_engine` (free angles at 20 Hz, off in the constrained universe) |
 
 ### Dream engine
 

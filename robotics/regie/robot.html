@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Régie NAO · Robot</title>
+<style>
+  :root {
+    --bg: #0f1216; --panel: #171b21; --line: #2a313b; --text: #e6e9ee; --muted: #8b95a3;
+    --ok: #3ecf8e; --warn: #f0b429; --err: #ef5b5b; --accent: #f07b5b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center;
+           padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  h2 { font-size: 15px; margin: 0 0 10px; font-weight: 600; }
+  a { color: var(--muted); }
+  .pill { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--err); display: inline-block; }
+  .dot.up { background: var(--ok); }
+  header .spacer { flex: 1; }
+  main { padding: 12px 16px 32px; max-width: 1100px; margin: 0 auto;
+         display: grid; gap: 16px; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+  @media (max-width: 820px) { main { grid-template-columns: minmax(0, 1fr); } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  button { background: #1e242c; color: var(--text); border: 1px solid var(--line);
+           border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--muted); }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { border-color: var(--accent); color: var(--accent); }
+  button.danger { border-color: var(--err); color: var(--err); }
+  button.sel { background: #262e38; border-color: var(--text); }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .muted { color: var(--muted); }
+  .status { margin: 10px 0; padding: 8px 10px; border-radius: 6px; background: #1e242c; }
+  .status .err { color: var(--err); }
+  ol.steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; }
+  ol.steps li { border-top: 1px solid var(--line); padding-top: 10px; }
+  ol.steps .what { font-weight: 600; }
+  ol.steps .how { color: var(--muted); margin: 2px 0 6px; }
+  input[type=number] { width: 80px; background: #1e242c; color: var(--text); border: 1px solid var(--line);
+                       border-radius: 6px; padding: 5px 8px; font: inherit; }
+  .table-wrap { overflow-x: auto; margin-top: 12px; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 4px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 500; }
+  td.live { color: var(--accent); }
+  .comp { display: flex; gap: 10px; align-items: center; justify-content: space-between;
+          border-top: 1px solid var(--line); padding: 8px 0; }
+  .comp:first-of-type { border-top: 0; }
+  .comp .err { color: var(--err); font-size: 12px; }
+  .switch { min-width: 64px; }
+  .switch.on { border-color: var(--ok); color: var(--ok); }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); max-width: 90vw;
+           background: var(--err); color: #fff; padding: 8px 14px; border-radius: 6px; display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Robot NAO</h1>
+  <span class="pill"><span id="link" class="dot"></span><span id="linkText">rosbridge…</span></span>
+  <span class="spacer"></span>
+  <a id="back" href="./">← Régie</a>
+</header>
+<main>
+  <section>
+    <h2>Calibrage du profil moteur</h2>
+    <div class="row">
+      <span class="muted">Chaîne :</span>
+      <button data-chain="head">Tête</button>
+      <button data-chain="larm">Bras gauche</button>
+      <button data-chain="rarm">Bras droit</button>
+      <button id="start" class="primary">Ouvrir le calibrage</button>
+    </div>
+    <div class="status" id="status">—</div>
+    <ol class="steps">
+      <li>
+        <div class="what">1. Position de repos</div>
+        <div class="how">Coupe la raideur, place la chaîne à la main dans sa position de repos, puis capture.</div>
+        <div class="row">
+          <button data-op="release">Couper la raideur</button>
+          <button data-op="hold">Remettre la raideur</button>
+          <button data-op="capture" data-what="rest" class="primary">Capturer le repos</button>
+        </div>
+      </li>
+      <li>
+        <div class="what">2. Position de départ</div>
+        <div class="how">Place la chaîne dans la position d'où partent tous les gestes, puis capture.</div>
+        <div class="row">
+          <button data-op="release">Couper la raideur</button>
+          <button data-op="capture" data-what="start" class="primary">Capturer le départ</button>
+        </div>
+      </li>
+      <li>
+        <div class="what">3. Plages</div>
+        <div class="how">Démarre, balaie à la main toute la zone permise pour chaque articulation, puis arrête.</div>
+        <div class="row">
+          <button data-op="range_start">Démarrer l'enregistrement</button>
+          <button data-op="range_stop" class="primary">Arrêter</button>
+        </div>
+      </li>
+      <li>
+        <div class="what">4. Vitesse</div>
+        <div class="how">Fraction de la vitesse max des moteurs (bornée par le robot).</div>
+        <div class="row">
+          <input id="speed" type="number" min="0.02" max="1" step="0.01" value="0.1">
+          <button id="speedBtn">Appliquer</button>
+        </div>
+      </li>
+      <li>
+        <div class="what">5. Rejeu de validation</div>
+        <div class="how">Le robot joue repos → départ → min et max de chaque articulation → départ → repos.</div>
+        <div class="row"><button data-op="replay" class="primary">Rejouer</button></div>
+      </li>
+      <li>
+        <div class="what">6. Fin</div>
+        <div class="how">Enregistrer écrit le profil sur le robot (après un rejeu). Annuler garde l'ancien.</div>
+        <div class="row">
+          <button data-op="save" class="primary">Enregistrer</button>
+          <button data-op="cancel" class="danger">Annuler</button>
+        </div>
+      </li>
+    </ol>
+    <div class="table-wrap"><table id="joints"></table></div>
+  </section>
+  <section>
+    <h2>Composants NAOqi</h2>
+    <div class="muted" style="margin-bottom:8px">Appliqués au démarrage du pont, gardés sur le robot.</div>
+    <div id="components" class="muted">En attente du robot…</div>
+    <h2 style="margin-top:18px">Profil enregistré</h2>
+    <div id="profile" class="muted">—</div>
+  </section>
+</main>
+<div id="toast"></div>
+<script>
+"use strict";
+const token = new URLSearchParams(location.search).get("token") || "";
+document.getElementById("back").href = "./?token=" + encodeURIComponent(token);
+const CHAIN_NAME = { head: "Tête", larm: "Bras gauche", rarm: "Bras droit" };
+// Libellés accentués (le pont, en Python 2.7, les envoie sans accents).
+const COMPONENT_LABEL = {
+  fall_manager: "Fall manager (protection de chute)",
+  arm_collision_protection: "Anti-collision des bras",
+  external_collision: "Anti-collision externe",
+  push_recovery: "Rattrapage de poussée",
+  breath: "Respiration",
+  idle_posture: "Posture d'attente",
+  basic_awareness: "Basic awareness (suivi des visages et des sons)",
+  expressive_listening: "Écoute expressive",
+  smart_stiffness: "Smart stiffness (moins de raideur à l'arrêt)",
+  diagnosis_effect: "Effet de diagnostic (relâche un moteur en défaut)",
+};
+const STEP_NAME = { hold: "raideur tenue", released: "raideur coupée", capturing: "capture…",
+                    recording: "enregistrement des plages…", replaying: "rejeu…" };
+let chosen = "head";
+let calib = null;
+
+function h(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+const num = v => (typeof v === "number" ? v.toFixed(3) : "—");
+
+function toast(text) {
+  const t = document.getElementById("toast");
+  t.textContent = text; t.style.display = "block";
+  clearTimeout(t.timer); t.timer = setTimeout(() => (t.style.display = "none"), 5000);
+}
+
+async function send(target, msg) {
+  try {
+    const r = await fetch("command?token=" + encodeURIComponent(token), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target, msg }) });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) toast(body.error || "Commande refusée (" + r.status + ")");
+  } catch (e) { toast("Régie injoignable"); }
+}
+
+// ── Calibration ────────────────────────────────────────────────────────────
+
+function choose(chain) {
+  chosen = chain;
+  for (const b of document.querySelectorAll("[data-chain]")) b.classList.toggle("sel", b.dataset.chain === chain);
+}
+
+function renderCalibration(state) {
+  calib = state;
+  const status = document.getElementById("status");
+  status.textContent = "";
+  if (state.active) {
+    choose(state.chain);
+    status.append(h("b", "", "Calibrage ouvert : " + CHAIN_NAME[state.chain]),
+                  h("span", "muted", " · " + (STEP_NAME[state.step] || state.step)));
+    if (state.message) status.append(h("div", "", state.message));
+  } else {
+    status.append(h("span", "muted", "Aucun calibrage ouvert. Choisis une chaîne puis ouvre le calibrage."));
+  }
+  if (state.error) status.append(h("div", "err", state.error));
+  const busy = ["capturing", "replaying"].includes(state.step);
+  for (const b of document.querySelectorAll("[data-op]"))
+    b.disabled = !state.active || (busy && b.dataset.op !== "cancel");
+  document.getElementById("speedBtn").disabled = !state.active || busy;
+  document.getElementById("start").disabled = state.active;
+  for (const b of document.querySelectorAll("[data-chain]")) b.disabled = state.active;
+  document.querySelector('[data-op="save"]').disabled = !state.active || !state.replayed || busy;
+  if (state.active && document.activeElement !== document.getElementById("speed"))
+    document.getElementById("speed").value = state.speed;
+  renderJoints(state);
+  renderProfile(state.profile);
+}
+
+function renderJoints(state) {
+  const chain = state.active ? state.chain : chosen;
+  const joints = (state.chains || {})[chain] || [];
+  const saved = ((state.profile || {}).chains || {})[chain] || {};
+  const src = state.active ? state : saved;
+  const table = document.getElementById("joints");
+  table.textContent = "";
+  const head = h("tr");
+  for (const t of ["Articulation", "Actuel", "Repos", "Départ", "Min", "Max"]) head.append(h("th", "", t));
+  table.append(head);
+  for (const j of joints) {
+    const tr = h("tr");
+    const rng = (src.range || {})[j] || [];
+    tr.append(h("td", "", j), h("td", "live", state.active ? num((state.angles || {})[j]) : "—"),
+              h("td", "", num((src.rest || {})[j])), h("td", "", num((src.start || {})[j])),
+              h("td", "", num(rng[0])), h("td", "", num(rng[1])));
+    table.append(tr);
+  }
+}
+
+function renderProfile(profile) {
+  const box = document.getElementById("profile");
+  box.textContent = "";
+  if (!profile) { box.append(h("span", "", "Aucun profil : NAO ne bouge pas avant un calibrage.")); return; }
+  box.append(h("div", "", `Version ${profile.version ?? "?"}` +
+                          (profile.calibrated_at ? ` · ${profile.calibrated_at}` : "")));
+  for (const c of ["head", "larm", "rarm"]) {
+    const cfg = (profile.chains || {})[c];
+    box.append(h("div", "", `${CHAIN_NAME[c]} : ` + (cfg ? `calibrée, vitesse ${cfg.speed}` : "non calibrée")));
+  }
+}
+
+for (const b of document.querySelectorAll("[data-chain]")) b.onclick = () => { choose(b.dataset.chain); calib && renderJoints(calib); };
+document.getElementById("start").onclick = () => send("calibration", { op: "start", chain: chosen });
+for (const b of document.querySelectorAll("[data-op]")) {
+  b.onclick = () => {
+    if (b.dataset.op === "save" && !confirm("Écrire ce profil sur le robot ?")) return;
+    const msg = { op: b.dataset.op };
+    if (b.dataset.what) msg.what = b.dataset.what;
+    send("calibration", msg);
+  };
+}
+document.getElementById("speedBtn").onclick = () =>
+  send("calibration", { op: "speed", value: parseFloat(document.getElementById("speed").value) });
+
+// ── Components ─────────────────────────────────────────────────────────────
+
+function renderComponents(state) {
+  const box = document.getElementById("components");
+  box.textContent = "";
+  box.className = "";
+  for (const c of state.components || []) {
+    const row = h("div", "comp");
+    const left = h("div");
+    left.append(h("div", "", COMPONENT_LABEL[c.name] || c.label));
+    if (c.ok === false) left.append(h("div", "err", "Refusé par NAOqi : " + c.error));
+    const btn = h("button", "switch" + (c.enabled ? " on" : ""), c.enabled ? "Activé" : "Coupé");
+    btn.onclick = () => send("components", { name: c.name, enabled: !c.enabled });
+    row.append(left, btn);
+    box.append(row);
+  }
+}
+
+// ── Events ─────────────────────────────────────────────────────────────────
+
+function handle(ev) {
+  if (ev.kind === "link") {
+    document.getElementById("link").className = "dot" + (ev.up ? " up" : "");
+    document.getElementById("linkText").textContent = ev.up ? "rosbridge connecté" : "rosbridge coupé";
+    if (ev.up) { send("calibration", { op: "status" }); send("components", { op: "status" }); }
+  } else if (ev.kind === "calibration") renderCalibration(ev.value);
+  else if (ev.kind === "components") renderComponents(ev.value);
+}
+
+const source = new EventSource("robot-stream?token=" + encodeURIComponent(token));
+source.addEventListener("history", e => { for (const ev of JSON.parse(e.data)) handle(ev); });
+source.onmessage = e => handle(JSON.parse(e.data));
+source.onerror = () => handle({ kind: "link", up: false });
+choose(chosen);
+renderCalibration({ active: false, chains: {} });
+</script>
+</body>
+</html>

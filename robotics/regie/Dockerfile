@@ -6,7 +6,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY regie.py regie.html ./
+COPY regie.py regie.html robot.html ./
 
 EXPOSE 8097
 CMD ["python3", "/app/regie.py"]

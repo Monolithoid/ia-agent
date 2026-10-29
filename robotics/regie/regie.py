@@ -5,15 +5,25 @@ inputs (Open WebUI, Twitch chat, "ok nao" voice, sensors, dreams) → LLM decisi
 in body-gateway → actions routed to the bodies (NAO, static drone, OBS voice).
 
 It connects outbound to rosbridge with ROSBRIDGE_TOKEN, like obs-agent, and
-only reads ROS topics:
+reads ROS topics:
 
-  /events           (String JSON)  ← body-gateway, format in body_gateway/events.py
-  /cognitive_state  (String)       ← idle | thinking | responding | listening | …
-  /emotion_state    (String)       ← curious | neutral | excited | uncertain
+  /events                 (String JSON)  ← body-gateway, format in body_gateway/events.py
+  /cognitive_state        (String)       ← idle | thinking | responding | listening | …
+  /emotion_state          (String)       ← curious | neutral | excited | uncertain
+  /nao/calibration_state  (String JSON)  ← nao_ws_bridge: calibration, motor profile
+  /nao/components_state   (String JSON)  ← nao_ws_bridge: NAOqi components on/off
 
 The page is /?token=REGIE_TOKEN.  It receives the last events at once, then
 the new ones over Server-Sent Events.  Any other ROS tool (Lichtblick, rqt,
 `ros2 topic echo /events`) reads the same topic: the page is only one viewer.
+
+The robot page /robot?token=REGIE_TOKEN is the only one that writes: it
+calibrates the motor profile (rest pose, start pose, ranges, speed of the
+head and each arm) and switches the NAOqi components.  Its buttons POST to
+/command, published on two topics that nao_ws_bridge.py listens to:
+
+  /nao/calibration        (String JSON)  → calibration step, {"op": ...}
+  /nao/components         (String JSON)  → {"name": ..., "enabled": bool}
 
 Environment variables:
   ROSBRIDGE_URL     default ws://rosbridge-proxy:80
@@ -42,6 +52,9 @@ HTTP_PORT       = int(os.environ.get("HTTP_PORT", "8097"))
 HISTORY         = int(os.environ.get("HISTORY", "300"))
 
 PAGE_HTML = pathlib.Path(__file__).with_name("regie.html")
+ROBOT_HTML = pathlib.Path(__file__).with_name("robot.html")
+# What the robot page may publish, and where.
+COMMAND_TOPICS = {"calibration": "/nao/calibration", "components": "/nao/components"}
 
 
 def log(text: str):
@@ -49,24 +62,45 @@ def log(text: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# rosbridge client (outbound WebSocket, subscriptions only, automatic reconnection)
+# rosbridge client (outbound WebSocket, automatic reconnection)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class Rosbridge:
-    """Minimal rosbridge JSON client; same protocol as obs-agent's, read-only."""
+    """Minimal rosbridge JSON client; same protocol as obs-agent's.  Publishes
+    only on the topics advertised (the robot page commands)."""
 
     def __init__(self, url: str, token: str, on_link):
         self.url = url
         self.token = token
         self._on_link = on_link
         self._subscribed: dict[str, tuple] = {}
+        self._advertised: list[str] = []
+        self._ws = None
 
     def subscribe(self, name: str, msg_type: str, callback):
         self._subscribed[name] = (msg_type, callback)
 
+    def advertise(self, name: str):
+        self._advertised.append(name)
+
+    def publish(self, name: str, data: str) -> bool:
+        """std_msgs/String on an advertised topic; False when rosbridge is down."""
+        ws = self._ws
+        if ws is None or name not in self._advertised:
+            return False
+        try:
+            ws.send(json.dumps({"op": "publish", "topic": name, "msg": {"data": data}}))
+        except Exception as e:
+            log(f"publication {name} impossible : {e}")
+            return False
+        return True
+
     def _on_open(self, ws):
         for name, (msg_type, _) in self._subscribed.items():
             ws.send(json.dumps({"op": "subscribe", "topic": name, "type": msg_type}))
+        for name in self._advertised:
+            ws.send(json.dumps({"op": "advertise", "topic": name, "type": "std_msgs/String"}))
+        self._ws = ws
         log(f"connecté à {self.url}")
         self._on_link(True)
 
@@ -92,6 +126,7 @@ class Rosbridge:
                 self.url, header=header, on_open=self._on_open, on_message=self._on_message)
             started = time.monotonic()
             ws.run_forever(ping_interval=20, ping_timeout=10)
+            self._ws = None
             self._on_link(False)
             if time.monotonic() - started > 60:
                 delay = 1.0
@@ -138,13 +173,30 @@ class Hub:
 
 
 HUB = Hub(HISTORY)
+# Robot page: only the latest state of each kind (calibration, components).
+ROBOT_HUB = Hub(0)
+ROBOT_STATE: dict[str, dict] = {}
 LINK = {"kind": "link", "t": 0.0, "up": False}
 
 
 def on_link(up: bool):
-    """rosbridge link state, shown on the page (sent first to a page opened later)."""
+    """rosbridge link state, shown on the pages (sent first to a page opened later)."""
     LINK.update(t=round(time.time(), 3), up=up)
     HUB.publish(dict(LINK), keep=False)
+    ROBOT_HUB.publish(dict(LINK), keep=False)
+
+
+def on_robot_state(kind: str):
+    def callback(msg: dict):
+        try:
+            value = json.loads(msg.get("data") or "")
+        except ValueError:
+            return
+        if isinstance(value, dict):
+            event = {"kind": kind, "t": round(time.time(), 3), "value": value}
+            ROBOT_STATE[kind] = event
+            ROBOT_HUB.publish(event, keep=False)
+    return callback
 
 
 def on_event(msg: dict):
@@ -186,19 +238,49 @@ class Handler(BaseHTTPRequestHandler):
             return
         if url.path in ("/", "/regie"):
             self._send(200, PAGE_HTML.read_bytes(), "text/html; charset=utf-8")
+        elif url.path == "/robot":
+            self._send(200, ROBOT_HTML.read_bytes(), "text/html; charset=utf-8")
         elif url.path == "/stream":
-            self._stream()
+            self._stream(HUB, [])
+        elif url.path == "/robot-stream":
+            self._stream(ROBOT_HUB, list(ROBOT_STATE.values()))
         else:
             self._send(404, b"not found", "text/plain")
 
-    def _stream(self):
-        q, history = HUB.subscribe()
+    def do_POST(self):
+        """/command : {"target": "calibration"|"components", "msg": {...}} → rosbridge."""
+        url = urllib.parse.urlsplit(self.path)
+        token = urllib.parse.parse_qs(url.query).get("token", [""])[0]
+        if not hmac.compare_digest(token.encode(), REGIE_TOKEN.encode()):
+            self._send(401, b"unauthorized", "text/plain")
+            return
+        if url.path != "/command":
+            self._send(404, b"not found", "text/plain")
+            return
+        try:
+            length = min(int(self.headers.get("Content-Length", "0")), 10_000)
+            body = json.loads(self.rfile.read(length) or b"{}")
+            topic = COMMAND_TOPICS[body["target"]]
+            msg = body["msg"]
+            if not isinstance(msg, dict):
+                raise TypeError("msg")
+        except (KeyError, TypeError, ValueError):
+            self._send(400, b'{"ok": false, "error": "commande invalide"}', "application/json")
+            return
+        ok = BRIDGE.publish(topic, json.dumps(msg))
+        log(f"{topic} ← {json.dumps(msg)}" + ("" if ok else " (rosbridge coupé)"))
+        self._send(200 if ok else 503,
+                   json.dumps({"ok": ok, "error": "" if ok else "rosbridge coupé"}).encode(),
+                   "application/json")
+
+    def _stream(self, hub: Hub, state: list):
+        q, history = hub.subscribe()
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
-            history = [dict(LINK)] + history
+            history = [dict(LINK)] + state + history
             self.wfile.write(f"event: history\ndata: {json.dumps(history)}\n\n".encode())
             self.wfile.flush()
             while True:
@@ -211,7 +293,7 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
-            HUB.unsubscribe(q)
+            hub.unsubscribe(q)
 
     def _send(self, code: int, body: bytes, content_type: str):
         try:
@@ -234,6 +316,10 @@ def main():
     BRIDGE.subscribe("/events", "std_msgs/String", on_event)
     BRIDGE.subscribe("/cognitive_state", "std_msgs/String", on_state("cognitive"))
     BRIDGE.subscribe("/emotion_state", "std_msgs/String", on_state("emotion"))
+    BRIDGE.subscribe("/nao/calibration_state", "std_msgs/String", on_robot_state("calibration"))
+    BRIDGE.subscribe("/nao/components_state", "std_msgs/String", on_robot_state("components"))
+    for topic in COMMAND_TOPICS.values():
+        BRIDGE.advertise(topic)
     threading.Thread(target=BRIDGE.run_forever, daemon=True).start()
     log(f"régie → :{HTTP_PORT}/?token=…  |  rosbridge → {ROSBRIDGE_URL}")
     ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), Handler).serve_forever()
