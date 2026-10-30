@@ -70,6 +70,7 @@ git clone https://github.com/Monolithoid/ia-agent.git
 cd ia-agent/robotics/drones/static/onboard
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
+.venv/bin/pip install --no-deps -r requirements-wakeword.txt
 ```
 
 Ubuntu 24.04 interdit `pip install` hors environnement virtuel : toujours

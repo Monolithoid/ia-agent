@@ -96,12 +96,28 @@ setup_venv() {
     local before after
     before="$("${VENV_DIR}/bin/pip" freeze 2>/dev/null | md5sum)"
     "${VENV_DIR}/bin/pip" install -q --disable-pip-version-check -r "${ONBOARD_DIR}/requirements.txt"
+    # openWakeWord sans ses dépendances (voir requirements-wakeword.txt)
+    "${VENV_DIR}/bin/pip" install -q --disable-pip-version-check --no-deps \
+        -r "${ONBOARD_DIR}/requirements-wakeword.txt"
     after="$("${VENV_DIR}/bin/pip" freeze 2>/dev/null | md5sum)"
     if [[ "$before" != "$after" ]]; then
         NEED_RESTART=1
         log "Dépendances installées"
     else
         log "Dépendances à jour"
+    fi
+    # Modèles communs d'openWakeWord et hey_jarvis (essai de WAKE_MODE=local
+    # sans modèle « ok nao ») : téléchargés une fois.
+    if "${VENV_DIR}/bin/python" -c \
+        "import openwakeword.utils as u; u.download_models(['hey_jarvis'])" >/dev/null 2>&1; then
+        log "Modèles openWakeWord présents"
+    else
+        warn "Téléchargement des modèles openWakeWord impossible (réessayé au démarrage en WAKE_MODE=local)"
+    fi
+    if [[ -f "${ONBOARD_DIR}/models/ok_nao.onnx" ]]; then
+        log "Modèle « ok nao » : models/ok_nao.onnx"
+    else
+        info "Pas de models/ok_nao.onnx : WAKE_MODE=local demande de l'entraîner (models/README.md)"
     fi
 }
 

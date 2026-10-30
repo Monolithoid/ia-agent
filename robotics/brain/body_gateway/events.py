@@ -13,7 +13,8 @@ Every message shares these fields:
   input     source (webui|twitch|voice|sensor|dream), body, text, author
   ignored   source, body, text, reason (wake_word|busy)
   wake      source, body, text: lone wake word heard, the next sentence goes
-            to the LLM
+            to the LLM; detector "local", model and score (0..1) when the static
+            drone detected it itself (WAKE_MODE=local, openWakeWord)
   decision  thoughts, emotion, energy, actions (as returned by the LLM), duration_s
   action    type, requested (body named by the LLM), targets (bodies it went to),
             connected {target: bool}, detail (short text)
