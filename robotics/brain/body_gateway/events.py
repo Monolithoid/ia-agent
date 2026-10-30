@@ -64,7 +64,9 @@ def action_detail(action: dict) -> str:
         if action.get("name"):
             return action["name"]
         if "joint" in action:
-            return f"{action['joint']} {action.get('angle', 0)}"
+            # auto: added by body-gateway when the LLM gave no motion.
+            auto = " (auto)" if action.get("auto") else ""
+            return f"{action['joint']} {action.get('angle', 0)}{auto}"
         if isinstance(action.get("joints"), list):
             return " ".join(f"{j} {a}" for j, a in zip(action["joints"], action.get("angles", [])))
         return ""

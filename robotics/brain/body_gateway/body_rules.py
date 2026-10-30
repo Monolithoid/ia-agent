@@ -248,3 +248,27 @@ def motor_ranges_label(ranges: dict) -> str:
     if not lines:
         return "Aucune articulation disponible (NAO non calibré) : n'envoie pas d'action motion."
     return "\n".join(lines)
+
+
+def with_motion(actions: list, nao: str, ranges: dict) -> list:
+    """Make sure an answer moves the NAO: when the LLM gave no "motion" action
+    and a chain is calibrated, add a small nod (head bowed a little) or, without
+    a calibrated head, a move of the first calibrated joint toward its middle.
+
+    The added action carries "auto": true so the régie shows it is not the LLM's.
+    """
+    if any(isinstance(a, dict) and a.get("type") == "motion" for a in actions):
+        return actions
+    if not isinstance(ranges, dict):
+        return actions
+    for chain in ("head", "rarm", "larm"):
+        joints = ranges.get(chain)
+        if not isinstance(joints, dict) or not joints:
+            continue
+        joint = "HeadPitch" if chain == "head" and "HeadPitch" in joints else next(iter(joints))
+        lo, hi = joints[joint]
+        share = 0.7 if joint == "HeadPitch" else 0.5   # HeadPitch: high end = head bowed
+        angle = round(lo + share * (hi - lo), 3)
+        return list(actions) + [{"body": nao, "type": "motion", "joint": joint,
+                                 "angle": angle, "auto": True}]
+    return actions

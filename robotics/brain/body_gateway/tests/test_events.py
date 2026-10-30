@@ -46,6 +46,10 @@ class TestEvents(unittest.TestCase):
             events.action_detail({"type": "motion", "joint": "HeadYaw", "angle": 0.1}),
             "HeadYaw 0.1",
         )
+        self.assertEqual(
+            events.action_detail({"type": "motion", "joint": "HeadPitch", "angle": 0.1, "auto": True}),
+            "HeadPitch 0.1 (auto)",
+        )
         self.assertEqual(events.action_detail({"type": "leds", "color": "blue"}), "blue")
         self.assertEqual(events.action_detail({"type": "look", "yaw": 30}), "yaw=30")
         self.assertEqual(events.action_detail({"type": "inconnu"}), "")

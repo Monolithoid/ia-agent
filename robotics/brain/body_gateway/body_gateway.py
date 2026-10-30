@@ -154,6 +154,8 @@ Plusieurs articulations d'un même membre : "joints": [...], "angles": [...].
 NAO reste assis ; articulations et plages autorisées :
 {motor_ranges}
 Une articulation non donnée garde sa position de départ ; NAO revient seul au repos.
+Quand des articulations sont disponibles, chaque réponse contient au moins une action \
+"motion" : un geste de la tête ou d'un bras qui accompagne ce que tu dis.
 Le champ "energy" reflète ton niveau d'énergie physique :
   very-low = épuisé, somnolent — very-high = hyperactif, électrisé.
 Inclure toujours au moins une action "speech" (body "{speaker}"). Les autres actions sont optionnelles.
@@ -584,7 +586,8 @@ class BodyGatewayNode(Node):
             self._publish_emotion(parsed.get("emotion", "neutral"))
             self._publish_energy(parsed.get("energy", "medium"))
             self._publish_cognitive("responding")
-            self._dispatch_actions(parsed.get("actions", []), interaction)
+            parsed["actions"] = self._with_motion(parsed.get("actions", []))
+            self._dispatch_actions(parsed["actions"], interaction)
 
             speech_text = " ".join(
                 a.get("text", "")
@@ -810,7 +813,8 @@ class BodyGatewayNode(Node):
             self._publish_emotion(parsed.get("emotion", "neutral"))
             self._publish_energy(parsed.get("energy", "medium"))
             self._publish_cognitive("responding")
-            self._dispatch_actions(parsed.get("actions", []), interaction)
+            parsed["actions"] = self._with_motion(parsed.get("actions", []))
+            self._dispatch_actions(parsed["actions"], interaction)
 
             speech_text = " ".join(
                 a.get("text", "")
@@ -929,6 +933,14 @@ class BodyGatewayNode(Node):
             motor_ranges=body_rules.motor_ranges_label(self._motor_ranges.get(nao, {})),
             speaker=speaker, nao=nao,
         )
+
+    def _with_motion(self, actions: list) -> list:
+        """Every answer moves the NAO (a nod when the LLM gave no motion)."""
+        nao_bodies = body_rules.bodies_of_type(BODY_REGISTRY, "nao")
+        if not nao_bodies:
+            return actions
+        nao = nao_bodies[0]
+        return body_rules.with_motion(actions, nao, self._motor_ranges.get(nao, {}))
 
     def _speech_body(self, default: str) -> str:
         return body_rules.speech_body(BODY_REGISTRY, self._body_connected, default)

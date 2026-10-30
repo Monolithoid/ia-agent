@@ -124,5 +124,28 @@ class TestMotorRanges(unittest.TestCase):
         self.assertIn("non calibré", body_rules.motor_ranges_label({"head": {}}))
 
 
+class TestWithMotion(unittest.TestCase):
+
+    SPEECH = [{"body": "obs_01", "type": "speech", "text": "bonjour"}]
+
+    def test_adds_a_nod(self):
+        out = body_rules.with_motion(self.SPEECH, "nao_01",
+                                     {"head": {"HeadYaw": [-0.5, 0.5], "HeadPitch": [-0.2, 0.3]}})
+        self.assertEqual(out[1], {"body": "nao_01", "type": "motion", "joint": "HeadPitch",
+                                  "angle": 0.15, "auto": True})
+        self.assertEqual(len(self.SPEECH), 1)
+
+    def test_arm_when_head_not_calibrated(self):
+        out = body_rules.with_motion(self.SPEECH, "nao_01",
+                                     {"rarm": {"RShoulderPitch": [0.4, 1.4]}})
+        self.assertEqual((out[1]["joint"], out[1]["angle"]), ("RShoulderPitch", 0.9))
+
+    def test_keeps_the_llm_motion_or_nothing_calibrated(self):
+        actions = self.SPEECH + [{"body": "nao_01", "type": "motion", "joint": "HeadYaw", "angle": 0.1}]
+        self.assertIs(body_rules.with_motion(actions, "nao_01", {"head": {"HeadYaw": [-1, 1]}}),
+                      actions)
+        self.assertEqual(body_rules.with_motion(self.SPEECH, "nao_01", {}), self.SPEECH)
+
+
 if __name__ == "__main__":
     unittest.main()
