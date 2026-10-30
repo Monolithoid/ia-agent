@@ -229,6 +229,14 @@ function renderIgnored(ev) {
   card.append(row);
 }
 
+function renderWake(ev) {
+  const card = newCard(ev, "ignored");
+  const row = h("div", "row");
+  row.append(h("span", "time", clock(ev.t)), h("span", "badge", SOURCE_NAME[ev.source] || ev.source),
+             h("span", "muted", "mot de réveil, j'écoute :"), h("span", "", short(ev.text, 160)));
+  card.append(row);
+}
+
 function renderDecision(ev) {
   const card = cardFor(ev);
   const row = h("div", "row");
@@ -291,6 +299,10 @@ function handle(ev, live) {
     case "ignored":
       if (live) flash("in:" + ev.source);
       renderIgnored(ev);
+      return;
+    case "wake":
+      if (live) flash("in:" + ev.source);
+      renderWake(ev);
       return;
     case "decision":
       if (live) flash("brain");

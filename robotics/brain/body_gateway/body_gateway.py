@@ -30,8 +30,7 @@ Voice flow (Path 2 — wake word):
 Static drone (ADR 004):
   /bodies/static_*/sensors/speech is everything the drone heard: only text
   containing WAKE_WORD triggers inference, like the NAO voice.
-  /bodies/static_*/actuators/heard (String JSON {text, status}) tells the
-  drone what was understood: listening | accepted | ignored (it beeps).
+  A lone wake word is shown in the régie as a "wake" event (j'écoute).
   /bodies/static_*/sensors/sound_direction adds "[voix : 30° à gauche]" to the
   LLM context and turns the NAO head toward the voice.
   Actions are routed by type (body_rules.route_targets): "speech" goes to
@@ -323,7 +322,6 @@ class BodyGatewayNode(Node):
         self._pub_leds:    dict[str, object] = {}
         self._pub_posture: dict[str, object] = {}
         self._pub_move:    dict[str, object] = {}
-        self._pub_heard:   dict[str, object] = {}   # static drones only
         self._body_connected: dict[str, bool] = {b: False for b in BODY_REGISTRY}
 
         for body_id in BODY_REGISTRY:
@@ -359,8 +357,6 @@ class BodyGatewayNode(Node):
         self._pub_leds[body_id]    = self.create_publisher(String, f"{ns}/actuators/leds",    10)
         self._pub_posture[body_id] = self.create_publisher(String, f"{ns}/actuators/posture", 10)
         self._pub_move[body_id]    = self.create_publisher(String, f"{ns}/actuators/move",    10)
-        if body_rules.body_type(body_id) == "static":
-            self._pub_heard[body_id] = self.create_publisher(String, f"{ns}/actuators/heard", 10)
 
         self.create_subscription(
             String, f"{ns}/sensors/speech",
@@ -558,33 +554,18 @@ class BodyGatewayNode(Node):
                 if self._wake_gate.armed(body_id):
                     self.get_logger().info(f"[{body_id}] Mot de réveil — j'écoute")
                     self._publish_cognitive("listening")
-                    self._publish_heard(body_id, heard, "listening")
+                    self._emit("wake", source="voice", body=body_id, text=heard)
                 else:
                     self.get_logger().info(f"[{body_id}] Sans mot de réveil, ignoré : {heard!r}")
                     self._emit("ignored", source="voice", body=body_id, text=heard,
                                reason="wake_word")
-                    self._publish_heard(body_id, heard, "ignored")
                 return
-            self._publish_heard(body_id, heard, "accepted")
         self._state = "AWAKE"
         threading.Thread(
             target=self._infer_voice,
             args=(body_id, text),
             daemon=True,
         ).start()
-
-    def _publish_heard(self, body_id: str, text: str, status: str):
-        """Tell a static drone what was understood, so it can beep and log it.
-
-        status: "listening" (lone wake word), "accepted" (sent to the LLM)
-        or "ignored" (no wake word).
-        """
-        pub = self._pub_heard.get(body_id)
-        if pub is None:
-            return
-        out = String()
-        out.data = json.dumps({"text": text, "status": status}, ensure_ascii=False)
-        pub.publish(out)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Voice inference (Path 2 — wake word)

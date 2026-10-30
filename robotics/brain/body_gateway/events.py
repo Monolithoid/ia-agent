@@ -6,12 +6,14 @@ one JSON object per message), for the régie and any ROS tool (Lichtblick, rqt,
 Every message shares these fields:
   v      schema version (1)
   t      Unix time in seconds
-  kind   input | ignored | decision | action | error | bodies
+  kind   input | ignored | wake | decision | action | error | bodies
   id     interaction id: the input, the LLM decision and the actions it
          produced share it ("" for events outside an interaction)
 
   input     source (webui|twitch|voice|sensor|dream), body, text, author
   ignored   source, body, text, reason (wake_word|busy)
+  wake      source, body, text: lone wake word heard, the next sentence goes
+            to the LLM
   decision  thoughts, emotion, energy, actions (as returned by the LLM), duration_s
   action    type, requested (body named by the LLM), targets (bodies it went to),
             connected {target: bool}, detail (short text)

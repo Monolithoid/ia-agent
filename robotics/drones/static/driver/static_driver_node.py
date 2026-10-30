@@ -23,8 +23,6 @@ Sensor flow (drone → brain):
 
 Command flow (brain → drone):
   /bodies/{id}/actuators/say → edge-tts → /drones/{id}/audio_out (String, MP3 base64)
-  /bodies/{id}/actuators/heard → /drones/{id}/heard (String JSON {text, status},
-                        relayed as-is: the drone beeps when the wake word is heard)
 
 Also started for obs_* bodies (ADR 005): the OBS stream voice uses the same
 say → edge-tts → audio_out path and the same status / speaking topics.
@@ -86,11 +84,9 @@ class StaticDriverNode(Node):
 
         # ── Publisher: commands → drone (via rosbridge → static_drone.py) ────
         self.pub_audio_out = self.create_publisher(String, f"{drone}/audio_out", 10)
-        self.pub_heard     = self.create_publisher(String, f"{drone}/heard",     10)
 
         # ── Subscriber: actuator commands from body_gateway ──────────────────
         self.create_subscription(String, f"{ns}/actuators/say", self._on_say, 10)
-        self.create_subscription(String, f"{ns}/actuators/heard", self.pub_heard.publish, 10)
 
         # ── Subscribers: drone topics (rosbridge) ────────────────────────────
         # Same QoS as /nao/status in naoqi_driver: rosbridge forwards the
