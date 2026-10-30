@@ -23,10 +23,13 @@ env:
   # Accepte : SHA court (95907c2), SHA long, nom de branche, tag.
   BITTERBOT_DEFAULT_REF: 85b5095
 
+# ⚠️ DÉSACTIVÉ TEMPORAIREMENT : le build Bitterbot plante trop souvent,
+# le projet n'est pas encore assez stable. Seul le déclenchement manuel reste.
+# Pour réactiver : décommenter les blocs `schedule` et `push` ci-dessous.
 on:
   # Rebuild hebdomadaire automatique (lundi 03h00 UTC)
-  schedule:
-    - cron: '0 3 * * 1'
+  # schedule:
+  #   - cron: '0 3 * * 1'
 
   # Déclenchement manuel avec ref optionnel
   # → GitHub Actions → "Run workflow" → champ "Bitterbot commit SHA or branch"
@@ -38,9 +41,9 @@ on:
         default: ''
 
   # Rebuild si ce fichier de workflow est modifié (ex: changement de SHA)
-  push:
-    paths:
-      - '.github/workflows/build-bitterbot.yml'
+  # push:
+  #   paths:
+  #     - '.github/workflows/build-bitterbot.yml'
 
 permissions:
   contents: read
