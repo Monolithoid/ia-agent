@@ -21,4 +21,4 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 COPY body_gateway.py body_rules.py brain_client.py events.py persona.py ./
 
 CMD ["/bin/bash", "-c", \
-     "source /opt/ros/humble/setup.bash && python3 /ros2_ws/body_gateway.py"]
+     "source /opt/ros/humble/setup.bash && exec python3 /ros2_ws/body_gateway.py"]

@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import queue
+import signal
 import struct
 import sys
 import threading
@@ -607,6 +608,9 @@ def events():
 # ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # PID 1 in the container: without a handler, the kernel drops SIGTERM and
+    # `docker stop` waits for its timeout before sending SIGKILL.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     t = threading.Thread(target=_rosbridge_monitor)
     t.daemon = True
     t.start()

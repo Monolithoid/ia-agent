@@ -85,6 +85,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import requests
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import Range
 from std_msgs.msg import Bool, Float32, String
@@ -1176,9 +1177,13 @@ def main():
     node = BodyGatewayNode()
     try:
         rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # SIGTERM (docker stop) or SIGINT: rclpy has already shut the context down.
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

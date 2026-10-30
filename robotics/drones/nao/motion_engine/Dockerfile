@@ -17,4 +17,4 @@ WORKDIR /ros2_ws
 COPY motion_engine/ ./motion_engine/
 
 CMD ["/bin/bash", "-c", \
-     "source /opt/ros/humble/setup.bash && python3 -u -m motion_engine.node"]
+     "source /opt/ros/humble/setup.bash && exec python3 -u -m motion_engine.node"]

@@ -23,4 +23,4 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 COPY shared/speech_services.py drones/nao/driver/naoqi_driver_node.py drones/nao/driver/motion_policy.py ./
 
 CMD ["/bin/bash", "-c", \
-     "source /opt/ros/humble/setup.bash && python3 /ros2_ws/naoqi_driver_node.py"]
+     "source /opt/ros/humble/setup.bash && exec python3 /ros2_ws/naoqi_driver_node.py"]

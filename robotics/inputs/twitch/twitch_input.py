@@ -30,6 +30,7 @@ Environment variables:
 """
 
 import os
+import signal
 import socket
 import ssl
 import sys
@@ -138,6 +139,9 @@ def worker_loop(inbox: twitch_chat.LatestQueue):
 
 
 def main():
+    # PID 1 in the container: without a handler, the kernel drops SIGTERM and
+    # `docker stop` waits for its timeout before sending SIGKILL.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     if not TWITCH_CHANNEL:
         log("ERREUR : TWITCH_CHANNEL est obligatoire")
         sys.exit(1)
