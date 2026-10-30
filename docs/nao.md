@@ -410,7 +410,7 @@ Tests without ROS 2: `cd robotics/drones/nao/driver && python3 -m unittest disco
 
 ### cognitive_renderer
 
-The `cognitive_renderer_node.py` runs an animation loop (1 tick/minute) that maps cognitive state to LED colours and head movements (head orders go through the driver sequences like any other). Its arm poses are off by default: in the constrained motor universe the arms only follow the LLM The energy level only sets the head stiffness: the arms keep the stiffness the robot gives them at rest (`RENDERER_ARMS=1` brings arm poses and arm stiffness back).
+The `cognitive_renderer_node.py` runs an animation loop (1 tick/minute) that maps cognitive state to LED colours and head movements (head orders go through the driver sequences like any other). Its arm poses are off by default: in the constrained motor universe the arms only follow the LLM. The energy level only sets the head stiffness: the arms keep the stiffness the robot gives them at rest (`RENDERER_ARMS=1` brings arm poses and arm stiffness back).
 
 | State | LEDs | Head |
 |---|---|---|
