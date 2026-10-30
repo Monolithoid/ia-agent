@@ -410,7 +410,7 @@ Tests without ROS 2: `cd robotics/drones/nao/driver && python3 -m unittest disco
 
 ### cognitive_renderer
 
-The `cognitive_renderer_node.py` runs an animation loop (1 tick/minute) that maps cognitive state to LED colours and head movements (head orders go through the driver sequences like any other). Its arm poses are off by default: in the constrained motor universe the arms only follow the LLM (`RENDERER_ARMS=1` brings them back).
+The `cognitive_renderer_node.py` runs an animation loop (1 tick/minute) that maps cognitive state to LED colours and head movements (head orders go through the driver sequences like any other). Its arm poses are off by default: in the constrained motor universe the arms only follow the LLM. The energy level only sets the head stiffness: the arms keep the stiffness the robot gives them at rest (`RENDERER_ARMS=1` brings arm poses and arm stiffness back).
 
 | State | LEDs | Head |
 |---|---|---|
@@ -437,7 +437,7 @@ its cognitive state profile.
 | `OBS_DRONE_ID` | empty (compose: `obs_01`) | stream voice to mimic too ([ADR 005](decisions/005-avatar-twitch.md)) |
 | `SPEAKING_SYNC` | `1` (`NAO_SPEAKING_SYNC`) | `0` disables the speaking animation |
 | `SPEAKING_TIMEOUT` | `120` | stop after this many seconds without `speaking=false` (0 = never) |
-| `RENDERER_ARMS` | `0` | `1` lets the profiles and the speaking animation move the arms |
+| `RENDERER_ARMS` | `0` | `1` lets the profiles and the speaking animation move the arms and the energy set their stiffness |
 | `MOTION_ENGINE` | `0` | `1` starts `motion_engine` (free angles at 20 Hz, off in the constrained universe) |
 
 ### Dream engine

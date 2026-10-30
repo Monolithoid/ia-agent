@@ -142,12 +142,14 @@ Réponds UNIQUEMENT en JSON strict — aucun texte en dehors du JSON :
   "energy": "very-low|low|medium|high|very-high",
   "actions": [
     {{"body": "{speaker}", "type": "speech",  "text": "ce que tu dis à voix haute"}},
-    {{"body": "{nao}", "type": "motion",  "joint": "RShoulderPitch", "angle": 0.5}},
+    {{"body": "{nao}", "type": "motion",  "joint": "HeadPitch", "angle": 0.1}},
     {{"body": "{nao}", "type": "leds",    "color": "blue|green|white|red|yellow|purple|off"}},
     {{"body": "{nao}", "type": "look",    "yaw": 0.0}}
   ]
 }}
 Une action "motion" donne la position d'une articulation du NAO, en radians, dans sa plage.
+Choisis l'angle d'après le sens de la plage : pour lever le bras droit, vise le bout « bras levé » \
+de RShoulderPitch ; pour ouvrir les bras, le bout « bras écarté » des deux ShoulderRoll.
 Plusieurs articulations d'un même membre : "joints": [...], "angles": [...].
 NAO reste assis ; articulations et plages autorisées :
 {motor_ranges}

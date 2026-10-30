@@ -214,6 +214,20 @@ def head_yaw_rad(azimuth_deg: float, offset_deg: float = 0.0) -> float:
 
 CHAIN_LABELS = {"head": "tête", "larm": "bras gauche", "rarm": "bras droit"}
 
+# What the low and the high end of each joint mean, so the LLM knows which way
+# to go (NAO conventions: ShoulderPitch negative raises the arm, and so on).
+# ElbowYaw is left out: its sign is not intuitive enough to name safely.
+JOINT_SENSE = {
+    "HeadYaw":        ("regarde à droite", "regarde à gauche"),
+    "HeadPitch":      ("tête levée", "tête baissée"),
+    "LShoulderPitch": ("bras levé", "bras baissé"),
+    "RShoulderPitch": ("bras levé", "bras baissé"),
+    "LShoulderRoll":  ("bras contre le corps", "bras écarté"),
+    "RShoulderRoll":  ("bras écarté", "bras contre le corps"),
+    "LElbowRoll":     ("coude plié", "coude tendu"),
+    "RElbowRoll":     ("coude tendu", "coude plié"),
+}
+
 
 def motor_ranges_label(ranges: dict) -> str:
     """Lines for the LLM prompt: each joint the NAO may move and its range (rad).
@@ -226,8 +240,11 @@ def motor_ranges_label(ranges: dict) -> str:
         joints = ranges.get(chain) if isinstance(ranges, dict) else None
         if not isinstance(joints, dict) or not joints:
             continue
-        items = ", ".join(f"{j} [{lo:+.2f}, {hi:+.2f}]" for j, (lo, hi) in joints.items())
-        lines.append(f"- {CHAIN_LABELS[chain]} : {items}")
+        lines.append(f"- {CHAIN_LABELS[chain]} :")
+        for joint, (lo, hi) in joints.items():
+            low, high = JOINT_SENSE.get(joint, ("", ""))
+            sense = f" ({low} → {high})" if low else ""
+            lines.append(f"  {joint} de {lo:+.2f} à {hi:+.2f}{sense}")
     if not lines:
         return "Aucune articulation disponible (NAO non calibré) : n'envoie pas d'action motion."
     return "\n".join(lines)

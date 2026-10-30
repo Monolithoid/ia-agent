@@ -30,8 +30,9 @@ Environment variables:
   SPEAKING_TIMEOUT  seconds after which the animation stops if no
                     speaking=false arrives, default 120 (0 = never)
   RENDERER_ARMS     "1" lets the profiles and the speaking animation move the
-                    arms, default "0": in the constrained motor universe the
-                    arms only follow the LLM orders (rest → start → target)
+                    arms and the energy set their stiffness, default "0": in
+                    the constrained motor universe the arms only follow the
+                    LLM orders (rest → start → target)
 """
 
 import json
@@ -221,18 +222,17 @@ class CognitiveRendererNode(Node):
         if stiffness is None:
             return
         head_v, larm_v, rarm_v = stiffness
-        payload = json.dumps({
-            "groups": [
-                {"name": "head", "value": head_v},
-                {"name": "larm", "value": larm_v},
-                {"name": "rarm", "value": rarm_v},
-            ]
-        })
+        groups = [{"name": "head", "value": head_v}]
+        # Without RENDERER_ARMS the arms keep the stiffness the robot gives them
+        # (on at rest): 0.4 or 0 would leave them too weak or limp for the LLM's gestures.
+        if RENDERER_ARMS:
+            groups += [{"name": "larm", "value": larm_v}, {"name": "rarm", "value": rarm_v}]
+        payload = json.dumps({"groups": groups})
         out = String()
         out.data = payload
         self.pub_stiffness.publish(out)
         self.get_logger().info(
-            f"Energy → {level} : head={head_v} larm={larm_v} rarm={rarm_v}"
+            f"Energy → {level} : " + " ".join(f"{g['name']}={g['value']}" for g in groups)
         )
 
     def _on_speaking(self, voice_id: str, msg: Bool):
