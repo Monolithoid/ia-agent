@@ -179,6 +179,27 @@ Pour plus de détails : `LOG_LEVEL=DEBUG .venv/bin/python static_drone.py`.
 - **Écho** : sans annulation d'écho, l'écoute est coupée pendant la lecture et
   `PLAYBACK_TAIL_S` secondes après.
 
+### « Ok nao » : savoir s'il a été entendu
+
+Le drone n'a pas de détection locale du mot de réveil : il envoie chaque
+phrase au VPS, Whisper la transcrit, puis body-gateway cherche « ok nao »
+dedans. La régie montre le résultat de chaque phrase :
+
+| Dans la régie | Sens |
+|---|---|
+| `mot de réveil, j'écoute : …` | « ok nao » seul : la phrase suivante (dans les 10 s) part au LLM |
+| carte voix avec la question | la question est partie au LLM |
+| `ignoré (sans mot de réveil) : …` | Whisper n'a pas reconnu « ok nao » : le texte dit ce qu'il a compris |
+| rien | le drone n'a rien envoyé : voir `Trop court, ignoré` dans son journal (`MIN_SPEECH_S`, `RMS_THRESHOLD`) |
+
+Le plus fiable est de tout dire d'une traite : « ok nao, quelle heure
+est-il ? ». En deux fois, attendre `j'écoute` avant la question.
+Le résultat arrive après `SILENCE_S` de silence plus le temps de Whisper
+sur le VPS (affiché dans le journal de static-driver : `STT [static_01] (1.8 s)`).
+
+Si Whisper écrit le mot de réveil autrement (« Ok, now », …), ajouter cette
+orthographe à `WAKE_ALIASES` côté VPS (body-gateway).
+
 ### 8. Démarrage automatique (plus tard)
 
 Sur un PC Ubuntu de bureau, utiliser plutôt le service utilisateur

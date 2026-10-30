@@ -307,6 +307,8 @@ services:
       - PYTHONUNBUFFERED=1
       - ROBOT_ID=${NAO_ROBOT_ID:-nao_01}
       - WHISPER_URL=http://localhost:9000
+      # Amorce Whisper du drone statique : aide à écrire « ok nao » correctement.
+      - WHISPER_PROMPT=${WHISPER_PROMPT:-Ok Nao.}
       - LISTEN_DURATION=${LISTEN_DURATION:-4.0}
       - NAO_STATUS_TIMEOUT=${NAO_STATUS_TIMEOUT:-90}
       - MOTION_LIMITS=${NAO_MOTION_LIMITS:-}
@@ -348,6 +350,8 @@ services:
       - CHAT_PORT=8095
       - WAKE_WORD=${WAKE_WORD:-ok nao}
       - WAKE_WINDOW_S=${WAKE_WINDOW_S:-10}
+      # Autres orthographes acceptées (vide = liste par défaut de body_gateway.py)
+      - WAKE_ALIASES=${WAKE_ALIASES:-}
       - NAO_HEAD_YAW_OFFSET=${NAO_HEAD_YAW_OFFSET:-0}
       - WEBUI_URL=${WEBUI_URL:-http://localhost:3000}
       - WEBUI_API_KEY=${WEBUI_API_KEY:-}

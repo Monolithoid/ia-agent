@@ -100,7 +100,7 @@ class Config:
         self.mics = direction.parse_mics(_env("MICS", ""))
         self.rms_threshold = _env_float("RMS_THRESHOLD", 500)    # sur des échantillons int16
         self.silence_s = _env_float("SILENCE_S", 0.8)
-        self.min_speech_s = _env_float("MIN_SPEECH_S", 0.3)
+        self.min_speech_s = _env_float("MIN_SPEECH_S", 0.2)
         self.max_record_s = _env_float("MAX_RECORD_S", 15)
         self.pre_roll_s = _env_float("PRE_ROLL_S", 0.3)
         self.block_ms = _env_int("BLOCK_MS", 30)

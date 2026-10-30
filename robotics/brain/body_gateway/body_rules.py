@@ -149,10 +149,14 @@ class WakeWordGate:
       - "ok nao" alone → nothing yet, the next sentence within `window_s`
         seconds is accepted without the wake word
       - anything else → ignored (None)
+
+    Whisper often mishears a short "ok nao" ("Ok, now.", "OK no"): `aliases`
+    are other spellings accepted as the wake word.
     """
 
-    def __init__(self, wake_word: str, window_s: float = 10.0):
+    def __init__(self, wake_word: str, window_s: float = 10.0, aliases=()):
         self._wake = normalize(wake_word)
+        self._wakes = {self._wake} | {normalize(a) for a in aliases if normalize(a)}
         self._window_s = window_s
         self._armed_until: dict[str, float] = {}
 
@@ -164,7 +168,7 @@ class WakeWordGate:
         # Find the wake word on normalised words, then cut the original text.
         for i in range(len(words)):
             for j in range(i + 1, min(len(words), i + 6) + 1):
-                if normalize(" ".join(words[i:j])) == self._wake:
+                if normalize(" ".join(words[i:j])) in self._wakes:
                     rest = " ".join(words[j:]).lstrip(" ,.;:!?-").strip()
                     if rest:
                         self._armed_until.pop(body_id, None)

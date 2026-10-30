@@ -13,6 +13,9 @@ Sensor flow (drone → brain):
   /drones/{id}/audio    (String JSON {wav, azimuth_deg, direction_source})
                         → /bodies/{id}/sensors/sound_direction (String JSON {azimuth_deg, source})
                         → Whisper STT → /bodies/{id}/sensors/speech (String)
+                        Segments are transcribed one at a time, in arrival
+                        order: "ok nao" then "quelle heure est-il" must reach
+                        the wake word gate in that order.
   /drones/{id}/image    (String JSON {jpeg, width, height, reason})
                         → /bodies/{id}/sensors/image (same JSON, relayed as-is)
   /drones/{id}/speaking (Bool) → /bodies/{id}/sensors/speaking (Bool)
@@ -27,6 +30,8 @@ say → edge-tts → audio_out path and the same status / speaking topics.
 Environment variables:
   DRONE_ID              body identifier, default "static_01"
   WHISPER_URL           Whisper ASR service URL, empty = disabled
+  WHISPER_PROMPT        Whisper initial prompt, helps it write the wake word right,
+                        default "Ok Nao." (empty = no prompt)
   TTS_VOICE             edge-tts voice name, default "fr-FR-DeniseNeural"
   DRONE_STATUS_TIMEOUT  seconds without message before marking disconnected, default 90
 """
@@ -34,6 +39,7 @@ Environment variables:
 import base64
 import json
 import os
+import queue
 import sys
 import threading
 import time
@@ -54,6 +60,7 @@ except ImportError:
 
 DRONE_ID = os.environ.get("DRONE_ID", "static_01")
 WHISPER_URL = os.environ.get("WHISPER_URL", "")
+WHISPER_PROMPT = os.environ.get("WHISPER_PROMPT", "Ok Nao.")
 TTS_VOICE = os.environ.get("TTS_VOICE", "fr-FR-DeniseNeural")
 DRONE_STATUS_TIMEOUT = float(os.environ.get("DRONE_STATUS_TIMEOUT", "90.0"))
 
@@ -93,6 +100,10 @@ class StaticDriverNode(Node):
         self.create_subscription(String, f"{drone}/audio",    self._on_audio,    10)
         self.create_subscription(String, f"{drone}/image",    self._on_image,    10)
         self.create_subscription(Bool,   f"{drone}/speaking", self._on_speaking, 10)
+
+        # ── Transcription worker: one segment at a time, in order ────────────
+        self._stt_q: queue.Queue = queue.Queue(maxsize=20)
+        threading.Thread(target=self._stt_loop, daemon=True).start()
 
         # ── Timer: detect drone disconnection every 15 s ──────────────────────
         self.create_timer(15.0, self._check_connection)
@@ -149,7 +160,7 @@ class StaticDriverNode(Node):
 
         The direction is published at once, before the transcription, so
         body_gateway already knows it when the text arrives.  Transcription
-        runs in a daemon thread to keep the ROS spin loop free.
+        runs in a worker thread to keep the ROS spin loop free.
         """
         self._seen()
         try:
@@ -168,15 +179,22 @@ class StaticDriverNode(Node):
         # Whisper disabled by config — audio received but not transcribed.
         if not WHISPER_URL or not data.get("wav"):
             return
-        threading.Thread(
-            target=self._transcribe_and_publish,
-            args=(data["wav"],),
-            daemon=True,
-        ).start()
+        try:
+            self._stt_q.put_nowait(data["wav"])
+        except queue.Full:
+            self.get_logger().warn("Whisper en retard — segment audio abandonné")
+
+    def _stt_loop(self):
+        # A thread per segment let a short "ok nao" come back after the
+        # question that followed it: the question was then dropped by the gate.
+        while True:
+            self._transcribe_and_publish(self._stt_q.get())
 
     def _transcribe_and_publish(self, b64_audio: str):
+        t0 = time.monotonic()
         try:
-            text = speech_services.transcribe(WHISPER_URL, base64.b64decode(b64_audio))
+            text = speech_services.transcribe(WHISPER_URL, base64.b64decode(b64_audio),
+                                              prompt=WHISPER_PROMPT)
         except speech_services.WhisperError as e:
             self.get_logger().warn(str(e))
             return
@@ -184,7 +202,7 @@ class StaticDriverNode(Node):
             self.get_logger().warn(f"_transcribe_and_publish error: {e}")
             return
         if speech_services.is_meaningful(text):
-            self.get_logger().info(f"STT [{DRONE_ID}]: {text}")
+            self.get_logger().info(f"STT [{DRONE_ID}] ({time.monotonic() - t0:.1f} s): {text}")
             out = String()
             out.data = text
             self.pub_speech.publish(out)

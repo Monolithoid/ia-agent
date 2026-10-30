@@ -91,6 +91,15 @@ class TestWakeWord(unittest.TestCase):
         self.gate.filter("s", "ok nao", now=0)
         self.assertIsNone(self.gate.filter("s", "Raconte une blague", now=11))
 
+    def test_aliases(self):
+        gate = body_rules.WakeWordGate("ok nao", window_s=10, aliases=["ok now", "OK no"])
+        self.assertEqual(gate.filter("s", "Ok, now. Quelle heure est-il ?", now=0),
+                         "Quelle heure est-il ?")
+        self.assertIsNone(gate.filter("s", "Okay no.", now=0))
+        self.assertTrue(gate.armed("s", now=1))
+        # Without aliases, a mishearing is ignored.
+        self.assertIsNone(self.gate.filter("s", "Ok, now. Quelle heure est-il ?", now=0))
+
 
 class TestDirection(unittest.TestCase):
 

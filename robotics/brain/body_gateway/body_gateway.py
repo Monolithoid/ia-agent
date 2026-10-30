@@ -30,6 +30,7 @@ Voice flow (Path 2 — wake word):
 Static drone (ADR 004):
   /bodies/static_*/sensors/speech is everything the drone heard: only text
   containing WAKE_WORD triggers inference, like the NAO voice.
+  A lone wake word is shown in the régie as a "wake" event (j'écoute).
   /bodies/static_*/sensors/sound_direction adds "[voix : 30° à gauche]" to the
   LLM context and turns the NAO head toward the voice.
   Actions are routed by type (body_rules.route_targets): "speech" goes to
@@ -63,6 +64,8 @@ Environment variables:
                               ids starting with "obs" are stream voices, ADR 005)
   WAKE_WORD                  wake word required in static drone speech, default "ok nao"
   WAKE_WINDOW_S              seconds a lone wake word stays valid, default 10
+  WAKE_ALIASES               comma-separated spellings also accepted as the wake word
+                             (Whisper mishearings), default DEFAULT_WAKE_ALIASES for "ok nao"
   NAO_HEAD_YAW_OFFSET        degrees added to turn the NAO head toward a voice, default 0
   DREAMING_HOUR_START/END    default 2 / 6
   DREAMING_BATTERY_THRESHOLD default 80.0
@@ -114,6 +117,9 @@ PROXIMITY_THRESHOLD        = float(os.environ.get("PROXIMITY_THRESHOLD",      "1
 CHAT_PORT     = int(os.environ.get("CHAT_PORT",     "8095"))
 WAKE_WORD     = os.environ.get("WAKE_WORD",     "ok nao").lower()
 WAKE_WINDOW_S = float(os.environ.get("WAKE_WINDOW_S", "10"))
+# Usual Whisper mishearings of a short "ok nao" said alone.
+DEFAULT_WAKE_ALIASES = "ok now,ok no,ok nau,ok naho,ok nawo,ok naos,o nao" if WAKE_WORD == "ok nao" else ""
+WAKE_ALIASES  = [a for a in (os.environ.get("WAKE_ALIASES") or DEFAULT_WAKE_ALIASES).split(",") if a.strip()]
 NAO_HEAD_YAW_OFFSET = float(os.environ.get("NAO_HEAD_YAW_OFFSET", "0"))
 # A voice direction older than this is not added to the LLM context.
 VOICE_DIRECTION_MAX_AGE = 30.0
@@ -295,7 +301,7 @@ class BodyGatewayNode(Node):
         # Voice bodies (static, obs) have no battery: left out of the dreaming threshold.
         self._batteries: dict[str, float] = {}
         self._voice_direction: dict[str, tuple[float | None, float]] = {}  # body → (deg, t)
-        self._wake_gate = body_rules.WakeWordGate(WAKE_WORD, WAKE_WINDOW_S)
+        self._wake_gate = body_rules.WakeWordGate(WAKE_WORD, WAKE_WINDOW_S, WAKE_ALIASES)
         self._sensor_state: dict[str, dict] = {}   # body_id → latest sensor state JSON
         self._motor_ranges: dict[str, dict] = {}   # NAO body_id → {chain: {joint: [min, max]}}
         self._infer_lock = threading.Lock()
@@ -548,6 +554,7 @@ class BodyGatewayNode(Node):
                 if self._wake_gate.armed(body_id):
                     self.get_logger().info(f"[{body_id}] Mot de réveil — j'écoute")
                     self._publish_cognitive("listening")
+                    self._emit("wake", source="voice", body=body_id, text=heard)
                 else:
                     self.get_logger().info(f"[{body_id}] Sans mot de réveil, ignoré : {heard!r}")
                     self._emit("ignored", source="voice", body=body_id, text=heard,
