@@ -315,6 +315,9 @@ services:
       - DRONE_STATUS_TIMEOUT=${DRONE_STATUS_TIMEOUT:-90}
       - SPEAKING_SYNC=${NAO_SPEAKING_SYNC:-1}
       - OBS_DRONE_ID=${OBS_DRONE_ID:-obs_01}
+      # Univers moteur contraint : bras seulement sur ordre du LLM, motion-engine coupé.
+      - RENDERER_ARMS=${NAO_RENDERER_ARMS:-0}
+      - MOTION_ENGINE=${NAO_MOTION_ENGINE:-0}
     depends_on:
       whisper-asr:
         condition: service_started
@@ -519,8 +522,11 @@ services:
   #
   # body-gateway publie chaque entrée, décision du LLM et action
   # routée sur le topic ROS /events. La régie le lit par rosbridge
-  # (jeton, lecture seule) et l'affiche en direct :
+  # (jeton) et l'affiche en direct :
   #   https://<domaine regie>/?token=$REGIE_TOKEN
+  # Page Robot (seule à écrire, sur /nao/calibration et /nao/components) :
+  # calibrage du profil moteur et composants NAOqi du NAO.
+  #   https://<domaine regie>/robot?token=$REGIE_TOKEN
   # Domaine : à choisir dans Coolify (champ Domains du service), avec le
   # port du conteneur, ex. https://regie.${DOMAIN}:8097.
   # Lichtblick, rqt ou `ros2 topic echo /events` lisent le même topic.

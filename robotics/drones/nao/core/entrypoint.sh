@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Démarre les nœuds ROS2 en parallèle : naoqi-driver, cognitive-renderer,
-# motion-engine, static-driver (drone statique) sauf si DRONE_ID est vide, et
+# motion-engine (si MOTION_ENGINE=1), static-driver (drone statique) sauf si DRONE_ID est vide, et
 # un second static-driver pour la voix OBS si OBS_DRONE_ID est défini (ADR 005).
 # Si l'un s'arrête, le conteneur s'arrête → Docker le redémarre entier.
 set -euo pipefail
@@ -15,9 +15,16 @@ echo "[nao-core] démarrage des nœuds…"
 
 python3 -u /ros2_ws/naoqi_driver_node.py      &  PID_DRIVER=$!
 python3 -u /ros2_ws/cognitive_renderer_node.py &  PID_RENDERER=$!
-python3 -u -m motion_engine.node               &  PID_MOTION=$!
+echo "[nao-core] naoqi-driver(${PID_DRIVER})  cognitive-renderer(${PID_RENDERER})"
 
-echo "[nao-core] naoqi-driver(${PID_DRIVER})  cognitive-renderer(${PID_RENDERER})  motion-engine(${PID_MOTION})"
+# motion-engine envoie des angles libres à 20 Hz : coupé dans l'univers moteur
+# contraint (profil calibré depuis la régie).  MOTION_ENGINE=1 le relance.
+if [ "${MOTION_ENGINE:-0}" = "1" ]; then
+    python3 -u -m motion_engine.node           &  PID_MOTION=$!
+    echo "[nao-core] motion-engine(${PID_MOTION})"
+else
+    echo "[nao-core] motion-engine coupé (MOTION_ENGINE=1 pour le lancer)"
+fi
 
 if [ -n "${DRONE_ID:-}" ]; then
     python3 -u /ros2_ws/static_driver_node.py  &  PID_STATIC=$!

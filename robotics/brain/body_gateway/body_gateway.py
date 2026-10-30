@@ -142,11 +142,16 @@ Réponds UNIQUEMENT en JSON strict — aucun texte en dehors du JSON :
   "energy": "very-low|low|medium|high|very-high",
   "actions": [
     {{"body": "{speaker}", "type": "speech",  "text": "ce que tu dis à voix haute"}},
-    {{"body": "{nao}", "type": "motion",  "name": "wave|bow|raise_right_arm|raise_left_arm"}},
+    {{"body": "{nao}", "type": "motion",  "joint": "RShoulderPitch", "angle": 0.5}},
     {{"body": "{nao}", "type": "leds",    "color": "blue|green|white|red|yellow|purple|off"}},
     {{"body": "{nao}", "type": "look",    "yaw": 0.0}}
   ]
 }}
+Une action "motion" donne la position d'une articulation du NAO, en radians, dans sa plage.
+Plusieurs articulations d'un même membre : "joints": [...], "angles": [...].
+NAO reste assis ; articulations et plages autorisées :
+{motor_ranges}
+Une articulation non donnée garde sa position de départ ; NAO revient seul au repos.
 Le champ "energy" reflète ton niveau d'énergie physique :
   very-low = épuisé, somnolent — very-high = hyperactif, électrisé.
 Inclure toujours au moins une action "speech" (body "{speaker}"). Les autres actions sont optionnelles.
@@ -168,7 +173,7 @@ Réponds UNIQUEMENT en JSON strict :
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LED colour map and motion presets
+# LED colour map
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -221,17 +226,6 @@ _COLORS = {
     "yellow": (1.00, 0.80, 0.00),
     "purple": (0.50, 0.00, 0.50),
     "off":    (0.00, 0.00, 0.00),
-}
-
-_MOTION_PRESETS = {
-    "wave": {"joints": ["LShoulderPitch", "RShoulderPitch"], "angles": [-1.0, -1.0], "speed": 0.35},
-    "bow":  {"joint": "HeadPitch",                           "angle":   0.5,         "speed": 0.20},
-    # Bras seul, levé devant au-dessus de l'horizontale, coude presque tendu.
-    # Pas de jambes : ce NAO ne bouge pas les jambes (postures et marche coupées).
-    "raise_right_arm": {"joints": ["RShoulderPitch", "RShoulderRoll", "RElbowRoll"],
-                        "angles": [-1.2, -0.2, 0.1], "speed": 0.2},
-    "raise_left_arm":  {"joints": ["LShoulderPitch", "LShoulderRoll", "LElbowRoll"],
-                        "angles": [-1.2, 0.2, -0.1], "speed": 0.2},
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -298,6 +292,7 @@ class BodyGatewayNode(Node):
         self._voice_direction: dict[str, tuple[float | None, float]] = {}  # body → (deg, t)
         self._wake_gate = body_rules.WakeWordGate(WAKE_WORD, WAKE_WINDOW_S)
         self._sensor_state: dict[str, dict] = {}   # body_id → latest sensor state JSON
+        self._motor_ranges: dict[str, dict] = {}   # NAO body_id → {chain: {joint: [min, max]}}
         self._infer_lock = threading.Lock()
         self._running = True
 
@@ -376,6 +371,11 @@ class BodyGatewayNode(Node):
             String, f"{ns}/sensors/state",
             lambda msg, bid=body_id: self._on_sensor_state(bid, msg), 10
         )
+        if body_rules.body_type(body_id) == "nao":
+            self.create_subscription(
+                String, f"{ns}/sensors/motor_ranges",
+                lambda msg, bid=body_id: self._on_motor_ranges(bid, msg), 10
+            )
         if body_rules.body_type(body_id) == "static":
             self.create_subscription(
                 String, f"{ns}/sensors/sound_direction",
@@ -400,6 +400,14 @@ class BodyGatewayNode(Node):
             self._sensor_state[body_id] = json.loads(msg.data)
         except json.JSONDecodeError:
             pass
+
+    def _on_motor_ranges(self, body_id: str, msg: String):
+        try:
+            ranges = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        if isinstance(ranges, dict):
+            self._motor_ranges[body_id] = ranges
 
     def _build_context(self, body_id: str) -> str:
         """One-liner injected before the user message so the LLM sees hardware state.
@@ -916,6 +924,7 @@ class BodyGatewayNode(Node):
         return template.format(
             persona=persona.load_persona(BRAIN_PERSONA_FILE),
             bodies=body_rules.describe_bodies(BODY_REGISTRY, speaker),
+            motor_ranges=body_rules.motor_ranges_label(self._motor_ranges.get(nao, {})),
             speaker=speaker, nao=nao,
         )
 
@@ -997,25 +1006,20 @@ class BodyGatewayNode(Node):
             time.sleep(0.3)
 
         elif kind == "motion":
-            name = action.get("name", "")
-            if name in ("sit", "stand"):
-                # Posture presets use ALRobotPosture — separate channel from joint motion.
-                msg = String()
-                msg.data = "Sit" if name == "sit" else "Stand"
-                self._pub_posture[body_id].publish(msg)
-            elif name in _MOTION_PRESETS:
-                # Named gesture presets defined at the top of this file.
-                msg = String()
-                msg.data = json.dumps(_MOTION_PRESETS[name])
-                self._pub_motion[body_id].publish(msg)
+            # Low-level order: joint positions.  The NAO driver turns them into a
+            # rest → start → target → start → rest sequence inside the motor
+            # profile ranges; no preset, no posture (the NAO stays seated).
+            if "joints" in action:
+                joints = [str(j) for j in action["joints"]]
+                angles = [float(a) for a in action.get("angles", [])]
+                order = {"joints": joints[:len(angles)], "angles": angles[:len(joints)]}
             elif "joint" in action:
-                msg = String()
-                msg.data = json.dumps({
-                    "joint": action["joint"],
-                    "angle": float(action.get("angle", 0.0)),
-                    "speed": float(action.get("speed", 0.05)),
-                })
-                self._pub_motion[body_id].publish(msg)
+                order = {"joint": str(action["joint"]), "angle": float(action.get("angle", 0.0))}
+            else:
+                return
+            if "speed" in action:
+                order["speed"] = float(action["speed"])
+            self._pub_motion[body_id].publish(String(data=json.dumps(order)))
 
         elif kind == "leds":
             color_name = action.get("color", "white")

@@ -109,5 +109,18 @@ class TestDirection(unittest.TestCase):
         self.assertEqual(body_rules.head_yaw_rad(170), -body_rules.HEAD_YAW_LIMIT_RAD)
 
 
+class TestMotorRanges(unittest.TestCase):
+
+    def test_label(self):
+        text = body_rules.motor_ranges_label(
+            {"rarm": {"RShoulderPitch": [-0.5, 1.2]}, "head": {"HeadYaw": [-0.8, 0.8]}})
+        self.assertEqual(text, "- tête : HeadYaw [-0.80, +0.80]\n"
+                               "- bras droit : RShoulderPitch [-0.50, +1.20]")
+
+    def test_not_calibrated(self):
+        self.assertIn("non calibré", body_rules.motor_ranges_label({}))
+        self.assertIn("non calibré", body_rules.motor_ranges_label({"head": {}}))
+
+
 if __name__ == "__main__":
     unittest.main()

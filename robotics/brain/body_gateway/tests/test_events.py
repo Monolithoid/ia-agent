@@ -39,6 +39,9 @@ class TestEvents(unittest.TestCase):
     def test_action_detail(self):
         self.assertEqual(events.action_detail({"type": "speech", "text": "coucou"}), "coucou")
         self.assertEqual(events.action_detail({"type": "motion", "name": "wave"}), "wave")
+        self.assertEqual(events.action_detail({"type": "motion", "joints": ["HeadYaw", "HeadPitch"],
+                                               "angles": [0.1, -0.2]}),
+                         "HeadYaw 0.1 HeadPitch -0.2")
         self.assertEqual(
             events.action_detail({"type": "motion", "joint": "HeadYaw", "angle": 0.1}),
             "HeadYaw 0.1",

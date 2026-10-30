@@ -1,5 +1,8 @@
 # Credentials et configuration locale (ne jamais commiter)
 nao_provision.json
+# Fichiers propres au robot, écrits par nao_ws_bridge.py (calibrage, composants NAOqi)
+nao_motor_profile.json*
+nao_components.json
 
 # Python
 __pycache__/

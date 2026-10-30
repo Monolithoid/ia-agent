@@ -22,6 +22,9 @@ Command flow (brain → NAO):
 Sensor flow (NAO → brain):
   /nao/status  → /bodies/{id}/sensors/battery     (Float32 — for logic: dreaming threshold)
                → /bodies/{id}/sensors/state      (JSON — all other sensor readings for LLM)
+  /nao/capabilities motor_profile
+               → /bodies/{id}/sensors/motor_ranges (JSON {chain: {joint: [min, max]}} —
+                 allowed ranges given to the LLM, re-published every 15 s)
   /nao/audio   → Whisper STT → /bodies/{id}/sensors/speech
 
 Environment variables:
@@ -35,10 +38,12 @@ Environment variables:
 
 Motion decisions (the robot is a puppet: it crashes too often to decide):
   every /nao/motion, /nao/gesture and /nao/cmd_vel order goes through
-  motion_policy.MotionPolicy here — rate, end of move, dropped orders,
-  postures, motor heat and return to the launch pose ("launch_pose" reported
-  by nao_ws_bridge.py in /nao/capabilities).  The robot only keeps hard
-  bounds (angles, speed, stiffness, walk).
+  motion_policy.MotionPolicy here — rest → start → target → start → rest
+  sequences per chain (head, left arm, right arm) from the motor profile
+  ("motor_profile" reported by nao_ws_bridge.py in /nao/capabilities,
+  calibrated from the régie), postures and motor heat.  Without a profile no
+  joint order is sent.  The robot only keeps hard bounds (angles, speed,
+  stiffness, walk).
 """
 
 import base64
@@ -64,7 +69,7 @@ except ImportError:
     import speech_services
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from motion_policy import MotionPolicy, load_limits, parse_motion  # noqa: E402
+from motion_policy import MotionPolicy, load_limits, load_profile, parse_motion  # noqa: E402
 
 ROBOT_ID = os.environ.get("ROBOT_ID", "nao_01")
 WHISPER_URL = os.environ.get("WHISPER_URL", "")
@@ -90,6 +95,7 @@ class NAOqiDriverNode(Node):
         self.pub_bumper       = self.create_publisher(Bool,    f"{ns}/sensors/bumper",  10)
         self.pub_sonar        = self.create_publisher(Range,   f"{ns}/sensors/sonar",   10)
         self.pub_connected    = self.create_publisher(Bool,    f"{ns}/connected",       10)
+        self.pub_ranges       = self.create_publisher(String,  f"{ns}/sensors/motor_ranges", 10)
 
         # ── Publishers: commands → NAO (via rosbridge → nao_ws_bridge) ───────
         self.pub_nao_speech     = self.create_publisher(String, "/nao/speech",     10)
@@ -143,6 +149,7 @@ class NAOqiDriverNode(Node):
         for w in warnings:
             self.get_logger().warn(f"MOTION_LIMITS : {w} — ignorée")
         self._motion = MotionPolicy(limits)
+        self._profile_raw = None   # last motor profile applied, as sorted JSON
         self.create_timer(float(limits["min_interval"]), self._motion_tick)
 
         self.get_logger().info(
@@ -179,10 +186,16 @@ class NAOqiDriverNode(Node):
                 hot = self._motion.set_motor_temps(data["motor_temp"])
                 if hot:
                     self.get_logger().warn(f"[{ROBOT_ID}] groupes trop chauds : {', '.join(sorted(hot))}")
-            dropped = self._motion.take_dropped()
-            if dropped:
+            refused = self._motion.take_refused()
+            if refused:
                 self.get_logger().info(
-                    f"[{ROBOT_ID}] {dropped} ordre(s) ignoré(s) : articulation encore en mouvement")
+                    f"[{ROBOT_ID}] {refused} articulation(s) refusée(s) : hors profil moteur, "
+                    "chaîne trop chaude ou robot occupé")
+            # The heartbeat repeats the motor profile: a driver started after
+            # the robot (it missed /nao/capabilities) still gets it.
+            if "motor_profile" in data and \
+                    json.dumps(data["motor_profile"], sort_keys=True) != self._profile_raw:
+                self._apply_profile(data["motor_profile"])
             # Environment block may contain ambient_light, sound_level, etc.
             if data.get("environment"):
                 state.update(data["environment"])
@@ -224,11 +237,16 @@ class NAOqiDriverNode(Node):
             # Robot is connected and heartbeat is current — re-publish so any
             # newly started subscriber (e.g. body_gateway) gets the current state.
             self._publish_connected(True)
+            self._publish_ranges()
 
     def _publish_connected(self, state: bool):
         msg = Bool()
         msg.data = state
         self.pub_connected.publish(msg)
+
+    def _publish_ranges(self):
+        """Allowed ranges of the motor profile, for the LLM prompt ({} = not calibrated)."""
+        self.pub_ranges.publish(String(data=json.dumps(self._motion.ranges())))
 
     # ─────────────────────────────────────────────────────────────────────────
     # NAO audio → Whisper STT → /bodies/{id}/sensors/speech
@@ -287,13 +305,25 @@ class NAOqiDriverNode(Node):
             if method in ("mp3", "text"):
                 self._tts_method = method
                 self.get_logger().info(f"[{ROBOT_ID}] TTS method négocié : {method}")
-            pose = cap.get("launch_pose")
-            if isinstance(pose, dict) and pose:
-                self._motion.set_rest(pose)
-                self.get_logger().info(f"[{ROBOT_ID}] position de repos : " + ", ".join(
-                    f"{j}={a:.2f}" for j, a in sorted(self._motion.rest.items())))
+            # Every announcement (connection, end of a calibration) resets the
+            # sequences: the robot has just put itself at rest.
+            self._apply_profile(cap.get("motor_profile"))
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
+
+    def _apply_profile(self, profile):
+        """Load the motor profile announced by the robot and reset the sequences."""
+        self._profile_raw = json.dumps(profile, sort_keys=True)
+        chains, errors = load_profile(profile)
+        for e in errors:
+            self.get_logger().warn(f"[{ROBOT_ID}] profil moteur : {e}")
+        self._motion.set_profile(chains)
+        if chains:
+            self.get_logger().info(f"[{ROBOT_ID}] profil moteur : " + ", ".join(sorted(chains)))
+        else:
+            self.get_logger().warn(
+                f"[{ROBOT_ID}] pas de profil moteur — aucun geste avant un calibrage (régie)")
+        self._publish_ranges()
 
     def _on_say(self, msg: String):
         """Route a speech text to the appropriate TTS path.
@@ -353,8 +383,7 @@ class NAOqiDriverNode(Node):
         """Send what the motion policy allows now (orders and returns to rest)."""
         if not self._connected:
             return
-        cmd = self._motion.take(time.time())
-        if cmd:
+        for cmd in self._motion.take(time.time()):
             self.pub_nao_motion.publish(String(data=json.dumps(cmd)))
 
     def _on_leds(self, msg: String):
