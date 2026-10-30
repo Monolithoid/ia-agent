@@ -245,6 +245,12 @@ components, turns the stiffness of each calibrated chain on without a jump
 (current angles as target first) and moves it to its rest pose. It announces
 the profile in `/nao/capabilities` and repeats it in every `/nao/status`.
 
+At rest a chain has no stiffness (`rest_limp`). The driver marks the order that
+goes back to rest with `"rest_in"` (its duration in s); once it is reached, and
+if no newer order came for the chain, the bridge cuts the chain's stiffness.
+The next order turns it back on without a jump, then moves. A stiffness set to
+0 from `/nao/stiffness` still blocks the chain.
+
 Defaults, overridable in the `"bridge"` → `"motion_limits"` section of
 `nao_provision.json` (used with `--provision`):
 
@@ -258,6 +264,7 @@ Defaults, overridable in the `"bridge"` → `"motion_limits"` section of
 | `walk_max` | 0.5 | max normalized `moveToward` velocity |
 | `fall_manager` / `arm_collision_protection` | false / false | startup state of these two NAOqi protections, until switched from the régie |
 | `range_margin` | 0.02 rad | taken off each end of a range recorded in calibration |
+| `rest_limp` | true | stiffness off once a chain is back at rest |
 | `motion_call` | `"setAngles"` | `"legacy"` restores the pre-limits call (`setStiffnesses` + blocking `angleInterpolationWithSpeed`) to compare when NAOqi crashes |
 
 `--motor-profile FILE` changes the profile path (default

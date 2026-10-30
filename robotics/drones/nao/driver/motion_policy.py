@@ -336,12 +336,17 @@ class MotionPolicy:
             if not c.queue or c.hold_until > now:
                 continue
             kind, pose, speed = c.queue.pop(0)
-            c.hold_until = now + self._duration(c, pose, speed)
+            duration = self._duration(c, pose, speed)
+            c.hold_until = now + duration
             c.pose = dict(pose)
             c.kind = kind
-            cmds.append({"joints": list(c.joints),
-                         "angles": [round(pose[j], 4) for j in c.joints],
-                         "speed": round(speed, 4)})
+            cmd = {"joints": list(c.joints),
+                   "angles": [round(pose[j], 4) for j in c.joints],
+                   "speed": round(speed, 4)}
+            if kind == "rest":
+                # The bridge cuts the stiffness once the rest pose is reached.
+                cmd["rest_in"] = round(duration, 3)
+            cmds.append(cmd)
         if cmds:
             self._last_send = now
         return cmds

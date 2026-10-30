@@ -84,7 +84,9 @@ class TestSequence(unittest.TestCase):
         # Inactive rest_delay après la fin de la cible (2.0) : retour à 5.0.
         self.assertEqual(p.take(4.5), [])
         self.assertEqual(head(p.take(5.0)[0]), {"HeadYaw": 0.0, "HeadPitch": 0.0})   # départ
-        self.assertEqual(head(p.take(6.0)[0]), {"HeadYaw": 0.0, "HeadPitch": 0.3})   # repos
+        rest = p.take(6.0)[0]
+        self.assertEqual(head(rest), {"HeadYaw": 0.0, "HeadPitch": 0.3})              # repos
+        self.assertEqual(rest["rest_in"], 1.0)                 # le pont coupe alors la raideur
         self.assertEqual(p.take(20.0), [])
 
     def test_target_clamped_and_speed_capped(self):
