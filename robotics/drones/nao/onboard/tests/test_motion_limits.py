@@ -74,6 +74,7 @@ class BridgeTest(unittest.TestCase):
         bridge._guard._proxy_factory = lambda: self.proxy
         bridge._proxy = lambda name: self.proxy
         bridge._spawn = lambda fn, *args: fn(*args)
+        bridge._sleep = lambda seconds: None
         bridge._publish = lambda topic, payload: self.sent.append((topic, payload))
         return bridge
 
@@ -184,10 +185,62 @@ class TestBridge(BridgeTest):
         self.assertIn(("setCollisionProtectionEnabled", "Arms", False), self.proxy.calls)
         self.assertIn(("setSmartStiffnessEnabled", True), self.proxy.calls)
         self.assertIn(("stiffness", "Head", 1.0), self.proxy.calls)
-        self.assertEqual(self.proxy.calls[-1],
-                         ("interpolation", ["HeadYaw", "HeadPitch"], [0.0, 0.3], 0.1))
+        self.assertEqual(self.proxy.calls[-2:],
+                         [("interpolation", ["HeadYaw", "HeadPitch"], [0.0, 0.3], 0.1),
+                          ("stiffness", "Head", 0.0)])   # repos sans raideur
+        self.assertEqual(self.bridge._limp, {"head"})
         self.assertEqual(self.bridge._capabilities()["motor_profile"]["chains"]["head"]["speed"],
                          0.1)
+
+
+class TestLimpAtRest(BridgeTest):
+
+    def setUp(self):
+        BridgeTest.setUp(self)
+        self.bridge._apply_motion_safety()
+        self.proxy.calls = []
+
+    def motion(self, payload):
+        self.bridge._dispatch("/nao/motion", {"data": json.dumps(payload)})
+
+    def test_order_wakes_a_limp_chain_without_a_jump(self):
+        self.proxy.pose = {"HeadYaw": 0.0, "HeadPitch": 0.25}   # tête un peu tombée
+        self.motion({"joints": ["HeadYaw", "HeadPitch"], "angles": [0.0, 0.0], "speed": 0.1})
+        self.assertEqual(self.proxy.calls, [
+            (["HeadYaw", "HeadPitch"], [0.0, 0.25], 0.02),   # cible = position actuelle
+            ("stiffness", "Head", 1.0),
+            (["HeadYaw", "HeadPitch"], [0.0, 0.0], 0.1)])
+        self.assertEqual(self.bridge._limp, set())
+
+    def test_back_to_rest_goes_limp(self):
+        self.motion({"joints": ["HeadYaw", "HeadPitch"], "angles": [0.0, 0.3], "speed": 0.1,
+                     "rest_in": 1.5})
+        self.assertEqual(self.proxy.calls[-1], ("stiffness", "Head", 0.0))
+        self.assertEqual(self.bridge._limp, {"head"})
+
+    def test_newer_order_keeps_the_stiffness(self):
+        pending = []
+        self.bridge._spawn = lambda fn, *args: pending.append((fn, args))
+        self.motion({"joints": ["HeadYaw", "HeadPitch"], "angles": [0.0, 0.3], "speed": 0.1,
+                     "rest_in": 1.5})
+        self.motion({"joints": ["HeadYaw", "HeadPitch"], "angles": [0.2, 0.0], "speed": 0.1})
+        fn, args = pending[0]
+        fn(*args)
+        self.assertNotIn(("stiffness", "Head", 0.0), self.proxy.calls)
+        self.assertIn("head", self.bridge._stiffness_enabled)
+
+    def test_explicit_stiffness_off_still_blocks(self):
+        self.bridge._set_stiffness(["head"], 0.0)
+        self.proxy.calls = []
+        self.motion({"joints": ["HeadYaw"], "angles": [0.1], "speed": 0.1})
+        self.assertEqual(self.proxy.calls, [])
+
+    def test_option_off(self):
+        bridge = self.make(motion_limits={"rest_limp": False})
+        self.proxy.calls = []
+        bridge._apply_motion_safety()
+        self.assertNotIn(("stiffness", "Head", 0.0), self.proxy.calls)
+        self.assertEqual(bridge._limp, set())
 
 
 class TestNoProfile(BridgeTest):

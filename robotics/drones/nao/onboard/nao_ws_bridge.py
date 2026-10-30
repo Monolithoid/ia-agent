@@ -189,6 +189,9 @@ _MOTION_LIMITS_DEFAULT = {
     "fall_manager":     False,  # ALMotion fall manager
     "arm_collision_protection": False,  # ALMotion self-collision protection for arms
     "range_margin":     0.02,   # rad taken off each end of a range shown in calibration
+    # Stiffness off once a chain is back at rest; the next order turns it
+    # back on without a jump (see _wake_chain).
+    "rest_limp":        True,
     # "setAngles": non-blocking call (default).  "legacy": the call used
     # before the motion limits (setStiffnesses + blocking
     # angleInterpolationWithSpeed), to compare when NAOqi crashes.
@@ -1038,6 +1041,9 @@ class NaoBridge(object):
         # Groups whose stiffness has been explicitly enabled (others are skipped for motion)
         self._stiffness_enabled = set()
         self._stiffness_lock = threading.Lock()
+        # Chains left limp at rest (rest_limp): an order wakes them up.
+        self._limp = set()
+        self._motion_seq = {}   # chain -> number of the last order, see _release_at_rest
         # Guard rails between incoming motion commands and ALMotion.
         self._limits = _motion_limits(motion_limits)
         self._guard = _MotionGuard(self._limits)
@@ -1177,6 +1183,48 @@ class NaoBridge(object):
                     joints, [cfg["rest"][j] for j in joints], cfg["speed"])
             except Exception as e:
                 print("[motion] retour au repos {} : {}".format(name, e), file=sys.stderr)
+                continue
+            if self._limits["rest_limp"]:
+                self._go_limp(name)
+
+    def _go_limp(self, chain):
+        """Stiffness off on a chain at rest; it stays usable (see _wake_chain)."""
+        motion = self._proxy("ALMotion")
+        try:
+            if motion:
+                motion.setStiffnesses(_NAOQI_GROUP[chain], 0.0)
+            else:
+                print("[MOCK] {} sans raideur au repos".format(chain), file=sys.stderr)
+        except Exception as e:
+            print("[motion] raideur {} : {}".format(chain, e), file=sys.stderr)
+            return
+        with self._stiffness_lock:
+            self._stiffness_enabled.discard(chain)
+            self._limp.add(chain)
+
+    def _wake_chain(self, chain):
+        """Stiffness back on a chain left limp at rest, without a jump."""
+        motion = self._proxy("ALMotion")
+        try:
+            if motion:
+                self._hold_here(motion, _CHAINS[chain])
+        except Exception as e:
+            print("[motion] raideur {} : {}".format(chain, e), file=sys.stderr)
+            return
+        with self._stiffness_lock:
+            self._limp.discard(chain)
+            self._stiffness_enabled.add(chain)
+
+    def _release_at_rest(self, chain, seq, delay):
+        """Order sent by the driver toward the rest pose: once it is reached
+        and no newer order came for the chain, cut its stiffness."""
+        self._sleep(max(0.0, delay) + 0.3)
+        if self._motion_seq.get(chain) != seq or self._calib_chain() == chain:
+            return
+        with self._stiffness_lock:
+            if chain not in self._stiffness_enabled:
+                return
+        self._go_limp(chain)
 
     def _capabilities(self):
         tts_method = self._get_tts_method()
@@ -1414,10 +1462,13 @@ class NaoBridge(object):
                 return
             # Multi-joint payload (from motion_engine): "joints" key is present.
             if "joints" in payload:
+                # rest_in: the driver sends the chain back to rest, reached in that many s.
+                rest_in = payload.get("rest_in")
                 self._motion_joints(
                     [str(j) for j in payload["joints"]],
                     [float(a) for a in payload["angles"]],
                     float(payload.get("speed", 0.05)),
+                    float(rest_in) if isinstance(rest_in, (int, float)) else None,
                 )
             else:
                 self._motion_joint(
@@ -1556,6 +1607,8 @@ class NaoBridge(object):
                 if not naoqi_group:
                     print("[bridge] stiffness: groupe inconnu '{}'".format(grp), file=sys.stderr)
                     continue
+                # An explicit order (régie, renderer) replaces the limp at rest.
+                self._limp.discard(grp)
                 # Track which groups have stiffness ON so _motion_joint can gate on it.
                 if value > 0.0:
                     self._stiffness_enabled.add(grp)
@@ -1578,7 +1631,7 @@ class NaoBridge(object):
         """Move a single joint to the given angle (radians) at the given speed fraction."""
         self._motion_joints([joint], [angle], speed)
 
-    def _motion_joints(self, joints, angles, speed):
+    def _motion_joints(self, joints, angles, speed, rest_in=None):
         """Move joints through the motion guard (clamped, rate-limited, non-blocking).
 
         Leg joints are filtered out unconditionally.  The whole command is
@@ -1601,6 +1654,10 @@ class NaoBridge(object):
         angles = [a for _, a in filtered]
         grps_needed = set(_JOINT_TO_GROUP.get(j, "head") for j in joints)
         with self._stiffness_lock:
+            limp = grps_needed & self._limp
+        for grp in sorted(limp):
+            self._wake_chain(grp)
+        with self._stiffness_lock:
             disabled = grps_needed - self._stiffness_enabled
         if disabled:
             if not HAS_NAOQI:
@@ -1610,6 +1667,11 @@ class NaoBridge(object):
         # Stiffness is already on (set by _set_stiffness): no setStiffnesses
         # call per move, which only added load on NAOqi.
         self._guard.submit(joints, angles, speed)
+        for grp in grps_needed:
+            seq = self._motion_seq.get(grp, 0) + 1
+            self._motion_seq[grp] = seq
+            if rest_in is not None and self._limits["rest_limp"]:
+                self._spawn(self._release_at_rest, grp, seq, rest_in)
 
     # ------------------------------------------------------------------
     # Calibration of the motor profile (driven from the régie)
@@ -1665,6 +1727,7 @@ class NaoBridge(object):
             else:
                 motion.setStiffnesses(_NAOQI_GROUP[chain], 0.0)
         with self._stiffness_lock:
+            self._limp.discard(chain)
             (self._stiffness_enabled.add if on else self._stiffness_enabled.discard)(chain)
 
     def _calibration(self, payload):
