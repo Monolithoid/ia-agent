@@ -234,6 +234,7 @@ function renderWake(ev) {
   const row = h("div", "row");
   row.append(h("span", "time", clock(ev.t)), h("span", "badge", SOURCE_NAME[ev.source] || ev.source),
              h("span", "muted", "mot de réveil, j'écoute :"), h("span", "", short(ev.text, 160)));
+  if (ev.detector === "local") row.append(h("span", "muted", `sur le drone (${ev.model || "?"}, score ${ev.score ?? "?"})`));
   card.append(row);
 }
 

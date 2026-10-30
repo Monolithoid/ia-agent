@@ -1,0 +1,42 @@
+# Configuration d'entraînement openWakeWord pour « ok nao » (voir README.md).
+# Chemins relatifs au dossier où l'on lance `python -m openwakeword.train`.
+
+model_name: "ok_nao"
+target_phrase: ["ok nao"]
+custom_negative_phrases: []
+
+# Nombre de clips : ceux qu'a écrits generate_clips_fr.py dans
+# <output_dir>/<model_name>/{positive,negative}_{train,test}. Ne pas lancer
+# --generate_clips : le générateur d'openWakeWord ne parle qu'anglais.
+n_samples: 3000
+n_samples_val: 300
+tts_batch_size: 50
+augmentation_batch_size: 16
+# train.py importe toujours generate_samples depuis ce dossier : un module
+# vide suffit (créé par le notebook), les clips viennent de generate_clips_fr.py
+piper_sample_generator_path: "./stub"
+output_dir: "./sortie"
+
+# Augmentation : réverbération de pièces et bruits de fond
+rir_paths: ["./mit_rirs"]
+background_paths: ["./audioset_16k", "./fma"]
+background_paths_duplication_rate: [1, 1]
+augmentation_rounds: 1
+
+# Négatifs précalculés (≈ 2000 h de parole, musique, bruit) et validation des
+# faux déclenchements (≈ 11 h), fournis par openWakeWord sur Hugging Face
+feature_data_files:
+  "ACAV100M_sample": "./openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
+false_positive_validation_data_path: "./validation_set_features.npy"
+batch_n_per_class:
+  "ACAV100M_sample": 1024
+  "adversarial_negative": 50
+  "positive": 50
+
+model_type: "dnn"
+layer_size: 32
+steps: 50000
+max_negative_weight: 1500
+# Faux déclenchements visés par heure d'écoute : plus bas = moins de réveils
+# intempestifs, mais « ok nao » parfois manqué
+target_false_positives_per_hour: 0.2

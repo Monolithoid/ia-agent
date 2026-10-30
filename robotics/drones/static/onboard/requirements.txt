@@ -4,3 +4,10 @@ websocket-client>=1.6
 sounddevice>=0.4.6        # nécessite libportaudio2 (apt)
 opencv-python-headless>=4.8
 pyusb>=1.2                # ReSpeaker USB ; nécessite libusb-1.0-0 (apt)
+# Mot de réveil local (WAKE_MODE=local) : dépendances d'openWakeWord, qui
+# s'installe à part sans les siennes (requirements-wakeword.txt).
+onnxruntime>=1.16
+scipy>=1.10
+scikit-learn>=1.2
+tqdm>=4.64
+requests>=2.28

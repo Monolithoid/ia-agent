@@ -10,12 +10,16 @@ aucun port à ouvrir côté maison.
 |---|---|
 | `static_drone.py` | Programme principal |
 | `direction.py` | Calcul de la direction du son (numpy seul, testable sans matériel) |
+| `wakeword.py` | Mot de réveil local avec openWakeWord (`WAKE_MODE=local`) |
+| [`models/`](models/README.md) | Modèle « ok nao » : où le mettre, comment l'entraîner (notebook Colab) |
 | `tests/test_direction.py` | Tests unitaires de `direction.py` |
 | `.env.example` | Configuration d'exemple, à copier en `.env` |
 | `requirements.txt` | Dépendances Python |
+| `requirements-wakeword.txt` | openWakeWord, à installer avec `--no-deps` |
 | `static-drone.service` | Service systemd, pour un démarrage automatique plus tard |
 | `static-drone-user.service` | Service systemd utilisateur, pour un PC Ubuntu de bureau (accès au son de la session) |
 | `tests/test_camera.py` | Tests unitaires du choix de la caméra et de la fréquence audio |
+| `tests/test_wakeword.py` | Tests unitaires du détecteur de mot de réveil (sans openWakeWord) |
 | [`pc-portable-ubuntu.md`](pc-portable-ubuntu.md) | **Installation sur un PC portable Ubuntu** (webcam + micro) |
 | `setup-ubuntu.sh` | Installation automatique sur Ubuntu (idempotente), voir [pc-portable-ubuntu.md](pc-portable-ubuntu.md#installation-automatique) |
 | `setup-lib.sh` | Fonctions communes aux scripts d'installation |
@@ -27,8 +31,9 @@ aucun port à ouvrir côté maison.
 
 | Topic | Sens | Type | Contenu |
 |---|---|---|---|
-| `/drones/{id}/status` | → VPS | `std_msgs/String` | JSON toutes les 30 s : `capabilities`, `mics`, `respeaker`, `aec`, `direction_mode`, `camera_hfov_deg`, `speaking`, `uptime_s` |
-| `/drones/{id}/audio` | → VPS | `std_msgs/String` | JSON `{"wav": base64, "azimuth_deg": angle ou null, "direction_source": "respeaker\|loudest_mic\|image\|none"}` |
+| `/drones/{id}/status` | → VPS | `std_msgs/String` | JSON toutes les 30 s : `capabilities`, `mics`, `respeaker`, `aec`, `direction_mode`, `wake_mode`, `camera_hfov_deg`, `speaking`, `uptime_s` |
+| `/drones/{id}/audio` | → VPS | `std_msgs/String` | JSON `{"wav": base64, "azimuth_deg": angle ou null, "direction_source": "respeaker\|loudest_mic\|image\|none"}`, plus `"wake": "local"` et `"wake_score"` pour la phrase qui suit un mot de réveil détecté sur le drone |
+| `/drones/{id}/wake` | → VPS | `std_msgs/String` | `WAKE_MODE=local` : JSON `{"model", "score", "threshold"}` dès que « ok nao » est entendu |
 | `/drones/{id}/audio_out` | ← VPS | `std_msgs/String` | MP3 en base64 (comme `/nao/audio_out`) |
 | `/drones/{id}/speaking` | → VPS | `std_msgs/Bool` | `true` au début de la lecture, `false` à la fin |
 | `/drones/{id}/image` | → VPS | `std_msgs/String` | JSON `{"jpeg": base64, "width", "height", "reason": "periodic\|request"}` |
@@ -91,7 +96,12 @@ git clone https://github.com/Monolithoid/ia-agent.git
 cd ia-agent/robotics/drones/static/onboard
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
+.venv/bin/pip install --no-deps -r requirements-wakeword.txt
 ```
+
+openWakeWord s'installe sans ses dépendances (déjà dans `requirements.txt`) :
+sinon pip réclame `tflite-runtime`, introuvable pour Python 3.12 (Ubuntu
+24.04), et se rabat sur une vieille version.
 
 Raspberry Pi OS interdit `pip install` hors environnement virtuel : passer par
 `.venv` comme ci-dessus.
@@ -179,26 +189,49 @@ Pour plus de détails : `LOG_LEVEL=DEBUG .venv/bin/python static_drone.py`.
 - **Écho** : sans annulation d'écho, l'écoute est coupée pendant la lecture et
   `PLAYBACK_TAIL_S` secondes après.
 
-### « Ok nao » : savoir s'il a été entendu
+### « Ok nao » : sur le drone ou sur le VPS
 
-Le drone n'a pas de détection locale du mot de réveil : il envoie chaque
-phrase au VPS, Whisper la transcrit, puis body-gateway cherche « ok nao »
-dedans. La régie montre le résultat de chaque phrase :
+`WAKE_MODE` dans `.env` choisit où le mot de réveil est reconnu.
+
+**`WAKE_MODE=local` (recommandé)** : comme une enceinte connectée, le drone
+écoute en continu et reconnaît « ok nao » lui-même avec
+[openWakeWord](https://github.com/dscripka/openWakeWord). Il garde en
+mémoire les dernières `WAKE_PRE_ROLL_S` secondes (0,5 s) : au mot de réveil,
+l'enregistrement part de là, pour ne pas couper « ok nao quelle heure… » dit
+d'une traite. Il attend ensuite le début de la phrase (jusqu'à
+`WAKE_LISTEN_S`, 5 s) et s'arrête après `SILENCE_S` de silence. Seule cette
+phrase part au VPS, marquée `"wake": "local"` : body-gateway ne la refiltre
+pas. Plus rapide (Whisper ne transcrit que les questions) et plus fiable
+(Whisper n'a plus à reconnaître un « ok nao » isolé).
+
+- Modèle : `WAKE_MODEL=ok_nao` charge `models/ok_nao.onnx`, à entraîner une
+  fois ([models/README.md](models/README.md), notebook Colab). Pour essayer
+  avant : `WAKE_MODEL=hey_jarvis` et dire « hey Jarvis ».
+- Seuil : `WAKE_THRESHOLD` (0,5). Avec `LOG_LEVEL=DEBUG`, le journal affiche
+  le score max de chaque seconde (`Score « ok_nao » max sur 1 s : 0.83`) :
+  le placer entre le score du bruit de la pièce et celui de « ok nao ».
+- Charge : quelques millisecondes de calcul toutes les 80 ms, sur PC comme
+  sur Raspberry Pi 5.
+
+**`WAKE_MODE=server` (défaut, sans modèle)** : le drone envoie chaque phrase
+au VPS, Whisper la transcrit, puis body-gateway cherche « ok nao » dedans. Le
+plus fiable est alors de tout dire d'une traite : « ok nao, quelle heure
+est-il ? ». En deux fois, attendre `j'écoute` avant la question. Si Whisper
+écrit le mot de réveil autrement (« Ok, now », …), ajouter cette orthographe
+à `WAKE_ALIASES` côté VPS (body-gateway).
+
+La régie montre ce qui s'est passé :
 
 | Dans la régie | Sens |
 |---|---|
-| `mot de réveil, j'écoute : …` | « ok nao » seul : la phrase suivante (dans les 10 s) part au LLM |
+| `mot de réveil, j'écoute : ok nao sur le drone (ok_nao, score 0.83)` | `local` : le drone a entendu « ok nao », la phrase suivante part au LLM |
+| `mot de réveil, j'écoute : …` | `server` : « ok nao » seul, la phrase suivante (dans les 10 s) part au LLM |
 | carte voix avec la question | la question est partie au LLM |
-| `ignoré (sans mot de réveil) : …` | Whisper n'a pas reconnu « ok nao » : le texte dit ce qu'il a compris |
-| rien | le drone n'a rien envoyé : voir `Trop court, ignoré` dans son journal (`MIN_SPEECH_S`, `RMS_THRESHOLD`) |
+| `ignoré (sans mot de réveil) : …` | `server` : Whisper n'a pas reconnu « ok nao » : le texte dit ce qu'il a compris |
+| rien | le drone n'a rien envoyé : voir son journal (`Trop court, ignoré`, `Rien entendu après le mot de réveil`, score sous le seuil) |
 
-Le plus fiable est de tout dire d'une traite : « ok nao, quelle heure
-est-il ? ». En deux fois, attendre `j'écoute` avant la question.
 Le résultat arrive après `SILENCE_S` de silence plus le temps de Whisper
 sur le VPS (affiché dans le journal de static-driver : `STT [static_01] (1.8 s)`).
-
-Si Whisper écrit le mot de réveil autrement (« Ok, now », …), ajouter cette
-orthographe à `WAKE_ALIASES` côté VPS (body-gateway).
 
 ### 8. Démarrage automatique (plus tard)
 
@@ -222,7 +255,7 @@ relaie vers le VPS en `wss://` et ajoute le jeton (relais Caddy). Voir
 
 ## Tests
 
-Sans matériel, avec numpy seulement :
+Sans matériel, avec numpy seulement (`test_wakeword.py` demande aussi scipy) :
 
 ```bash
 python3 -m unittest discover -s tests -v

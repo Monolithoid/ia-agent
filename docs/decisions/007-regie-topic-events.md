@@ -26,6 +26,7 @@ corps).
 |---|---|---|
 | `input` | une entrée déclenche le LLM | `source` (`webui`, `twitch`, `voice`, `sensor`, `dream`), `body`, `text`, `author` |
 | `ignored` | une entrée est abandonnée | `source`, `body`, `text`, `reason` (`wake_word`, `busy`) |
+| `wake` | « ok nao » seul entendu, la phrase suivante ira au LLM | `source`, `body`, `text` ; `detector` (`local`), `model` et `score` quand le drone statique l'a détecté lui-même |
 | `decision` | le LLM a répondu | `thoughts`, `emotion`, `energy`, `actions`, `duration_s` |
 | `action` | une action est routée | `type`, `requested`, `targets`, `connected`, `detail` |
 | `error` | erreur du LLM ou du traitement | `message` |

@@ -31,6 +31,9 @@ Static drone (ADR 004):
   /bodies/static_*/sensors/speech is everything the drone heard: only text
   containing WAKE_WORD triggers inference, like the NAO voice.
   A lone wake word is shown in the régie as a "wake" event (j'écoute).
+  With WAKE_MODE=local the drone detects "ok nao" itself (openWakeWord):
+  /bodies/static_*/sensors/wake is shown in the régie at once, and the next
+  sentence arrives on /bodies/static_*/sensors/speech_after_wake, not filtered.
   /bodies/static_*/sensors/sound_direction adds "[voix : 30° à gauche]" to the
   LLM context and turns the NAO head toward the voice.
   Actions are routed by type (body_rules.route_targets): "speech" goes to
@@ -392,6 +395,14 @@ class BodyGatewayNode(Node):
                 String, f"{ns}/sensors/sound_direction",
                 lambda msg, bid=body_id: self._on_sound_direction(bid, msg), 10
             )
+            self.create_subscription(
+                String, f"{ns}/sensors/wake",
+                lambda msg, bid=body_id: self._on_wake(bid, msg), 10
+            )
+            self.create_subscription(
+                String, f"{ns}/sensors/speech_after_wake",
+                lambda msg, bid=body_id: self._on_speech(bid, msg, after_wake=True), 10
+            )
         self.get_logger().info(
             f"Corps enregistré : {body_id} ({body_rules.body_type(body_id)})"
         )
@@ -535,19 +546,37 @@ class BodyGatewayNode(Node):
             return ""
         return body_rules.direction_label(azimuth)
 
-    def _on_speech(self, body_id: str, msg: String):
+    def _on_wake(self, body_id: str, msg: String):
+        """Wake word detected on the static drone itself (WAKE_MODE=local)."""
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            data = {}
+        score = data.get("score")
+        self.get_logger().info(f"[{body_id}] Mot de réveil sur le drone (score {score}) — j'écoute")
+        self._publish_cognitive("listening")
+        self._emit("wake", source="voice", body=body_id, text=WAKE_WORD,
+                   detector="local", model=data.get("model"), score=score)
+
+    def _on_speech(self, body_id: str, msg: String, after_wake: bool = False):
         """Path 2 — transcription received after wake word detection.
 
         Runs Ollama inference → dispatches actions (TTS + physical)
         → stores result in voice_queue → notifies WebUI if configured.
 
         The NAO detects the wake word on board; a static drone sends all it
-        hears, so its text goes through the wake word gate first.
+        hears, so its text goes through the wake word gate first, unless the
+        drone detected the wake word itself (after_wake).
         """
         text = msg.data.strip()
         if not text:
             return
-        if body_rules.body_type(body_id) == "static":
+        if after_wake:
+            text = self._wake_gate.strip(text)
+            if not text:
+                self.get_logger().info(f"[{body_id}] Rien après le mot de réveil")
+                return
+        elif body_rules.body_type(body_id) == "static":
             heard = text
             text = self._wake_gate.filter(body_id, heard)
             if text is None:

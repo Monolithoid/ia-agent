@@ -152,6 +152,9 @@ class WakeWordGate:
 
     Whisper often mishears a short "ok nao" ("Ok, now.", "OK no"): `aliases`
     are other spellings accepted as the wake word.
+
+    With WAKE_MODE=local the drone detects "ok nao" itself (openWakeWord) and
+    only sends what follows: that text goes through `strip`, not `filter`.
     """
 
     def __init__(self, wake_word: str, window_s: float = 10.0, aliases=()):
@@ -160,25 +163,43 @@ class WakeWordGate:
         self._window_s = window_s
         self._armed_until: dict[str, float] = {}
 
+    def _after_wake(self, text: str, first_words: int | None = None) -> str | None:
+        """Text after the wake word ("" if nothing follows), None without it.
+
+        The wake word is found on normalised words, then the original text is cut.
+        """
+        words = text.split()
+        starts = len(words) if first_words is None else min(len(words), first_words)
+        for i in range(starts):
+            for j in range(i + 1, min(len(words), i + 6) + 1):
+                if normalize(" ".join(words[i:j])) in self._wakes:
+                    return " ".join(words[j:]).lstrip(" ,.;:!?-").strip()
+        return None
+
     def filter(self, body_id: str, text: str, now: float | None = None) -> str | None:
         now = time.monotonic() if now is None else now
         if not self._wake:
             return text
-        words = text.split()
-        # Find the wake word on normalised words, then cut the original text.
-        for i in range(len(words)):
-            for j in range(i + 1, min(len(words), i + 6) + 1):
-                if normalize(" ".join(words[i:j])) in self._wakes:
-                    rest = " ".join(words[j:]).lstrip(" ,.;:!?-").strip()
-                    if rest:
-                        self._armed_until.pop(body_id, None)
-                        return rest
-                    self._armed_until[body_id] = now + self._window_s
-                    return None
+        rest = self._after_wake(text)
+        if rest:
+            self._armed_until.pop(body_id, None)
+            return rest
+        if rest is not None:
+            self._armed_until[body_id] = now + self._window_s
+            return None
         if self.armed(body_id, now):
             self._armed_until.pop(body_id, None)
             return text
         return None
+
+    def strip(self, text: str) -> str:
+        """Speech that follows a wake word the body detected itself (static drone,
+        WAKE_MODE=local): never filtered, only a leading "ok nao" kept by the
+        drone's pre-roll is cut."""
+        if not self._wake:
+            return text
+        rest = self._after_wake(text, first_words=1)
+        return text if rest is None else rest
 
     def armed(self, body_id: str, now: float | None = None) -> bool:
         now = time.monotonic() if now is None else now

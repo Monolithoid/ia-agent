@@ -1,0 +1,6 @@
+# openWakeWord (WAKE_MODE=local), à installer APRÈS requirements.txt avec :
+#   .venv/bin/pip install --no-deps -r requirements-wakeword.txt
+# --no-deps : openWakeWord 0.6 exige tflite-runtime sous Linux, qui n'existe
+# pas pour Python 3.12+ (Ubuntu 24.04) ; pip retomberait alors sur la 0.4.
+# Le drone n'utilise que le moteur ONNX (onnxruntime, dans requirements.txt).
+openwakeword==0.6.0
