@@ -31,6 +31,7 @@ aucun port à ouvrir côté maison.
 | `/drones/{id}/audio` | → VPS | `std_msgs/String` | JSON `{"wav": base64, "azimuth_deg": angle ou null, "direction_source": "respeaker\|loudest_mic\|image\|none"}` |
 | `/drones/{id}/audio_out` | ← VPS | `std_msgs/String` | MP3 en base64 (comme `/nao/audio_out`) |
 | `/drones/{id}/speaking` | → VPS | `std_msgs/Bool` | `true` au début de la lecture, `false` à la fin |
+| `/drones/{id}/heard` | ← VPS | `std_msgs/String` | JSON `{"text": transcription, "status": "listening\|accepted\|ignored"}` : ce que Whisper a compris et la décision du filtre « ok nao » |
 | `/drones/{id}/image` | → VPS | `std_msgs/String` | JSON `{"jpeg": base64, "width", "height", "reason": "periodic\|request"}` |
 | `/drones/{id}/image_request` | ← VPS | `std_msgs/Empty` | Demande une image tout de suite |
 
@@ -178,6 +179,27 @@ Pour plus de détails : `LOG_LEVEL=DEBUG .venv/bin/python static_drone.py`.
   augmente quand on va vers la gauche, mettre `DOA_INVERT=1` (ReSpeaker).
 - **Écho** : sans annulation d'écho, l'écoute est coupée pendant la lecture et
   `PLAYBACK_TAIL_S` secondes après.
+
+### « Ok nao » : savoir s'il a été entendu
+
+Le drone n'a pas de détection locale du mot de réveil : il envoie chaque
+phrase au VPS, Whisper la transcrit, puis body-gateway cherche « ok nao »
+dedans. La réponse revient sur `/drones/{id}/heard` :
+
+| Ce qu'on entend | Journal du drone | Sens |
+|---|---|---|
+| deux notes montantes | `Mot de réveil entendu, j'écoute` | « ok nao » seul : la phrase suivante (dans les 10 s) part au LLM |
+| une note | `Compris, envoyé au LLM` | la question est partie |
+| rien | `Entendu sans mot de réveil, ignoré : '…'` | Whisper n'a pas reconnu « ok nao » : le texte affiché dit ce qu'il a compris |
+| rien | `Trop court, ignoré` | phrase plus courte que `MIN_SPEECH_S`, ou `RMS_THRESHOLD` trop haut |
+
+Le plus fiable est de tout dire d'une traite : « ok nao, quelle heure
+est-il ? ». En deux fois, attendre les deux notes avant la question.
+Le bip arrive après `SILENCE_S` de silence plus le temps de Whisper sur le
+VPS (une à quelques secondes avec le modèle `small` sur CPU).
+
+Si Whisper écrit le mot de réveil autrement (« Ok, now », …), ajouter cette
+orthographe à `WAKE_ALIASES` côté VPS (body-gateway).
 
 ### 8. Démarrage automatique (plus tard)
 

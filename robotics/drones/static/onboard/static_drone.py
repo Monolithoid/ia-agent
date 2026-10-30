@@ -10,6 +10,7 @@ VPS (même principe que le NAO, ADR 002) et assure :
     - écoute               → /drones/{id}/audio         (WAV base64 + angle)
     - parole               ← /drones/{id}/audio_out     (MP3 base64)
                            → /drones/{id}/speaking      (true / false)
+    - ce qui a été compris ← /drones/{id}/heard         (bip si « ok nao » entendu)
     - image                → /drones/{id}/image         (JPEG base64)
                            ← /drones/{id}/image_request
 
@@ -100,7 +101,7 @@ class Config:
         self.mics = direction.parse_mics(_env("MICS", ""))
         self.rms_threshold = _env_float("RMS_THRESHOLD", 500)    # sur des échantillons int16
         self.silence_s = _env_float("SILENCE_S", 0.8)
-        self.min_speech_s = _env_float("MIN_SPEECH_S", 0.3)
+        self.min_speech_s = _env_float("MIN_SPEECH_S", 0.2)
         self.max_record_s = _env_float("MAX_RECORD_S", 15)
         self.pre_roll_s = _env_float("PRE_ROLL_S", 0.3)
         self.block_ms = _env_int("BLOCK_MS", 30)
@@ -114,6 +115,8 @@ class Config:
         # Haut-parleur
         self.player_cmd = _env("PLAYER_CMD", "mpg123 -q -")
         self.playback_tail_s = _env_float("PLAYBACK_TAIL_S", 0.3)
+        # Bip quand le VPS a reconnu le mot de réveil (vide = pas de bip)
+        self.beep_cmd = _env("BEEP_CMD", "aplay -q -")
 
         # Caméra
         self.camera_index = _env("CAMERA_INDEX", "0")
@@ -432,6 +435,20 @@ def pcm_to_wav(pcm, rate):
     return buf.getvalue()
 
 
+def beep_wav(freqs, rate=16000, note_s=0.08, volume=0.3):
+    """Petit bip WAV, une note par fréquence (Hz), avec fondu pour ne pas claquer."""
+    n = int(rate * note_s)
+    t = np.arange(n) / float(rate)
+    fade = np.minimum(1.0, np.minimum(t, note_s - t) / 0.01)
+    notes = [np.sin(2 * np.pi * f * t) * fade for f in freqs]
+    return pcm_to_wav(np.concatenate(notes) * volume * 32767, rate)
+
+
+# Deux notes montantes : « je t'écoute » ; une note : question partie au LLM.
+BEEP_LISTENING = (660, 880)
+BEEP_ACCEPTED = (880,)
+
+
 def find_input_device(sd, wanted):
     """Index de l'entrée audio : AUDIO_INPUT_DEVICE, sinon ReSpeaker, sinon défaut."""
     if wanted is not None and wanted.isdigit():
@@ -669,6 +686,39 @@ class StaticDrone:
                 self.speaking.clear()
                 self.bridge.publish(self.cfg.topic("speaking"), {"data": False})
 
+    def on_heard(self, msg):
+        """Retour du VPS : texte transcrit et décision du filtre « ok nao »."""
+        try:
+            data = json.loads(msg.get("data", ""))
+        except ValueError:
+            return
+        status, text = data.get("status", ""), data.get("text", "")
+        if status == "listening":
+            log.info("Mot de réveil entendu, j'écoute : %r", text)
+            self.beep(BEEP_LISTENING)
+        elif status == "accepted":
+            log.info("Compris, envoyé au LLM : %r", text)
+            self.beep(BEEP_ACCEPTED)
+        else:
+            log.info("Entendu sans mot de réveil, ignoré : %r", text)
+
+    def beep(self, freqs):
+        """Bip court, sans couper l'écoute : la question peut suivre tout de suite.
+
+        Trop court pour dépasser MIN_SPEECH_S s'il est capté par le micro.
+        """
+        if not self.cfg.beep_cmd:
+            return
+
+        def play():
+            try:
+                subprocess.run(shlex.split(self.cfg.beep_cmd), input=beep_wav(freqs),
+                               stdout=subprocess.DEVNULL, check=False, timeout=5)
+            except Exception as exc:
+                log.warning("Bip impossible (%s) : %s", self.cfg.beep_cmd, exc)
+
+        threading.Thread(target=play, daemon=True).start()
+
     # ------------------------------------------------------------------
     # Image
     # ------------------------------------------------------------------
@@ -737,6 +787,7 @@ class StaticDrone:
         b.advertise(self.cfg.topic("image"), "std_msgs/String")
         b.subscribe(self.cfg.topic("audio_out"), "std_msgs/String", self.on_audio_out)
         b.subscribe(self.cfg.topic("image_request"), "std_msgs/Empty", self.on_image_request)
+        b.subscribe(self.cfg.topic("heard"), "std_msgs/String", self.on_heard)
 
         threads = [threading.Thread(target=b.run_forever, name="rosbridge"),
                    threading.Thread(target=self.status_loop, name="status"),

@@ -22,14 +22,19 @@ class WhisperError(Exception):
 
 
 def transcribe(whisper_url: str, audio_bytes: bytes, language: str = "fr",
-               timeout: float = 30) -> str:
+               timeout: float = 30, prompt: str = "") -> str:
     """Envoie un fichier audio à Whisper ASR et renvoie le texte (sans espaces autour).
 
     Le service onerahmet/openai-whisper-asr-webservice décode l'audio avec
-    ffmpeg : WAV, MP3, etc. sont acceptés.
+    ffmpeg : WAV, MP3, etc. sont acceptés.  `prompt` (initial_prompt de
+    Whisper) oriente l'orthographe : "Ok Nao." aide à écrire le mot de réveil.
     """
+    params = {"task": "transcribe", "language": language, "output": "json"}
+    if prompt:
+        params["initial_prompt"] = prompt
     resp = requests.post(
-        f"{whisper_url}/asr?task=transcribe&language={language}&output=json",
+        f"{whisper_url}/asr",
+        params=params,
         files={"audio_file": ("audio.wav", audio_bytes, "audio/wav")},
         timeout=timeout,
     )
@@ -39,10 +44,18 @@ def transcribe(whisper_url: str, audio_bytes: bytes, language: str = "fr",
     return resp.json().get("text", "").strip()
 
 
+# Ce que Whisper invente sur du bruit ou un silence (sous-titres de vidéos).
+HALLUCINATIONS = ("sous-titr", "merci d'avoir regard", "abonnez-vous", "amara.org")
+
+
 def is_meaningful(text: str) -> bool:
     """Accept transcription only if it contains meaningful content
-    (> 3 chars filters out noise artefacts like "." or "ok")."""
-    return bool(text) and len(text) > 3
+    (> 3 chars filters out noise artefacts like "." or "ok", and the usual
+    Whisper hallucinations on noise are dropped)."""
+    if not text or len(text) <= 3:
+        return False
+    lower = text.lower()
+    return not any(h in lower for h in HALLUCINATIONS)
 
 
 def synthesize_mp3(text: str, voice: str) -> bytes:
