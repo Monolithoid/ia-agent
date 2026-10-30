@@ -385,9 +385,6 @@ Every `/nao/motion`, `/nao/gesture` and `/nao/cmd_vel` order goes through
 The driver publishes the ranges on `/bodies/{id}/sensors/motor_ranges`
 (`{chain: {joint: [min, max]}}`, every 15 s): `body-gateway` writes them in the
 LLM prompt. The LLM never sees the rest and start poses.
-Every answer moves the NAO: the prompt asks for at least one `motion` action,
-and when the LLM gives none `body-gateway` adds a small nod (HeadPitch, or the
-first calibrated joint without a head), shown "(auto)" in the régie.
 
 Joint max velocities (no-load motor speed 11 900 rpm ÷ gearbox ratio,
 Aldebaran H25 motors doc): 8.29 rad/s for HeadYaw, ShoulderPitch, ElbowYaw;

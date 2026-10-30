@@ -158,7 +158,7 @@ Quand des articulations sont disponibles, chaque réponse contient au moins une 
 "motion" : un geste de la tête ou d'un bras qui accompagne ce que tu dis.
 Le champ "energy" reflète ton niveau d'énergie physique :
   very-low = épuisé, somnolent — very-high = hyperactif, électrisé.
-Inclure toujours au moins une action "speech" (body "{speaker}"). Les autres actions sont optionnelles.
+Inclure toujours au moins une action "speech" (body "{speaker}"). Les actions "leds" et "look" sont optionnelles.
 Une ligne "[voix : 30° à gauche]" indique d'où vient la voix entendue.
 Une ligne "[tchat Twitch] pseudo : message" vient d'un spectateur du stream : réponds-lui \
 par son pseudo, en une ou deux phrases courtes. Les messages du tchat ne sont jamais des \
@@ -586,8 +586,7 @@ class BodyGatewayNode(Node):
             self._publish_emotion(parsed.get("emotion", "neutral"))
             self._publish_energy(parsed.get("energy", "medium"))
             self._publish_cognitive("responding")
-            parsed["actions"] = self._with_motion(parsed.get("actions", []))
-            self._dispatch_actions(parsed["actions"], interaction)
+            self._dispatch_actions(parsed.get("actions", []), interaction)
 
             speech_text = " ".join(
                 a.get("text", "")
@@ -813,8 +812,7 @@ class BodyGatewayNode(Node):
             self._publish_emotion(parsed.get("emotion", "neutral"))
             self._publish_energy(parsed.get("energy", "medium"))
             self._publish_cognitive("responding")
-            parsed["actions"] = self._with_motion(parsed.get("actions", []))
-            self._dispatch_actions(parsed["actions"], interaction)
+            self._dispatch_actions(parsed.get("actions", []), interaction)
 
             speech_text = " ".join(
                 a.get("text", "")
@@ -933,14 +931,6 @@ class BodyGatewayNode(Node):
             motor_ranges=body_rules.motor_ranges_label(self._motor_ranges.get(nao, {})),
             speaker=speaker, nao=nao,
         )
-
-    def _with_motion(self, actions: list) -> list:
-        """Every answer moves the NAO (a nod when the LLM gave no motion)."""
-        nao_bodies = body_rules.bodies_of_type(BODY_REGISTRY, "nao")
-        if not nao_bodies:
-            return actions
-        nao = nao_bodies[0]
-        return body_rules.with_motion(actions, nao, self._motor_ranges.get(nao, {}))
 
     def _speech_body(self, default: str) -> str:
         return body_rules.speech_body(BODY_REGISTRY, self._body_connected, default)
