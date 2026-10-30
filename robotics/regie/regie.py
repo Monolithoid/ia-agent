@@ -29,6 +29,8 @@ Environment variables:
   ROSBRIDGE_URL     default ws://rosbridge-proxy:80
   ROSBRIDGE_TOKEN   bearer token checked by rosbridge-proxy (required)
   REGIE_TOKEN       secret in the page URL (required)
+  OBS_URL           obs-agent domain, e.g. https://obs.example.com (optional)
+  OBS_TOKEN         secret in the overlay URL, same as obs-agent (optional)
   HTTP_PORT         page port, default 8097
   HISTORY           events kept for a page opened later, default 300
 """
@@ -48,6 +50,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ROSBRIDGE_URL   = os.environ.get("ROSBRIDGE_URL", "ws://rosbridge-proxy:80")
 ROSBRIDGE_TOKEN = os.environ.get("ROSBRIDGE_TOKEN", "")
 REGIE_TOKEN     = os.environ.get("REGIE_TOKEN", "")
+OBS_URL         = os.environ.get("OBS_URL", "").rstrip("/")
+OBS_TOKEN       = os.environ.get("OBS_TOKEN", "")
 HTTP_PORT       = int(os.environ.get("HTTP_PORT", "8097"))
 HISTORY         = int(os.environ.get("HISTORY", "300"))
 
@@ -220,7 +224,7 @@ BRIDGE = Rosbridge(ROSBRIDGE_URL, ROSBRIDGE_TOKEN, on_link)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HTTP: / (page), /stream (SSE), /ping
+# HTTP: / (page), /robot, /obs (redirect), /stream (SSE), /ping
 # ─────────────────────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
@@ -240,6 +244,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, PAGE_HTML.read_bytes(), "text/html; charset=utf-8")
         elif url.path == "/robot":
             self._send(200, ROBOT_HTML.read_bytes(), "text/html; charset=utf-8")
+        elif url.path == "/obs":
+            if not OBS_URL or not OBS_TOKEN:
+                self._send(404, "OBS_URL et OBS_TOKEN non configurés sur la régie".encode(),
+                           "text/plain; charset=utf-8")
+                return
+            self.send_response(302)
+            self.send_header("Location", OBS_URL + "/overlay?token="
+                             + urllib.parse.quote(OBS_TOKEN, safe=""))
+            self.send_header("Content-Length", "0")
+            self.end_headers()
         elif url.path == "/stream":
             self._stream(HUB, [])
         elif url.path == "/robot-stream":
