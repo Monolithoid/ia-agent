@@ -120,6 +120,7 @@ Variables optionnelles (valeurs par défaut dans `docker-compose.yml`, dont l'en
 | Cerveau ([Stack IA](ia-stack.md#fournisseur-du-cerveau-body-gateway)) | `BRAIN_PROVIDER`, `BRAIN_URL`, `BRAIN_MODEL`, `BRAIN_API_KEY`, `BRAIN_EFFORT`, `BRAIN_TIMEOUT` (personnalité : fichier `/opt/ia/nao/persona/personnalite.md`) |
 | Corps | `NAO_ROBOT_ID`, `STATIC_DRONE_ID`, `OBS_DRONE_ID` (vide = corps désactivé), `NAO_HEAD_YAW_OFFSET`, `NAO_SPEAKING_SYNC` |
 | Voix | `WAKE_WORD`, `WAKE_WINDOW_S`, `LISTEN_DURATION`, `ASR_MODEL`, `TTS_VOICE` |
+| Régie | `OBS_URL` : domaine d'`obs-agent` (ex. `https://obs.$DOMAIN`), pour le lien « OBS : overlay voix » de la régie |
 | Twitch | `TWITCH_COMMAND_PREFIX`, `TWITCH_USER_COOLDOWN_S`, `TWITCH_MIN_INTERVAL_S`, `TWITCH_BLOCKLIST`, `TWITCH_MODS_ONLY` |
 | Rêves | `DREAMING_HOUR_START`, `DREAMING_HOUR_END`, `DREAMING_BATTERY_THRESHOLD`, `DREAM_TICK_INTERVAL`, `TZ` |
 | Notifications vocales Open WebUI | `WEBUI_URL`, `WEBUI_API_KEY`, `WEBUI_PIPE_MODEL`, `WEBUI_VOICE_CHAT_ID` |

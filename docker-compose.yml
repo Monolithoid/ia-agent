@@ -527,6 +527,9 @@ services:
   # Page Robot (seule à écrire, sur /nao/calibration et /nao/components) :
   # calibrage du profil moteur et composants NAOqi du NAO.
   #   https://<domaine regie>/robot?token=$REGIE_TOKEN
+  # Lien OBS : /obs?token=$REGIE_TOKEN redirige vers l'overlay
+  # $OBS_URL/overlay?token=$OBS_TOKEN (OBS_URL = domaine d'obs-agent,
+  # ex. https://obs.${DOMAIN} ; vide = lien désactivé).
   # Domaine : à choisir dans Coolify (champ Domains du service), avec le
   # port du conteneur, ex. https://regie.${DOMAIN}:8097.
   # Lichtblick, rqt ou `ros2 topic echo /events` lisent le même topic.
@@ -539,6 +542,8 @@ services:
       - ROSBRIDGE_URL=ws://rosbridge-proxy:80
       - ROSBRIDGE_TOKEN=${ROSBRIDGE_TOKEN:-}
       - REGIE_TOKEN=${REGIE_TOKEN:-}
+      - OBS_URL=${OBS_URL:-}
+      - OBS_TOKEN=${OBS_TOKEN:-}
     networks:
       - robotics-net
     depends_on:

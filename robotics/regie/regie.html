@@ -64,6 +64,7 @@
   <span class="pill">Cerveau <b id="cognitive">—</b></span>
   <span class="pill">Émotion <b id="emotion">—</b></span>
   <span class="spacer"></span>
+  <a id="obsLink" href="obs" target="_blank" style="color:var(--muted)">OBS : overlay voix →</a>
   <a id="robotLink" href="robot" style="color:var(--muted)">Robot : calibrage et composants →</a>
   <button id="pause" type="button">Pause</button>
 </header>
@@ -351,6 +352,8 @@ document.getElementById("pause").onclick = e => {
 
 document.getElementById("robotLink").href =
   "robot?token=" + encodeURIComponent(new URLSearchParams(location.search).get("token") || "");
+document.getElementById("obsLink").href =
+  "obs?token=" + encodeURIComponent(new URLSearchParams(location.search).get("token") || "");
 drawMap();
 connect();
 </script>
