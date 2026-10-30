@@ -29,7 +29,7 @@ Environment variables:
   ROSBRIDGE_URL     default ws://rosbridge-proxy:80
   ROSBRIDGE_TOKEN   bearer token checked by rosbridge-proxy (required)
   REGIE_TOKEN       secret in the page URL (required)
-  OBS_URL           obs-agent domain, e.g. https://obs.example.com (optional)
+  OBS_URL           obs-agent domain, e.g. obs.example.com (https:// added if missing, optional)
   OBS_TOKEN         secret in the overlay URL, same as obs-agent (optional)
   HTTP_PORT         page port, default 8097
   HISTORY           events kept for a page opened later, default 300
@@ -50,7 +50,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ROSBRIDGE_URL   = os.environ.get("ROSBRIDGE_URL", "ws://rosbridge-proxy:80")
 ROSBRIDGE_TOKEN = os.environ.get("ROSBRIDGE_TOKEN", "")
 REGIE_TOKEN     = os.environ.get("REGIE_TOKEN", "")
-OBS_URL         = os.environ.get("OBS_URL", "").rstrip("/")
+OBS_URL         = os.environ.get("OBS_URL", "").strip().rstrip("/")
+if OBS_URL and "://" not in OBS_URL:
+    OBS_URL = "https://" + OBS_URL   # "obs.example.com" alone would be a relative redirect
 OBS_TOKEN       = os.environ.get("OBS_TOKEN", "")
 HTTP_PORT       = int(os.environ.get("HTTP_PORT", "8097"))
 HISTORY         = int(os.environ.get("HISTORY", "300"))
