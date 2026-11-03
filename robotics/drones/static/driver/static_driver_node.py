@@ -16,6 +16,12 @@ Sensor flow (drone → brain):
                         Segments are transcribed one at a time, in arrival
                         order: "ok nao" then "quelle heure est-il" must reach
                         the wake word gate in that order.
+                        A segment marked "wake": "local" follows a wake word the
+                        drone detected itself (WAKE_MODE=local): its text goes to
+                        /bodies/{id}/sensors/speech_after_wake instead, which
+                        body_gateway does not filter.
+  /drones/{id}/wake     (String JSON {model, score, threshold}, WAKE_MODE=local)
+                        → /bodies/{id}/sensors/wake (same JSON, relayed as-is)
   /drones/{id}/image    (String JSON {jpeg, width, height, reason})
                         → /bodies/{id}/sensors/image (same JSON, relayed as-is)
   /drones/{id}/speaking (Bool) → /bodies/{id}/sensors/speaking (Bool)
@@ -77,6 +83,8 @@ class StaticDriverNode(Node):
 
         # ── Publishers: drone sensors → ROS 2 ────────────────────────────────
         self.pub_speech    = self.create_publisher(String, f"{ns}/sensors/speech",          10)
+        self.pub_woken     = self.create_publisher(String, f"{ns}/sensors/speech_after_wake", 10)
+        self.pub_wake      = self.create_publisher(String, f"{ns}/sensors/wake",            10)
         self.pub_direction = self.create_publisher(String, f"{ns}/sensors/sound_direction", 10)
         self.pub_image     = self.create_publisher(String, f"{ns}/sensors/image",           10)
         self.pub_speaking  = self.create_publisher(Bool,   f"{ns}/sensors/speaking",        10)
@@ -100,6 +108,7 @@ class StaticDriverNode(Node):
         self.create_subscription(String, f"{drone}/audio",    self._on_audio,    10)
         self.create_subscription(String, f"{drone}/image",    self._on_image,    10)
         self.create_subscription(Bool,   f"{drone}/speaking", self._on_speaking, 10)
+        self.create_subscription(String, f"{drone}/wake",     self._on_wake,     10)
 
         # ── Transcription worker: one segment at a time, in order ────────────
         self._stt_q: queue.Queue = queue.Queue(maxsize=20)
@@ -180,7 +189,7 @@ class StaticDriverNode(Node):
         if not WHISPER_URL or not data.get("wav"):
             return
         try:
-            self._stt_q.put_nowait(data["wav"])
+            self._stt_q.put_nowait((data["wav"], data.get("wake") == "local"))
         except queue.Full:
             self.get_logger().warn("Whisper en retard — segment audio abandonné")
 
@@ -188,9 +197,9 @@ class StaticDriverNode(Node):
         # A thread per segment let a short "ok nao" come back after the
         # question that followed it: the question was then dropped by the gate.
         while True:
-            self._transcribe_and_publish(self._stt_q.get())
+            self._transcribe_and_publish(*self._stt_q.get())
 
-    def _transcribe_and_publish(self, b64_audio: str):
+    def _transcribe_and_publish(self, b64_audio: str, after_wake: bool = False):
         t0 = time.monotonic()
         try:
             text = speech_services.transcribe(WHISPER_URL, base64.b64decode(b64_audio),
@@ -202,10 +211,11 @@ class StaticDriverNode(Node):
             self.get_logger().warn(f"_transcribe_and_publish error: {e}")
             return
         if speech_services.is_meaningful(text):
-            self.get_logger().info(f"STT [{DRONE_ID}] ({time.monotonic() - t0:.1f} s): {text}")
+            self.get_logger().info(f"STT [{DRONE_ID}] ({time.monotonic() - t0:.1f} s)"
+                                   + (" après mot de réveil" if after_wake else "") + f": {text}")
             out = String()
             out.data = text
-            self.pub_speech.publish(out)
+            (self.pub_woken if after_wake else self.pub_speech).publish(out)
         else:
             self.get_logger().info("Transcription vide — rien à envoyer")
 
@@ -220,6 +230,11 @@ class StaticDriverNode(Node):
     def _on_speaking(self, msg: Bool):
         self._seen()
         self.pub_speaking.publish(msg)
+
+    def _on_wake(self, msg: String):
+        self._seen()
+        self.get_logger().info(f"[{DRONE_ID}] Mot de réveil détecté sur le drone : {msg.data}")
+        self.pub_wake.publish(msg)
 
     # ─────────────────────────────────────────────────────────────────────────
     # /say → edge-tts → /drones/{id}/audio_out

@@ -92,6 +92,8 @@ Whisper and edge-tts calls live in `robotics/shared/speech_services.py`, shared 
 |---|---|---|
 | `/drones/{id}/audio` | `/bodies/{id}/sensors/sound_direction` | `{"azimuth_deg", "source"}`, published at once |
 | `/drones/{id}/audio` | `/bodies/{id}/sensors/speech` | Whisper ASR (same filter as the NAO: > 3 characters) |
+| `/drones/{id}/audio` with `"wake": "local"` | `/bodies/{id}/sensors/speech_after_wake` | same, for a sentence that follows a wake word detected on the drone (`WAKE_MODE=local`): body_gateway does not filter it |
+| `/drones/{id}/wake` | `/bodies/{id}/sensors/wake` | relayed as-is (`{"model", "score", "threshold"}`), shown in the régie at once |
 | `/drones/{id}/image` | `/bodies/{id}/sensors/image` | relayed as-is (no vision analysis yet) |
 | `/drones/{id}/speaking` | `/bodies/{id}/sensors/speaking` | relayed as-is |
 | `/drones/{id}/status` (and any other message) | `/bodies/{id}/connected` | `true` on first message, `false` after `DRONE_STATUS_TIMEOUT` s of silence |
@@ -286,6 +288,8 @@ Formats defined by `robotics/drones/static/onboard/` (see its [README](../roboti
 | `/bodies/{id}/actuators/move` | body_gateway | naoqi_driver | Walking command |
 | `/bodies/{id}/sensors/speech` | naoqi_driver / static_driver | body_gateway | STT transcription |
 | `/bodies/{id}/sensors/sound_direction` | static_driver | body_gateway | `{"azimuth_deg", "source"}` (JSON) |
+| `/bodies/{id}/sensors/wake` | static_driver | body_gateway | wake word detected on the drone (JSON `{"model", "score", "threshold"}`) |
+| `/bodies/{id}/sensors/speech_after_wake` | static_driver | body_gateway | STT of the sentence after that wake word (not filtered) |
 | `/bodies/{id}/sensors/image` | static_driver | *(none yet)* | camera image (JSON, as sent by the drone) |
 | `/bodies/{id}/sensors/speaking` | static_driver | cognitive_renderer (NAO mimics the voice) | speaker playing (Bool) |
 | `/bodies/{id}/sensors/battery` | naoqi_driver | body_gateway | Battery level |

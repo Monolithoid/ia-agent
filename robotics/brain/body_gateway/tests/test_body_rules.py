@@ -100,6 +100,15 @@ class TestWakeWord(unittest.TestCase):
         # Without aliases, a mishearing is ignored.
         self.assertIsNone(self.gate.filter("s", "Ok, now. Quelle heure est-il ?", now=0))
 
+    def test_strip_after_local_wake(self):
+        # Speech after a wake word detected on the drone: never ignored.
+        self.assertEqual(self.gate.strip("Quelle heure est-il ?"), "Quelle heure est-il ?")
+        # The pre-roll may keep "ok nao": cut only at the start.
+        self.assertEqual(self.gate.strip("Ok Nao, quelle heure est-il ?"), "quelle heure est-il ?")
+        self.assertEqual(self.gate.strip("Ok nao."), "")
+        self.assertEqual(self.gate.strip("Dis bonjour, ok nao"), "Dis bonjour, ok nao")
+        self.assertFalse(self.gate.armed("s", now=0))
+
 
 class TestDirection(unittest.TestCase):
 

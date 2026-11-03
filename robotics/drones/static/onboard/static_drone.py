@@ -8,6 +8,7 @@ VPS (même principe que le NAO, ADR 002) et assure :
 
     - signal de vie        → /drones/{id}/status        (toutes les 30 s)
     - écoute               → /drones/{id}/audio         (WAV base64 + angle)
+    - mot de réveil local  → /drones/{id}/wake          (WAKE_MODE=local)
     - parole               ← /drones/{id}/audio_out     (MP3 base64)
                            → /drones/{id}/speaking      (true / false)
     - image                → /drones/{id}/image         (JPEG base64)
@@ -39,6 +40,7 @@ import wave
 import numpy as np
 
 import direction
+import wakeword
 
 log = logging.getLogger("static_drone")
 
@@ -48,6 +50,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # github.com/respeaker/usb_4_mic_array).
 RESPEAKER_VID = 0x2886
 RESPEAKER_PID = 0x0018
+
+# WAKE_MODE=local : après la détection, la parole des premières secondes peut
+# encore être la fin de « nao » et ne démarre pas la phrase.
+WAKE_TAIL_S = 0.3
 
 
 # ======================================================================
@@ -104,6 +110,15 @@ class Config:
         self.max_record_s = _env_float("MAX_RECORD_S", 15)
         self.pre_roll_s = _env_float("PRE_ROLL_S", 0.3)
         self.block_ms = _env_int("BLOCK_MS", 30)
+
+        # Mot de réveil : server = tout est envoyé, body-gateway cherche « ok nao »
+        # dans le texte ; local = openWakeWord sur le drone, seule la phrase qui
+        # suit est envoyée.
+        self.wake_mode = _env("WAKE_MODE", "server").lower()
+        self.wake_model = _env("WAKE_MODEL", "ok_nao")
+        self.wake_threshold = _env_float("WAKE_THRESHOLD", 0.5)
+        self.wake_listen_s = _env_float("WAKE_LISTEN_S", 5)
+        self.wake_pre_roll_s = _env_float("WAKE_PRE_ROLL_S", 0.5)
 
         # ReSpeaker
         self.respeaker = _env("RESPEAKER", "auto").lower()       # auto | 0 | 1
@@ -478,6 +493,7 @@ class StaticDrone:
         self.channels = 1
         self.source = direction.SOURCE_NONE
         self.sample_rate = cfg.sample_rate
+        self.wake = None            # wakeword.WakeWordDetector si WAKE_MODE=local
         self._audio_q = queue.Queue(maxsize=200)
         self._play_lock = threading.Lock()
         self._rms_peak = 0.0
@@ -535,60 +551,151 @@ class StaticDrone:
                                                      self.cfg.sample_rate, info)
         log.info("Entrée audio : %s (%d canaux, %d Hz)", info["name"], self.channels, rate)
 
+        if self.cfg.wake_mode == "local":
+            model, name = wakeword.load_model(self.cfg.wake_model, os.path.join(HERE, "models"))
+            self.wake = wakeword.WakeWordDetector(model, name, self.cfg.wake_threshold, rate)
+            log.info("Mot de réveil local : modèle %s, seuil %.2f", name, self.cfg.wake_threshold)
+
         block = int(rate * self.cfg.block_ms / 1000)
-        pre_roll = collections.deque(maxlen=max(1, int(self.cfg.pre_roll_s * 1000 / self.cfg.block_ms)))
+        with sd.InputStream(device=device, channels=self.channels, samplerate=rate,
+                            blocksize=block, dtype="int16", callback=self._audio_callback):
+            if self.wake is not None:
+                self._listen_after_wake(rate)
+            else:
+                self._listen_all(rate)
+
+    def _blocks(self, rate):
+        """Blocs reçus : (frames, mono, horloge audio), ou None pendant que le drone parle."""
+        # Horloge audio (somme des blocs reçus) : insensible aux retards de traitement.
+        now = 0.0
+        while not self.stop.is_set():
+            try:
+                frames = self._audio_q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            now += frames.shape[0] / float(rate)
+            if self.speaking.is_set() and self.mute_while_speaking():
+                yield None
+                continue
+            yield frames, frames[:, min(self.cfg.record_channel, frames.shape[1] - 1)], now
+
+    def _blocks_for(self, seconds):
+        return max(1, int(seconds * 1000 / self.cfg.block_ms))
+
+    def _listen_all(self, rate):
+        """WAKE_MODE=server : chaque segment de parole est envoyé au VPS."""
+        pre_roll = collections.deque(maxlen=self._blocks_for(self.cfg.pre_roll_s))
         recording = None            # liste de blocs mono pendant un enregistrement
         levels = None               # énergie cumulée par micro
         doas = []
-        # Horloge audio (somme des blocs reçus) : insensible aux retards de traitement.
-        now = t_start = t_voice = 0.0
+        t_start = t_voice = 0.0
         wall_start = 0.0
         voiced_s = 0.0
 
-        with sd.InputStream(device=device, channels=self.channels, samplerate=rate,
-                            blocksize=block, dtype="int16", callback=self._audio_callback):
-            while not self.stop.is_set():
-                try:
-                    frames = self._audio_q.get(timeout=0.5)
-                except queue.Empty:
+        for block in self._blocks(rate):
+            if block is None:
+                recording = None
+                pre_roll.clear()
+                continue
+            frames, mono, now = block
+            speech = self._is_speech(mono)
+
+            if recording is None:
+                pre_roll.append(mono)
+                if not speech:
                     continue
-                now += frames.shape[0] / float(rate)
+                recording = list(pre_roll)
+                pre_roll.clear()
+                levels = np.zeros(max(len(self.cfg.mics), 1))
+                doas = []
+                t_start = t_voice = now
+                wall_start = time.monotonic()
+                voiced_s = 0.0
+                log.info("Parole détectée")
+            else:
+                recording.append(mono)
 
-                if self.speaking.is_set() and self.mute_while_speaking():
-                    recording = None
-                    pre_roll.clear()
-                    continue
+            if speech:
+                t_voice = now
+                voiced_s += frames.shape[0] / float(rate)
+                self._sample_direction(frames, levels, doas)
 
-                mono = frames[:, min(self.cfg.record_channel, frames.shape[1] - 1)]
-                speech = self._is_speech(mono)
-
-                if recording is None:
-                    pre_roll.append(mono)
-                    if not speech:
-                        continue
-                    recording = list(pre_roll)
-                    pre_roll.clear()
-                    levels = np.zeros(max(len(self.cfg.mics), 1))
-                    doas = []
-                    t_start = t_voice = now
-                    wall_start = time.monotonic()
-                    voiced_s = 0.0
-                    log.info("Parole détectée")
+            if now - t_voice >= self.cfg.silence_s or now - t_start >= self.cfg.max_record_s:
+                if voiced_s >= self.cfg.min_speech_s:
+                    found = self._final_direction(levels, doas, wall_start)
+                    self.publish_audio(np.concatenate(recording), found)
                 else:
-                    recording.append(mono)
+                    log.info("Trop court, ignoré (%.2f s)", voiced_s)
+                recording = None
 
-                if speech:
-                    t_voice = now
-                    voiced_s += frames.shape[0] / float(rate)
-                    self._sample_direction(frames, levels, doas)
+    def _listen_after_wake(self, rate):
+        """WAKE_MODE=local : écoute continue, seule la phrase qui suit « ok nao » est envoyée.
 
-                if now - t_voice >= self.cfg.silence_s or now - t_start >= self.cfg.max_record_s:
-                    if voiced_s >= self.cfg.min_speech_s:
-                        found = self._final_direction(levels, doas, wall_start)
-                        self.publish_audio(np.concatenate(recording), found)
-                    else:
-                        log.info("Trop court, ignoré (%.2f s)", voiced_s)
+        Comme une enceinte connectée : un tampon circulaire garde les dernières
+        WAKE_PRE_ROLL_S secondes ; au mot de réveil, l'enregistrement part de ce
+        tampon (« ok nao quelle heure… » dit d'une traite n'est pas coupé), attend
+        le début de la phrase jusqu'à WAKE_LISTEN_S, puis s'arrête après SILENCE_S
+        de silence.
+        """
+        pre_roll = collections.deque(maxlen=self._blocks_for(self.cfg.wake_pre_roll_s))
+        recording = None
+        muted = False
+        levels = None
+        doas = []
+        score = 0.0
+        t_wake = t_voice = 0.0
+        wall_start = 0.0
+        voiced_s = 0.0
+
+        for block in self._blocks(rate):
+            if block is None:
+                if not muted:
+                    # Le drone parle : ni réveil sur sa propre voix, ni phrase en cours.
                     recording = None
+                    pre_roll.clear()
+                    self.wake.reset()
+                    muted = True
+                continue
+            muted = False
+            frames, mono, now = block
+
+            if recording is None:
+                pre_roll.append(mono)
+                found = self.wake.process(mono)
+                if found is None:
+                    continue
+                score = found
+                self.wake.reset()
+                self.publish_wake(score)
+                recording = list(pre_roll)
+                pre_roll.clear()
+                levels = np.zeros(max(len(self.cfg.mics), 1))
+                doas = []
+                t_wake, t_voice = now, None
+                wall_start = time.monotonic()
+                voiced_s = 0.0
+                continue
+
+            recording.append(mono)
+            # La fin de « nao » peut encore sonner juste après la détection : elle
+            # reste dans l'enregistrement mais ne compte pas comme début de phrase.
+            if self._is_speech(mono) and (t_voice is not None or now - t_wake >= WAKE_TAIL_S):
+                t_voice = now
+                voiced_s += frames.shape[0] / float(rate)
+                self._sample_direction(frames, levels, doas)
+
+            if t_voice is None:
+                if now - t_wake >= self.cfg.wake_listen_s:
+                    log.info("Rien entendu après le mot de réveil")
+                    recording = None
+                continue
+            if now - t_voice >= self.cfg.silence_s or now - t_wake >= self.cfg.max_record_s:
+                if voiced_s >= self.cfg.min_speech_s:
+                    found = self._final_direction(levels, doas, wall_start)
+                    self.publish_audio(np.concatenate(recording), found, wake_score=score)
+                else:
+                    log.info("Trop court, ignoré (%.2f s)", voiced_s)
+                recording = None
 
     def _is_speech(self, mono):
         if self.respeaker is not None:
@@ -632,7 +739,7 @@ class StaticDrone:
                 return round(angle, 1), self.source
         return None, direction.SOURCE_NONE
 
-    def publish_audio(self, pcm, angle_source):
+    def publish_audio(self, pcm, angle_source, wake_score=None):
         angle, source = angle_source
         wav = pcm_to_wav(pcm, self.sample_rate)
         payload = {
@@ -640,9 +747,21 @@ class StaticDrone:
             "azimuth_deg": None if angle is None else round(angle, 1),
             "direction_source": source,
         }
+        if wake_score is not None:
+            # Phrase qui suit un mot de réveil détecté ici : body-gateway ne la
+            # refiltre pas.
+            payload["wake"] = "local"
+            payload["wake_score"] = round(wake_score, 2)
         sent = self.bridge.publish(self.cfg.topic("audio"), {"data": json.dumps(payload)})
         log.info("Audio %s : %.1f s, angle %s (%s)", "envoyé" if sent else "perdu (hors ligne)",
                  len(pcm) / float(self.sample_rate), payload["azimuth_deg"], source)
+
+    def publish_wake(self, score):
+        """Prévient le VPS dès la détection : la régie affiche « ok nao » tout de suite."""
+        log.info("Mot de réveil entendu (%s, score %.2f)", self.wake.name, score)
+        self.bridge.publish(self.cfg.topic("wake"), {"data": json.dumps({
+            "model": self.wake.name, "score": round(score, 2),
+            "threshold": self.cfg.wake_threshold})})
 
     # ------------------------------------------------------------------
     # Parole
@@ -713,6 +832,7 @@ class StaticDrone:
             "respeaker": self.respeaker is not None,
             "aec": self.respeaker is not None and self.cfg.respeaker_aec,
             "direction_mode": self.source,
+            "wake_mode": self.cfg.wake_mode,
             "camera_hfov_deg": self.cfg.camera_hfov if self.camera.available else None,
             "speaking": self.speaking.is_set(),
             "uptime_s": int(time.monotonic() - self.started),
@@ -734,6 +854,7 @@ class StaticDrone:
         b.advertise(self.cfg.topic("status"), "std_msgs/String")
         b.advertise(self.cfg.topic("audio"), "std_msgs/String")
         b.advertise(self.cfg.topic("speaking"), "std_msgs/Bool")
+        b.advertise(self.cfg.topic("wake"), "std_msgs/String")
         b.advertise(self.cfg.topic("image"), "std_msgs/String")
         b.subscribe(self.cfg.topic("audio_out"), "std_msgs/String", self.on_audio_out)
         b.subscribe(self.cfg.topic("image_request"), "std_msgs/Empty", self.on_image_request)
@@ -770,6 +891,9 @@ def main():
     cfg = Config()
     if not cfg.rosbridge_url:
         log.error("ROSBRIDGE_URL (ou DOMAIN) est obligatoire")
+        return 2
+    if cfg.wake_mode not in ("server", "local"):
+        log.error("WAKE_MODE=%s : server ou local attendu", cfg.wake_mode)
         return 2
     if not cfg.rosbridge_token:
         log.warning("ROSBRIDGE_TOKEN vide : rosbridge-proxy refusera la connexion")
