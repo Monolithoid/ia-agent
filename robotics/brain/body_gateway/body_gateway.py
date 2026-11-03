@@ -149,7 +149,7 @@ Réponds UNIQUEMENT en JSON strict — aucun texte en dehors du JSON :
   "energy": "very-low|low|medium|high|very-high",
   "actions": [
     {{"body": "{speaker}", "type": "speech",  "text": "ce que tu dis à voix haute"}},
-    {{"body": "{nao}", "type": "motion",  "joint": "HeadPitch", "angle": 0.1}},
+    {{"body": "{nao}", "type": "motion",  "joints": ["RShoulderPitch"], "angles": [-1.0]}},
     {{"body": "{nao}", "type": "leds",    "color": "blue|green|white|red|yellow|purple|off"}},
     {{"body": "{nao}", "type": "look",    "yaw": 0.0}}
   ]
@@ -160,9 +160,12 @@ de RShoulderPitch ; pour ouvrir les bras, le bout « bras écarté » des deux S
 Plusieurs articulations d'un même membre : "joints": [...], "angles": [...].
 NAO reste assis ; articulations et plages autorisées :
 {motor_ranges}
+{motion_examples}
 Une articulation non donnée garde sa position de départ ; NAO revient seul au repos.
-Quand des articulations sont disponibles, chaque réponse contient au moins une action \
-"motion" : un geste de la tête ou d'un bras qui accompagne ce que tu dis.
+Quand des articulations sont disponibles, chaque réponse contient des actions "motion" \
+(une par membre : tête, bras gauche, bras droit) qui accompagnent ce que tu dis.
+Sois expressif : préfère les grands gestes près des bouts de plage aux petits mouvements, \
+et combine tête et bras dès que l'émotion s'y prête.
 Le champ "energy" reflète ton niveau d'énergie physique :
   very-low = épuisé, somnolent — very-high = hyperactif, électrisé.
 Inclure toujours au moins une action "speech" (body "{speaker}"). Les actions "leds" et "look" sont optionnelles.
@@ -937,6 +940,7 @@ class BodyGatewayNode(Node):
             persona=persona.load_persona(BRAIN_PERSONA_FILE),
             bodies=body_rules.describe_bodies(BODY_REGISTRY, speaker),
             motor_ranges=body_rules.motor_ranges_label(self._motor_ranges.get(nao, {})),
+            motion_examples=body_rules.motion_examples(self._motor_ranges.get(nao, {}), nao),
             speaker=speaker, nao=nao,
         )
 
