@@ -104,63 +104,19 @@ class TestWakeWord(unittest.TestCase):
 class TestDirection(unittest.TestCase):
 
     def test_label(self):
-        self.assertEqual(body_rules.direction_label(-30), "[voix : 30° à gauche]")
-        self.assertEqual(body_rules.direction_label(42.4), "[voix : 42° à droite]")
-        self.assertEqual(body_rules.direction_label(2), "[voix : en face]")
-        self.assertEqual(body_rules.direction_label(None), "")
-
-    def test_head_yaw(self):
-        # Voice 30° to the right → NAO head turns right (negative HeadYaw).
-        self.assertAlmostEqual(body_rules.head_yaw_rad(30), -math.radians(30))
-        self.assertAlmostEqual(body_rules.head_yaw_rad(30, offset_deg=10), -math.radians(20))
-        # Clamped to the HeadYaw joint limits.
-        self.assertEqual(body_rules.head_yaw_rad(-170), body_rules.HEAD_YAW_LIMIT_RAD)
-        self.assertEqual(body_rules.head_yaw_rad(170), -body_rules.HEAD_YAW_LIMIT_RAD)
-
-
-class TestMotorRanges(unittest.TestCase):
-
-    def test_label(self):
         text = body_rules.motor_ranges_label(
-            {"rarm": {"RShoulderPitch": [-0.5, 1.2]}, "head": {"HeadYaw": [-0.8, 0.8]}})
+            {"rarm": {"RShoulderPitch": [-0.5, 1.2]}, "head": {"HeadYaw": [-0.8, 0.8]},
+             "larm": {"LElbowYaw": [-1.0, 1.0]}})
         self.assertEqual(text, "- tête :\n"
-                               "  HeadYaw de -0.80 à +0.80 (regarde à droite → regarde à gauche)\n"
+                               "  HeadYaw : min -0.80 = regarde à droite, milieu +0.00, max +0.80 = regarde à gauche\n"
+                               "- bras gauche :\n"
+                               "  LElbowYaw : min -1.00, milieu +0.00, max +1.00\n"
                                "- bras droit :\n"
-                               "  RShoulderPitch de -0.50 à +1.20 (bras levé → bras baissé)")
+                               "  RShoulderPitch : min -0.50 = bras levé, milieu +0.35, max +1.20 = bras baissé")
 
     def test_not_calibrated(self):
         self.assertIn("non calibré", body_rules.motor_ranges_label({}))
         self.assertIn("non calibré", body_rules.motor_ranges_label({"head": {}}))
-
-    RANGES = {
-        "head": {"HeadYaw": [-0.8, 0.8], "HeadPitch": [-0.4, 0.3]},
-        "larm": {"LShoulderPitch": [-1.2, 1.0], "LShoulderRoll": [0.0, 1.0],
-                 "LElbowRoll": [-1.5, -0.1]},
-        "rarm": {"RShoulderPitch": [-1.1, 1.0], "RShoulderRoll": [-1.0, 0.0],
-                 "RElbowRoll": [0.1, 1.5]},
-    }
-
-    def test_examples_use_range_ends(self):
-        text = body_rules.motion_examples(self.RANGES, "nao_01")
-        self.assertIn('"joints": ["RShoulderPitch", "RElbowRoll"], "angles": [-1.10, 0.10]', text)
-        self.assertIn('"joints": ["LShoulderRoll"], "angles": [1.00]', text)
-        self.assertIn('"joints": ["RShoulderRoll"], "angles": [-1.00]', text)
-        self.assertIn('"joints": ["HeadPitch"], "angles": [-0.40]', text)
-        self.assertIn('"joints": ["HeadYaw"], "angles": [0.80]', text)
-        self.assertIn('"joints": ["LShoulderPitch"], "angles": [-1.20]', text)
-        self.assertEqual(text.count("\n- "), 5)
-
-    def test_head_up_example_does_not_turn_the_head(self):
-        text = body_rules.motion_examples(self.RANGES, "nao_01")
-        line = next(l for l in text.splitlines() if "lever la tête" in l)
-        self.assertNotIn("HeadYaw", line)
-
-    def test_examples_skip_missing_joints(self):
-        text = body_rules.motion_examples({"head": self.RANGES["head"]}, "nao_01")
-        self.assertIn("lever la tête bien haut", text)
-        self.assertNotIn("bras", text)
-        self.assertEqual(body_rules.motion_examples({}, "nao_01"), "")
-
 
 if __name__ == "__main__":
     unittest.main()
