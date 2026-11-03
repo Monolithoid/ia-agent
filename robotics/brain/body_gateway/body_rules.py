@@ -252,3 +252,59 @@ def motor_ranges_label(ranges: dict) -> str:
     if not lines:
         return "Aucune articulation disponible (NAO non calibré) : n'envoie pas d'action motion."
     return "\n".join(lines)
+
+
+# Ample gestures shown to the LLM as examples, built from the calibrated range
+# ends.  With a single small example the LLM copies it (a 0.1 rad nod); these
+# show full-range gestures, several joints of one limb, and head and arms
+# together.  One motion action per limb: the driver merges orders of one chain
+# received together into a single target.
+# (description, [(joint, meaning of the range end to reach), ...] per action)
+MOTION_EXAMPLES = (
+    ("lever le bras droit tout en haut, coude tendu",
+     [[("RShoulderPitch", "bras levé"), ("RElbowRoll", "coude tendu")]]),
+    ("ouvrir grand les deux bras",
+     [[("LShoulderRoll", "bras écarté")], [("RShoulderRoll", "bras écarté")]]),
+    ("regarder tout en haut à gauche",
+     [[("HeadYaw", "regarde à gauche"), ("HeadPitch", "tête levée")]]),
+    ("baisser la tête et lever le bras gauche",
+     [[("HeadPitch", "tête baissée")], [("LShoulderPitch", "bras levé")]]),
+)
+
+
+def _range_end(ranges: dict, joint: str, meaning: str) -> float | None:
+    """End of `joint`'s range that means `meaning` (JOINT_SENSE), None if unknown."""
+    for joints in ranges.values():
+        if isinstance(joints, dict) and joint in joints:
+            lo, hi = joints[joint]
+            low, high = JOINT_SENSE.get(joint, ("", ""))
+            if meaning == low:
+                return lo
+            if meaning == high:
+                return hi
+    return None
+
+
+def motion_examples(ranges: dict, nao: str) -> str:
+    """Example gestures at the ends of the calibrated ranges, '' if none fits.
+
+    An example is left out when one of its joints is not in the motor profile.
+    """
+    if not isinstance(ranges, dict):
+        return ""
+    lines = []
+    for text, actions in MOTION_EXAMPLES:
+        rendered = []
+        for action in actions:
+            angles = [_range_end(ranges, j, m) for j, m in action]
+            if None in angles:
+                break
+            joints = ", ".join(f'"{j}"' for j, _ in action)
+            values = ", ".join(f"{a:.2f}" for a in angles)
+            rendered.append(f'{{"body": "{nao}", "type": "motion", '
+                            f'"joints": [{joints}], "angles": [{values}]}}')
+        else:
+            lines.append(f"- {text} : " + " ".join(rendered))
+    if not lines:
+        return ""
+    return "Exemples de gestes amples (bouts de plage) :\n" + "\n".join(lines)

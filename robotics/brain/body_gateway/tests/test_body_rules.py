@@ -132,6 +132,29 @@ class TestMotorRanges(unittest.TestCase):
         self.assertIn("non calibré", body_rules.motor_ranges_label({}))
         self.assertIn("non calibré", body_rules.motor_ranges_label({"head": {}}))
 
+    RANGES = {
+        "head": {"HeadYaw": [-0.8, 0.8], "HeadPitch": [-0.4, 0.3]},
+        "larm": {"LShoulderPitch": [-1.2, 1.0], "LShoulderRoll": [0.0, 1.0],
+                 "LElbowRoll": [-1.5, -0.1]},
+        "rarm": {"RShoulderPitch": [-1.1, 1.0], "RShoulderRoll": [-1.0, 0.0],
+                 "RElbowRoll": [0.1, 1.5]},
+    }
+
+    def test_examples_use_range_ends(self):
+        text = body_rules.motion_examples(self.RANGES, "nao_01")
+        self.assertIn('"joints": ["RShoulderPitch", "RElbowRoll"], "angles": [-1.10, 0.10]', text)
+        self.assertIn('"joints": ["LShoulderRoll"], "angles": [1.00]', text)
+        self.assertIn('"joints": ["RShoulderRoll"], "angles": [-1.00]', text)
+        self.assertIn('"joints": ["HeadYaw", "HeadPitch"], "angles": [0.80, -0.40]', text)
+        self.assertIn('"joints": ["LShoulderPitch"], "angles": [-1.20]', text)
+        self.assertEqual(text.count("\n- "), 4)
+
+    def test_examples_skip_missing_joints(self):
+        text = body_rules.motion_examples({"head": self.RANGES["head"]}, "nao_01")
+        self.assertIn("regarder tout en haut à gauche", text)
+        self.assertNotIn("bras", text)
+        self.assertEqual(body_rules.motion_examples({}, "nao_01"), "")
+
 
 if __name__ == "__main__":
     unittest.main()
