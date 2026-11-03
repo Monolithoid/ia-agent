@@ -250,63 +250,10 @@ def motor_ranges_label(ranges: dict) -> str:
             if low:
                 # Both ends and the middle, each with its meaning: the LLM picks
                 # a value in between from the intensity it wants.
-                lines.append(f"  {joint} : {lo:+.2f} = {low}, {(lo + hi) / 2:+.2f} = milieu, "
-                             f"{hi:+.2f} = {high}")
+                lines.append(f"  {joint} : min {lo:+.2f} = {low}, milieu {(lo + hi) / 2:+.2f}, "
+                             f"max {hi:+.2f} = {high}")
             else:
-                lines.append(f"  {joint} de {lo:+.2f} à {hi:+.2f}")
+                lines.append(f"  {joint} : min {lo:+.2f}, milieu {(lo + hi) / 2:+.2f}, max {hi:+.2f}")
     if not lines:
         return "Aucune articulation disponible (NAO non calibré) : n'envoie pas d'action motion."
     return "\n".join(lines)
-
-
-# Gesture examples for the LLM prompt: joints and the direction to go, never an
-# angle.  Examples with angles were copied as is (fixed ones, then randomly
-# drawn ones), so the LLM now has to read the angle off the range lines
-# (motor_ranges_label), where it picks how far towards the end it goes.
-# Head gestures move one joint each: a combined "up and to the left" example
-# was copied for "lève la tête" and turned the head to the left.
-# (description, [(joint, meaning of the range end to go towards), ...] per action)
-MOTION_EXAMPLES = (
-    ("lever le bras droit",
-     [[("RShoulderPitch", "bras levé"), ("RElbowRoll", "coude tendu")]]),
-    ("lever le bras gauche",
-     [[("LShoulderPitch", "bras levé"), ("LElbowRoll", "coude tendu")]]),
-    ("ouvrir les bras",
-     [[("LShoulderRoll", "bras écarté")], [("RShoulderRoll", "bras écarté")]]),
-    ("hausser les épaules",
-     [[("LShoulderRoll", "bras écarté"), ("LElbowRoll", "coude plié")],
-      [("RShoulderRoll", "bras écarté"), ("RElbowRoll", "coude plié")]]),
-    ("lever la tête",
-     [[("HeadPitch", "tête levée")]]),
-    ("baisser la tête",
-     [[("HeadPitch", "tête baissée")]]),
-    ("tourner la tête vers la gauche",
-     [[("HeadYaw", "regarde à gauche")]]),
-    ("tendre le bras droit devant",
-     [[("RShoulderPitch", "bras levé"), ("RElbowRoll", "coude plié")]]),
-)
-
-
-def _has_end(ranges: dict, joint: str, meaning: str) -> bool:
-    """True if `joint` is in the profile and `meaning` names one end of its range."""
-    return meaning in JOINT_SENSE.get(joint, ()) and any(
-        isinstance(joints, dict) and joint in joints for joints in ranges.values())
-
-
-def motion_examples(ranges: dict) -> str:
-    """Example gestures as joints and directions (no angle), '' if none fits.
-
-    Gestures whose joints are not all in the motor profile are left out.
-    """
-    if not isinstance(ranges, dict):
-        return ""
-    lines = []
-    for text, actions in MOTION_EXAMPLES:
-        if not all(_has_end(ranges, j, m) for action in actions for j, m in action):
-            continue
-        parts = [", ".join(f"{j} vers « {m} »" for j, m in action) for action in actions]
-        lines.append(f"- {text} : " + " + ".join(parts))
-    if not lines:
-        return ""
-    return ("Exemples de gestes (articulations et direction ; l'angle, c'est toi qui le "
-            "choisis dans la plage) :\n" + "\n".join(lines))

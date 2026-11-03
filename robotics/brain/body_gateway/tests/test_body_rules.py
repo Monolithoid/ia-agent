@@ -4,7 +4,6 @@
 """
 
 import math
-import re
 import os
 import sys
 import unittest
@@ -109,41 +108,15 @@ class TestDirection(unittest.TestCase):
             {"rarm": {"RShoulderPitch": [-0.5, 1.2]}, "head": {"HeadYaw": [-0.8, 0.8]},
              "larm": {"LElbowYaw": [-1.0, 1.0]}})
         self.assertEqual(text, "- tête :\n"
-                               "  HeadYaw : -0.80 = regarde à droite, +0.00 = milieu, +0.80 = regarde à gauche\n"
+                               "  HeadYaw : min -0.80 = regarde à droite, milieu +0.00, max +0.80 = regarde à gauche\n"
                                "- bras gauche :\n"
-                               "  LElbowYaw de -1.00 à +1.00\n"
+                               "  LElbowYaw : min -1.00, milieu +0.00, max +1.00\n"
                                "- bras droit :\n"
-                               "  RShoulderPitch : -0.50 = bras levé, +0.35 = milieu, +1.20 = bras baissé")
+                               "  RShoulderPitch : min -0.50 = bras levé, milieu +0.35, max +1.20 = bras baissé")
 
     def test_not_calibrated(self):
         self.assertIn("non calibré", body_rules.motor_ranges_label({}))
         self.assertIn("non calibré", body_rules.motor_ranges_label({"head": {}}))
-
-    RANGES = {
-        "head": {"HeadYaw": [-0.8, 0.8], "HeadPitch": [-0.4, 0.3]},
-        "larm": {"LShoulderPitch": [-1.2, 1.0], "LShoulderRoll": [0.0, 1.0],
-                 "LElbowRoll": [-1.5, -0.1]},
-        "rarm": {"RShoulderPitch": [-1.1, 1.0], "RShoulderRoll": [-1.0, 0.0],
-                 "RElbowRoll": [0.1, 1.5]},
-    }
-
-    def test_examples_have_no_angle(self):
-        text = body_rules.motion_examples(self.RANGES)
-        self.assertIn("- lever le bras droit : RShoulderPitch vers « bras levé », "
-                      "RElbowRoll vers « coude tendu »", text)
-        self.assertIn("- ouvrir les bras : LShoulderRoll vers « bras écarté » + "
-                      "RShoulderRoll vers « bras écarté »", text)
-        self.assertIn("- lever la tête : HeadPitch vers « tête levée »\n", text)
-        self.assertEqual(text.count("\n- "), len(body_rules.MOTION_EXAMPLES))
-        self.assertIsNone(re.search(r"\d", text))
-        # Same text at every call: nothing random for the LLM to copy.
-        self.assertEqual(text, body_rules.motion_examples(self.RANGES))
-
-    def test_examples_skip_missing_joints(self):
-        text = body_rules.motion_examples({"head": self.RANGES["head"]})
-        self.assertEqual(text.count("\n- "), 3)   # lever, baisser, tourner la tête
-        self.assertNotIn("Shoulder", text)
-        self.assertEqual(body_rules.motion_examples({}), "")
 
 if __name__ == "__main__":
     unittest.main()

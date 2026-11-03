@@ -149,24 +149,25 @@ Réponds UNIQUEMENT en JSON strict — aucun texte en dehors du JSON :
   "energy": "very-low|low|medium|high|very-high",
   "actions": [
     {{"body": "{speaker}", "type": "speech",  "text": "ce que tu dis à voix haute"}},
-    {{"body": "{nao}", "type": "motion",  "joints": ["<articulation>", ...], "angles": [<radians>, ...]}},
+    {{"body": "{nao}", "type": "motion",  "joints": [...], "angles": [...]}},
     {{"body": "{nao}", "type": "leds",    "color": "blue|green|white|red|yellow|purple|off"}},
     {{"body": "{nao}", "type": "look",    "yaw": 0.0}}
   ]
 }}
-Une action "motion" donne la position d'une articulation du NAO, en radians, dans sa plage.
-Plusieurs articulations d'un même membre : "joints": [...], "angles": [...].
-NAO reste assis ; articulations et plages autorisées (chaque bout avec son sens, et le milieu) :
+Capacités de mouvement de NAO (assis), par membre : chaque articulation avec son min, \
+son milieu et son max en radians, et ce que fait chaque bout :
 {motor_ranges}
-{motion_examples}
-Pour chaque articulation, choisis toi-même l'angle n'importe où dans sa plage, pas seulement \
-au bout : pars du milieu et va vers le bout voulu d'autant plus loin que le geste est intense \
-(un quart du chemin pour un geste léger, la moitié pour un geste net, presque au bout pour un \
-geste enthousiaste). Fais varier cet angle d'une réponse à l'autre selon ton énergie et ton émotion.
+Syntaxe d'une action "motion" (un membre par action, une ou plusieurs de ses articulations) :
+  {{"body": "{nao}", "type": "motion", "joints": ["<articulation>", ...], "angles": [<radians>, ...]}}
+Cette syntaxe ne propose aucun geste : à chaque réponse, compose ton propre geste.
+  1. Choisis les membres et les articulations qui expriment ton émotion et ce que tu dis.
+  2. Pour chacune, choisis le bout de plage vers lequel aller (d'après son sens).
+  3. Calcule l'angle : milieu + amplitude × (bout − milieu), l'amplitude suivant ton "energy" :
+     very-low 0.1 à 0.2 · low 0.2 à 0.4 · medium 0.4 à 0.6 · high 0.6 à 0.8 · very-high 0.8 à 1.0.
+  L'angle reste toujours entre le min et le max.
 Une articulation non donnée garde sa position de départ ; NAO revient seul au repos.
-Quand des articulations sont disponibles, chaque réponse contient des actions "motion" \
-(une par membre : tête, bras gauche, bras droit) qui accompagnent ce que tu dis.
-Combine tête et bras dès que l'émotion s'y prête.
+Quand des articulations sont disponibles, chaque réponse contient au moins une action "motion" ; \
+combine tête et bras dès que l'émotion s'y prête.
 Quand on te demande un geste précis, ne bouge que les articulations qu'il concerne : \
 lever ou baisser la tête, c'est HeadPitch seul ; tourner la tête, c'est HeadYaw seul.
 Le champ "energy" reflète ton niveau d'énergie physique :
@@ -943,7 +944,6 @@ class BodyGatewayNode(Node):
             persona=persona.load_persona(BRAIN_PERSONA_FILE),
             bodies=body_rules.describe_bodies(BODY_REGISTRY, speaker),
             motor_ranges=body_rules.motor_ranges_label(self._motor_ranges.get(nao, {})),
-            motion_examples=body_rules.motion_examples(self._motor_ranges.get(nao, {})),
             speaker=speaker, nao=nao,
         )
 
