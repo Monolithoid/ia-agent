@@ -145,13 +145,19 @@ class TestMotorRanges(unittest.TestCase):
         self.assertIn('"joints": ["RShoulderPitch", "RElbowRoll"], "angles": [-1.10, 0.10]', text)
         self.assertIn('"joints": ["LShoulderRoll"], "angles": [1.00]', text)
         self.assertIn('"joints": ["RShoulderRoll"], "angles": [-1.00]', text)
-        self.assertIn('"joints": ["HeadYaw", "HeadPitch"], "angles": [0.80, -0.40]', text)
+        self.assertIn('"joints": ["HeadPitch"], "angles": [-0.40]', text)
+        self.assertIn('"joints": ["HeadYaw"], "angles": [0.80]', text)
         self.assertIn('"joints": ["LShoulderPitch"], "angles": [-1.20]', text)
-        self.assertEqual(text.count("\n- "), 4)
+        self.assertEqual(text.count("\n- "), 5)
+
+    def test_head_up_example_does_not_turn_the_head(self):
+        text = body_rules.motion_examples(self.RANGES, "nao_01")
+        line = next(l for l in text.splitlines() if "lever la tête" in l)
+        self.assertNotIn("HeadYaw", line)
 
     def test_examples_skip_missing_joints(self):
         text = body_rules.motion_examples({"head": self.RANGES["head"]}, "nao_01")
-        self.assertIn("regarder tout en haut à gauche", text)
+        self.assertIn("lever la tête bien haut", text)
         self.assertNotIn("bras", text)
         self.assertEqual(body_rules.motion_examples({}, "nao_01"), "")
 
