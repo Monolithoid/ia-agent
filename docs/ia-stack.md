@@ -211,6 +211,8 @@ Chat WebUI  ──"[message]"──►  nao_pipe.py (Pipe)
 3. Sélectionner le type **Pipe** → Enregistrer sous **NAO Brain**
 4. Le modèle **NAO Brain** apparaît dans la liste des modèles du chat
 
+**Tâches de fond d'Open WebUI** (titre, tags, suggestions de suite, requêtes de recherche) : Open WebUI les confie au modèle du chat, donc au Pipe. Depuis la version 0.8.0, le Pipe les reconnaît (argument `__task__`, ou prompt commençant par `### Task:`) et y répond lui-même par une valeur neutre : elles n'atteignent jamais `body-gateway`, NAO ne parle ni ne bouge dessus et elles n'apparaissent plus dans la régie. Pour avoir de vrais titres et tags, choisir un modèle Ollama dans **Admin Settings → Interface → Task Model (modèles externes)**.
+
 Le Pipe communique avec `body-gateway` via `chat-relay:8095` (valve `body_gateway_url`) : `chat-relay` est un proxy Caddy sur `ai-network` qui relaie vers le port 8095 de l'hôte, où écoute `body-gateway` en `network_mode: host`.
 
 ---
