@@ -268,8 +268,13 @@ def motor_ranges_label(ranges: dict) -> str:
         lines.append(f"- {CHAIN_LABELS[chain]} :")
         for joint, (lo, hi) in joints.items():
             low, high = JOINT_SENSE.get(joint, ("", ""))
-            sense = f" ({low} → {high})" if low else ""
-            lines.append(f"  {joint} de {lo:+.2f} à {hi:+.2f}{sense}")
+            if low:
+                # Both ends and the middle, each with its meaning: the LLM picks
+                # a value in between from the intensity it wants.
+                lines.append(f"  {joint} : min {lo:+.2f} = {low}, milieu {(lo + hi) / 2:+.2f}, "
+                             f"max {hi:+.2f} = {high}")
+            else:
+                lines.append(f"  {joint} : min {lo:+.2f}, milieu {(lo + hi) / 2:+.2f}, max {hi:+.2f}")
     if not lines:
         return "Aucune articulation disponible (NAO non calibré) : n'envoie pas d'action motion."
     return "\n".join(lines)

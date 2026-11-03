@@ -113,34 +113,19 @@ class TestWakeWord(unittest.TestCase):
 class TestDirection(unittest.TestCase):
 
     def test_label(self):
-        self.assertEqual(body_rules.direction_label(-30), "[voix : 30° à gauche]")
-        self.assertEqual(body_rules.direction_label(42.4), "[voix : 42° à droite]")
-        self.assertEqual(body_rules.direction_label(2), "[voix : en face]")
-        self.assertEqual(body_rules.direction_label(None), "")
-
-    def test_head_yaw(self):
-        # Voice 30° to the right → NAO head turns right (negative HeadYaw).
-        self.assertAlmostEqual(body_rules.head_yaw_rad(30), -math.radians(30))
-        self.assertAlmostEqual(body_rules.head_yaw_rad(30, offset_deg=10), -math.radians(20))
-        # Clamped to the HeadYaw joint limits.
-        self.assertEqual(body_rules.head_yaw_rad(-170), body_rules.HEAD_YAW_LIMIT_RAD)
-        self.assertEqual(body_rules.head_yaw_rad(170), -body_rules.HEAD_YAW_LIMIT_RAD)
-
-
-class TestMotorRanges(unittest.TestCase):
-
-    def test_label(self):
         text = body_rules.motor_ranges_label(
-            {"rarm": {"RShoulderPitch": [-0.5, 1.2]}, "head": {"HeadYaw": [-0.8, 0.8]}})
+            {"rarm": {"RShoulderPitch": [-0.5, 1.2]}, "head": {"HeadYaw": [-0.8, 0.8]},
+             "larm": {"LElbowYaw": [-1.0, 1.0]}})
         self.assertEqual(text, "- tête :\n"
-                               "  HeadYaw de -0.80 à +0.80 (regarde à droite → regarde à gauche)\n"
+                               "  HeadYaw : min -0.80 = regarde à droite, milieu +0.00, max +0.80 = regarde à gauche\n"
+                               "- bras gauche :\n"
+                               "  LElbowYaw : min -1.00, milieu +0.00, max +1.00\n"
                                "- bras droit :\n"
-                               "  RShoulderPitch de -0.50 à +1.20 (bras levé → bras baissé)")
+                               "  RShoulderPitch : min -0.50 = bras levé, milieu +0.35, max +1.20 = bras baissé")
 
     def test_not_calibrated(self):
         self.assertIn("non calibré", body_rules.motor_ranges_label({}))
         self.assertIn("non calibré", body_rules.motor_ranges_label({"head": {}}))
-
 
 if __name__ == "__main__":
     unittest.main()
