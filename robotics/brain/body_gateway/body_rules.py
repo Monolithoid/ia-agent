@@ -13,7 +13,6 @@ positif = à droite.  HeadYaw du NAO : radians, positif = vers la gauche du robo
 """
 
 import math
-import random
 import re
 import time
 import unicodedata
@@ -248,92 +247,66 @@ def motor_ranges_label(ranges: dict) -> str:
         lines.append(f"- {CHAIN_LABELS[chain]} :")
         for joint, (lo, hi) in joints.items():
             low, high = JOINT_SENSE.get(joint, ("", ""))
-            sense = f" ({low} → {high})" if low else ""
-            lines.append(f"  {joint} de {lo:+.2f} à {hi:+.2f}{sense}")
+            if low:
+                # Both ends and the middle, each with its meaning: the LLM picks
+                # a value in between from the intensity it wants.
+                lines.append(f"  {joint} : {lo:+.2f} = {low}, {(lo + hi) / 2:+.2f} = milieu, "
+                             f"{hi:+.2f} = {high}")
+            else:
+                lines.append(f"  {joint} de {lo:+.2f} à {hi:+.2f}")
     if not lines:
         return "Aucune articulation disponible (NAO non calibré) : n'envoie pas d'action motion."
     return "\n".join(lines)
 
 
-# Gesture examples for the LLM prompt, built from the calibrated ranges.
-# A fixed set of examples was copied as is (same gesture, same angles every
-# time), so each prompt now shows a few gestures drawn from a pool, each at a
-# random amplitude between the middle and the end of the range.  One motion
-# action per limb: the driver merges orders of one chain received together.
+# Gesture examples for the LLM prompt: joints and the direction to go, never an
+# angle.  Examples with angles were copied as is (fixed ones, then randomly
+# drawn ones), so the LLM now has to read the angle off the range lines
+# (motor_ranges_label), where it picks how far towards the end it goes.
 # Head gestures move one joint each: a combined "up and to the left" example
 # was copied for "lève la tête" and turned the head to the left.
 # (description, [(joint, meaning of the range end to go towards), ...] per action)
 MOTION_EXAMPLES = (
-    ("lever le bras droit, coude tendu",
+    ("lever le bras droit",
      [[("RShoulderPitch", "bras levé"), ("RElbowRoll", "coude tendu")]]),
-    ("lever le bras gauche, coude tendu",
+    ("lever le bras gauche",
      [[("LShoulderPitch", "bras levé"), ("LElbowRoll", "coude tendu")]]),
-    ("ouvrir les deux bras",
+    ("ouvrir les bras",
      [[("LShoulderRoll", "bras écarté")], [("RShoulderRoll", "bras écarté")]]),
-    ("ouvrir les bras coudes pliés (haussement)",
+    ("hausser les épaules",
      [[("LShoulderRoll", "bras écarté"), ("LElbowRoll", "coude plié")],
       [("RShoulderRoll", "bras écarté"), ("RElbowRoll", "coude plié")]]),
     ("lever la tête",
      [[("HeadPitch", "tête levée")]]),
     ("baisser la tête",
      [[("HeadPitch", "tête baissée")]]),
-    ("tourner la tête à gauche",
+    ("tourner la tête vers la gauche",
      [[("HeadYaw", "regarde à gauche")]]),
-    ("tourner la tête à droite",
-     [[("HeadYaw", "regarde à droite")]]),
-    ("baisser la tête et lever le bras gauche",
-     [[("HeadPitch", "tête baissée")], [("LShoulderPitch", "bras levé")]]),
-    ("tendre le bras droit devant, coude plié",
+    ("tendre le bras droit devant",
      [[("RShoulderPitch", "bras levé"), ("RElbowRoll", "coude plié")]]),
 )
 
-EXAMPLES_SHOWN = 3
-AMPLITUDE_RANGE = (0.3, 1.0)   # share of the way from the range middle to its end
+
+def _has_end(ranges: dict, joint: str, meaning: str) -> bool:
+    """True if `joint` is in the profile and `meaning` names one end of its range."""
+    return meaning in JOINT_SENSE.get(joint, ()) and any(
+        isinstance(joints, dict) and joint in joints for joints in ranges.values())
 
 
-def _range_toward(ranges: dict, joint: str, meaning: str, amplitude: float) -> float | None:
-    """Angle at `amplitude` (0 = middle, 1 = end) towards the end of `joint`'s
-    range that means `meaning` (JOINT_SENSE), None if unknown."""
-    for joints in ranges.values():
-        if isinstance(joints, dict) and joint in joints:
-            lo, hi = joints[joint]
-            low, high = JOINT_SENSE.get(joint, ("", ""))
-            if meaning == low:
-                end = lo
-            elif meaning == high:
-                end = hi
-            else:
-                return None
-            mid = (lo + hi) / 2
-            return mid + amplitude * (end - mid)
-    return None
-
-
-def motion_examples(ranges: dict, nao: str, rng=None) -> str:
-    """A few example gestures at random amplitudes, '' if none fits.
+def motion_examples(ranges: dict) -> str:
+    """Example gestures as joints and directions (no angle), '' if none fits.
 
     Gestures whose joints are not all in the motor profile are left out.
-    `rng` (random.Random) makes the draw reproducible in tests.
     """
     if not isinstance(ranges, dict):
         return ""
-    rng = rng or random
     lines = []
     for text, actions in MOTION_EXAMPLES:
-        rendered = []
-        for action in actions:
-            amplitude = rng.uniform(*AMPLITUDE_RANGE)
-            angles = [_range_toward(ranges, j, m, amplitude) for j, m in action]
-            if None in angles:
-                break
-            joints = ", ".join(f'"{j}"' for j, _ in action)
-            values = ", ".join(f"{a:.2f}" for a in angles)
-            rendered.append(f'{{"body": "{nao}", "type": "motion", '
-                            f'"joints": [{joints}], "angles": [{values}]}}')
-        else:
-            lines.append(f"- {text} : " + " ".join(rendered))
+        if not all(_has_end(ranges, j, m) for action in actions for j, m in action):
+            continue
+        parts = [", ".join(f"{j} vers « {m} »" for j, m in action) for action in actions]
+        lines.append(f"- {text} : " + " + ".join(parts))
     if not lines:
         return ""
-    lines = rng.sample(lines, min(EXAMPLES_SHOWN, len(lines)))
-    return ("Quelques gestes possibles, à titre d'illustration (tirés au hasard, "
-            "amplitudes variables) :\n" + "\n".join(lines))
+    return ("Exemples de gestes (articulations et direction ; l'angle, c'est toi qui le "
+            "choisis dans la plage) :\n" + "\n".join(lines))

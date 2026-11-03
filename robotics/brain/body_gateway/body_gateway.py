@@ -155,19 +155,17 @@ Réponds UNIQUEMENT en JSON strict — aucun texte en dehors du JSON :
   ]
 }}
 Une action "motion" donne la position d'une articulation du NAO, en radians, dans sa plage.
-Choisis l'angle d'après le sens de la plage : pour lever le bras droit, vise le bout « bras levé » \
-de RShoulderPitch ; pour ouvrir les bras, le bout « bras écarté » des deux ShoulderRoll.
 Plusieurs articulations d'un même membre : "joints": [...], "angles": [...].
-NAO reste assis ; articulations et plages autorisées :
+NAO reste assis ; articulations et plages autorisées (chaque bout avec son sens, et le milieu) :
 {motor_ranges}
 {motion_examples}
+Pour chaque articulation, choisis toi-même l'angle n'importe où dans sa plage, pas seulement \
+au bout : pars du milieu et va vers le bout voulu d'autant plus loin que le geste est intense \
+(un quart du chemin pour un geste léger, la moitié pour un geste net, presque au bout pour un \
+geste enthousiaste). Fais varier cet angle d'une réponse à l'autre selon ton énergie et ton émotion.
 Une articulation non donnée garde sa position de départ ; NAO revient seul au repos.
 Quand des articulations sont disponibles, chaque réponse contient des actions "motion" \
 (une par membre : tête, bras gauche, bras droit) qui accompagnent ce que tu dis.
-Ces exemples montrent le format, ce ne sont pas des gestes à recopier : invente ton geste \
-à chaque réponse, choisis toi-même les articulations et les angles, et varie d'une réponse à l'autre.
-L'amplitude suit ton énergie et ton émotion : petit geste près du milieu de la plage quand tu es \
-calme ou hésitant, grand geste jusqu'au bout de la plage quand tu es enthousiaste ou surpris.
 Combine tête et bras dès que l'émotion s'y prête.
 Quand on te demande un geste précis, ne bouge que les articulations qu'il concerne : \
 lever ou baisser la tête, c'est HeadPitch seul ; tourner la tête, c'est HeadYaw seul.
@@ -945,7 +943,7 @@ class BodyGatewayNode(Node):
             persona=persona.load_persona(BRAIN_PERSONA_FILE),
             bodies=body_rules.describe_bodies(BODY_REGISTRY, speaker),
             motor_ranges=body_rules.motor_ranges_label(self._motor_ranges.get(nao, {})),
-            motion_examples=body_rules.motion_examples(self._motor_ranges.get(nao, {}), nao),
+            motion_examples=body_rules.motion_examples(self._motor_ranges.get(nao, {})),
             speaker=speaker, nao=nao,
         )
 
