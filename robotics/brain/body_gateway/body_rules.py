@@ -265,8 +265,12 @@ MOTION_EXAMPLES = (
      [[("RShoulderPitch", "bras levé"), ("RElbowRoll", "coude tendu")]]),
     ("ouvrir grand les deux bras",
      [[("LShoulderRoll", "bras écarté")], [("RShoulderRoll", "bras écarté")]]),
-    ("regarder tout en haut à gauche",
-     [[("HeadYaw", "regarde à gauche"), ("HeadPitch", "tête levée")]]),
+    # Head examples move one joint each: a combined "up and to the left" example
+    # was copied for "lève la tête" and turned the head to the left.
+    ("lever la tête bien haut",
+     [[("HeadPitch", "tête levée")]]),
+    ("tourner la tête tout à gauche",
+     [[("HeadYaw", "regarde à gauche")]]),
     ("baisser la tête et lever le bras gauche",
      [[("HeadPitch", "tête baissée")], [("LShoulderPitch", "bras levé")]]),
 )

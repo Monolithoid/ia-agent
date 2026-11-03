@@ -166,6 +166,8 @@ Quand des articulations sont disponibles, chaque réponse contient des actions "
 (une par membre : tête, bras gauche, bras droit) qui accompagnent ce que tu dis.
 Sois expressif : préfère les grands gestes près des bouts de plage aux petits mouvements, \
 et combine tête et bras dès que l'émotion s'y prête.
+Quand on te demande un geste précis, ne bouge que les articulations qu'il concerne : \
+lever ou baisser la tête, c'est HeadPitch seul ; tourner la tête, c'est HeadYaw seul.
 Le champ "energy" reflète ton niveau d'énergie physique :
   very-low = épuisé, somnolent — very-high = hyperactif, électrisé.
 Inclure toujours au moins une action "speech" (body "{speaker}"). Les actions "leds" et "look" sont optionnelles.
