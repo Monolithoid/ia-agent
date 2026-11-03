@@ -1,7 +1,7 @@
 """
 title: NAO Brain
 author: ia-agent
-version: 0.7.0
+version: 0.8.0
 description: >
   Brain Pipe — relays each WebUI message to body-gateway, which calls
   the LLM with a structured JSON prompt.  The response contains:
@@ -18,6 +18,11 @@ description: >
     → this Pipe retrieves pre-computed result via /voice-pop
     → WebUI displays transcription + response
 
+  Background tasks (title, tags, follow-ups, search queries...):
+    Open WebUI runs them with the chat's model, i.e. this Pipe. They are
+    answered locally with a neutral reply and never reach body-gateway,
+    so NAO does not speak or move on them.
+
   Installation in Open WebUI:
     Settings → Admin Settings → Functions → (+) → paste this file → Save
     Then select "NAO Brain" as the model in the chat.
@@ -26,9 +31,44 @@ required_open_webui_version: 0.3.0
 """
 
 import json
+import re
 
 import requests
 from pydantic import BaseModel, Field
+
+
+# Neutral replies to Open WebUI background tasks (JSON expected by Open WebUI).
+TASK_REPLIES = {
+    "title_generation": '{"title": "Conversation avec NAO"}',
+    "tags_generation": '{"tags": ["General"]}',
+    "follow_up_generation": '{"follow_ups": []}',
+    "query_generation": '{"queries": []}',
+    "image_prompt_generation": '{"prompt": ""}',
+    "emoji_generation": "🤖",
+    "autocomplete_generation": '{"text": ""}',
+}
+
+# Open WebUI task prompts start with "### Task:" — fallback when the
+# __task__ argument is not passed (older Open WebUI versions).
+_TASK_PROMPT = re.compile(r"^\s*#{2,}\s*Task\s*:", re.IGNORECASE)
+
+
+def task_reply(task, text: str):
+    """Reply to an Open WebUI background task, or None for a real message."""
+    if task:
+        return TASK_REPLIES.get(str(task), "")
+    if _TASK_PROMPT.match(text or ""):
+        lowered = text.lower()
+        if "tags" in lowered:
+            return TASK_REPLIES["tags_generation"]
+        if "follow-up" in lowered or "follow_ups" in lowered:
+            return TASK_REPLIES["follow_up_generation"]
+        if "title" in lowered:
+            return TASK_REPLIES["title_generation"]
+        if "queries" in lowered:
+            return TASK_REPLIES["query_generation"]
+        return ""
+    return None
 
 
 class Pipe:
@@ -50,10 +90,11 @@ class Pipe:
         self.id = "nao_brain"
         self.name = "NAO Brain"
 
-    def pipe(self, body: dict, __user__: dict = {}) -> str:
+    def pipe(self, body: dict, __user__: dict = {}, __task__: str = None) -> str:
         """Main Open WebUI entry point called for every chat message.
 
         Dispatches to the appropriate handler based on message type:
+        - background task (title, tags...) → neutral reply, no inference
         - __ping__  → connectivity check without Ollama inference
         - nao_voice → retrieve pre-computed voice result (Path 2)
         - default   → full text inference via body-gateway (Path 1)
@@ -88,6 +129,12 @@ class Pipe:
         # Guard: empty message text — nothing useful to send to the LLM.
         if not user_message:
             return "Message vide."
+
+        # Open WebUI background task (title, tags, follow-ups...) sent to the
+        # chat's model: answer here, NAO must not speak or move on it.
+        reply = task_reply(__task__, user_message)
+        if reply is not None:
+            return reply
 
         # Reserved connectivity test message — no Ollama inference
         if user_message.strip() == "__ping__":
