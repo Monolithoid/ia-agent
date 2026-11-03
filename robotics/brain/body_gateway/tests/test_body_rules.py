@@ -4,6 +4,8 @@
 """
 
 import math
+import random
+import re
 import os
 import sys
 import unittest
@@ -140,27 +142,46 @@ class TestMotorRanges(unittest.TestCase):
                  "RElbowRoll": [0.1, 1.5]},
     }
 
-    def test_examples_use_range_ends(self):
-        text = body_rules.motion_examples(self.RANGES, "nao_01")
-        self.assertIn('"joints": ["RShoulderPitch", "RElbowRoll"], "angles": [-1.10, 0.10]', text)
-        self.assertIn('"joints": ["LShoulderRoll"], "angles": [1.00]', text)
-        self.assertIn('"joints": ["RShoulderRoll"], "angles": [-1.00]', text)
-        self.assertIn('"joints": ["HeadPitch"], "angles": [-0.40]', text)
-        self.assertIn('"joints": ["HeadYaw"], "angles": [0.80]', text)
-        self.assertIn('"joints": ["LShoulderPitch"], "angles": [-1.20]', text)
-        self.assertEqual(text.count("\n- "), 5)
+    def test_toward_range_end(self):
+        # HeadPitch [-0.4, 0.3]: middle -0.05, "tête levée" is the low end.
+        self.assertAlmostEqual(body_rules._range_toward(self.RANGES, "HeadPitch", "tête levée", 1.0), -0.4)
+        self.assertAlmostEqual(body_rules._range_toward(self.RANGES, "HeadPitch", "tête levée", 0.0), -0.05)
+        self.assertAlmostEqual(body_rules._range_toward(self.RANGES, "HeadPitch", "tête baissée", 0.5), 0.125)
+        self.assertIsNone(body_rules._range_toward(self.RANGES, "HeadPitch", "regarde à gauche", 1.0))
 
-    def test_head_up_example_does_not_turn_the_head(self):
-        text = body_rules.motion_examples(self.RANGES, "nao_01")
-        line = next(l for l in text.splitlines() if "lever la tête" in l)
-        self.assertNotIn("HeadYaw", line)
+    def _all_examples(self, ranges, seed=0):
+        """Every fitting example (EXAMPLES_SHOWN raised for the test)."""
+        shown = body_rules.EXAMPLES_SHOWN
+        body_rules.EXAMPLES_SHOWN = 100
+        try:
+            return body_rules.motion_examples(ranges, "nao_01", random.Random(seed))
+        finally:
+            body_rules.EXAMPLES_SHOWN = shown
+
+    def test_examples_angles_stay_on_the_right_side(self):
+        for seed in range(20):
+            for line in self._all_examples(self.RANGES, seed).splitlines()[1:]:
+                for joints, angles in re.findall(r'"joints": \[(.*?)\], "angles": \[(.*?)\]', line):
+                    for j, a in zip(re.findall(r'"(\w+)"', joints), map(float, angles.split(", "))):
+                        lo, hi = next(r[j] for r in self.RANGES.values() if j in r)
+                        self.assertTrue(lo <= a <= hi, (j, a))
+                if line.startswith("- lever la tête"):
+                    self.assertNotIn("HeadYaw", line)
+                    angle = float(re.search(r'"angles": \[(.*?)\]', line).group(1))
+                    self.assertLess(angle, -0.05)   # above the middle: head up
+
+    def test_examples_vary_between_calls(self):
+        texts = {body_rules.motion_examples(self.RANGES, "nao_01", random.Random(s))
+                 for s in range(5)}
+        self.assertGreater(len(texts), 1)
+        text = body_rules.motion_examples(self.RANGES, "nao_01", random.Random(0))
+        self.assertEqual(text.count("\n- "), body_rules.EXAMPLES_SHOWN)
 
     def test_examples_skip_missing_joints(self):
-        text = body_rules.motion_examples({"head": self.RANGES["head"]}, "nao_01")
-        self.assertIn("lever la tête bien haut", text)
-        self.assertNotIn("bras", text)
+        text = self._all_examples({"head": self.RANGES["head"]})
+        self.assertEqual(text.count("\n- "), 4)   # lever, baisser, gauche, droite
+        self.assertNotIn("bras", text.split("\n", 1)[1])
         self.assertEqual(body_rules.motion_examples({}, "nao_01"), "")
-
 
 if __name__ == "__main__":
     unittest.main()

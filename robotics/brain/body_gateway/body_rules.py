@@ -13,6 +13,7 @@ positif = à droite.  HeadYaw du NAO : radians, positif = vers la gauche du robo
 """
 
 import math
+import random
 import re
 import time
 import unicodedata
@@ -254,53 +255,75 @@ def motor_ranges_label(ranges: dict) -> str:
     return "\n".join(lines)
 
 
-# Ample gestures shown to the LLM as examples, built from the calibrated range
-# ends.  With a single small example the LLM copies it (a 0.1 rad nod); these
-# show full-range gestures, several joints of one limb, and head and arms
-# together.  One motion action per limb: the driver merges orders of one chain
-# received together into a single target.
-# (description, [(joint, meaning of the range end to reach), ...] per action)
+# Gesture examples for the LLM prompt, built from the calibrated ranges.
+# A fixed set of examples was copied as is (same gesture, same angles every
+# time), so each prompt now shows a few gestures drawn from a pool, each at a
+# random amplitude between the middle and the end of the range.  One motion
+# action per limb: the driver merges orders of one chain received together.
+# Head gestures move one joint each: a combined "up and to the left" example
+# was copied for "lève la tête" and turned the head to the left.
+# (description, [(joint, meaning of the range end to go towards), ...] per action)
 MOTION_EXAMPLES = (
-    ("lever le bras droit tout en haut, coude tendu",
+    ("lever le bras droit, coude tendu",
      [[("RShoulderPitch", "bras levé"), ("RElbowRoll", "coude tendu")]]),
-    ("ouvrir grand les deux bras",
+    ("lever le bras gauche, coude tendu",
+     [[("LShoulderPitch", "bras levé"), ("LElbowRoll", "coude tendu")]]),
+    ("ouvrir les deux bras",
      [[("LShoulderRoll", "bras écarté")], [("RShoulderRoll", "bras écarté")]]),
-    # Head examples move one joint each: a combined "up and to the left" example
-    # was copied for "lève la tête" and turned the head to the left.
-    ("lever la tête bien haut",
+    ("ouvrir les bras coudes pliés (haussement)",
+     [[("LShoulderRoll", "bras écarté"), ("LElbowRoll", "coude plié")],
+      [("RShoulderRoll", "bras écarté"), ("RElbowRoll", "coude plié")]]),
+    ("lever la tête",
      [[("HeadPitch", "tête levée")]]),
-    ("tourner la tête tout à gauche",
+    ("baisser la tête",
+     [[("HeadPitch", "tête baissée")]]),
+    ("tourner la tête à gauche",
      [[("HeadYaw", "regarde à gauche")]]),
+    ("tourner la tête à droite",
+     [[("HeadYaw", "regarde à droite")]]),
     ("baisser la tête et lever le bras gauche",
      [[("HeadPitch", "tête baissée")], [("LShoulderPitch", "bras levé")]]),
+    ("tendre le bras droit devant, coude plié",
+     [[("RShoulderPitch", "bras levé"), ("RElbowRoll", "coude plié")]]),
 )
 
+EXAMPLES_SHOWN = 3
+AMPLITUDE_RANGE = (0.3, 1.0)   # share of the way from the range middle to its end
 
-def _range_end(ranges: dict, joint: str, meaning: str) -> float | None:
-    """End of `joint`'s range that means `meaning` (JOINT_SENSE), None if unknown."""
+
+def _range_toward(ranges: dict, joint: str, meaning: str, amplitude: float) -> float | None:
+    """Angle at `amplitude` (0 = middle, 1 = end) towards the end of `joint`'s
+    range that means `meaning` (JOINT_SENSE), None if unknown."""
     for joints in ranges.values():
         if isinstance(joints, dict) and joint in joints:
             lo, hi = joints[joint]
             low, high = JOINT_SENSE.get(joint, ("", ""))
             if meaning == low:
-                return lo
-            if meaning == high:
-                return hi
+                end = lo
+            elif meaning == high:
+                end = hi
+            else:
+                return None
+            mid = (lo + hi) / 2
+            return mid + amplitude * (end - mid)
     return None
 
 
-def motion_examples(ranges: dict, nao: str) -> str:
-    """Example gestures at the ends of the calibrated ranges, '' if none fits.
+def motion_examples(ranges: dict, nao: str, rng=None) -> str:
+    """A few example gestures at random amplitudes, '' if none fits.
 
-    An example is left out when one of its joints is not in the motor profile.
+    Gestures whose joints are not all in the motor profile are left out.
+    `rng` (random.Random) makes the draw reproducible in tests.
     """
     if not isinstance(ranges, dict):
         return ""
+    rng = rng or random
     lines = []
     for text, actions in MOTION_EXAMPLES:
         rendered = []
         for action in actions:
-            angles = [_range_end(ranges, j, m) for j, m in action]
+            amplitude = rng.uniform(*AMPLITUDE_RANGE)
+            angles = [_range_toward(ranges, j, m, amplitude) for j, m in action]
             if None in angles:
                 break
             joints = ", ".join(f'"{j}"' for j, _ in action)
@@ -311,4 +334,6 @@ def motion_examples(ranges: dict, nao: str) -> str:
             lines.append(f"- {text} : " + " ".join(rendered))
     if not lines:
         return ""
-    return "Exemples de gestes amples (bouts de plage) :\n" + "\n".join(lines)
+    lines = rng.sample(lines, min(EXAMPLES_SHOWN, len(lines)))
+    return ("Quelques gestes possibles, à titre d'illustration (tirés au hasard, "
+            "amplitudes variables) :\n" + "\n".join(lines))

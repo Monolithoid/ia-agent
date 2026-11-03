@@ -149,7 +149,7 @@ Réponds UNIQUEMENT en JSON strict — aucun texte en dehors du JSON :
   "energy": "very-low|low|medium|high|very-high",
   "actions": [
     {{"body": "{speaker}", "type": "speech",  "text": "ce que tu dis à voix haute"}},
-    {{"body": "{nao}", "type": "motion",  "joints": ["RShoulderPitch"], "angles": [-1.0]}},
+    {{"body": "{nao}", "type": "motion",  "joints": ["<articulation>", ...], "angles": [<radians>, ...]}},
     {{"body": "{nao}", "type": "leds",    "color": "blue|green|white|red|yellow|purple|off"}},
     {{"body": "{nao}", "type": "look",    "yaw": 0.0}}
   ]
@@ -164,8 +164,11 @@ NAO reste assis ; articulations et plages autorisées :
 Une articulation non donnée garde sa position de départ ; NAO revient seul au repos.
 Quand des articulations sont disponibles, chaque réponse contient des actions "motion" \
 (une par membre : tête, bras gauche, bras droit) qui accompagnent ce que tu dis.
-Sois expressif : préfère les grands gestes près des bouts de plage aux petits mouvements, \
-et combine tête et bras dès que l'émotion s'y prête.
+Ces exemples montrent le format, ce ne sont pas des gestes à recopier : invente ton geste \
+à chaque réponse, choisis toi-même les articulations et les angles, et varie d'une réponse à l'autre.
+L'amplitude suit ton énergie et ton émotion : petit geste près du milieu de la plage quand tu es \
+calme ou hésitant, grand geste jusqu'au bout de la plage quand tu es enthousiaste ou surpris.
+Combine tête et bras dès que l'émotion s'y prête.
 Quand on te demande un geste précis, ne bouge que les articulations qu'il concerne : \
 lever ou baisser la tête, c'est HeadPitch seul ; tourner la tête, c'est HeadYaw seul.
 Le champ "energy" reflète ton niveau d'énergie physique :
