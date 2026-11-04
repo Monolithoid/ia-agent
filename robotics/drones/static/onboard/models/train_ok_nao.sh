@@ -82,7 +82,9 @@ fi
 echo "AudioSet : $(ls audioset_16k | wc -l) fichiers"
 if [[ ! -f fma/.fait ]]; then
     mkdir -p fma
-    "$PY" - <<'EOF'
+    # Musique facultative : sans elle (streaming FMA cassé selon la version de
+    # datasets), AudioSet suffit.
+    "$PY" - <<'EOF' || echo "FMA ignoré"
 import numpy as np, scipy.io.wavfile, datasets
 from tqdm import tqdm
 ds = datasets.load_dataset("rudraml/fma", name="small", split="train", streaming=True)
