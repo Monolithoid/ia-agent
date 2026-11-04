@@ -37,7 +37,7 @@ PY="$WORK/.venv/bin/python"
 "$PY" -m pip install -q --upgrade pip
 "$PY" -m pip install -q torch torchaudio
 "$PY" -m pip install -q --no-deps ./openWakeWord
-"$PY" -m pip install -q onnxruntime onnx onnxscript scipy scikit-learn tqdm requests pyyaml \
+"$PY" -m pip install -q onnxruntime onnx onnxscript "scipy<1.15" scikit-learn tqdm requests pyyaml \
     mutagen torchinfo torchmetrics speechbrain==0.5.14 audiomentations torch-audiomentations \
     acoustics pronouncing "datasets<3" soundfile edge-tts piper-tts
 mkdir -p stub
