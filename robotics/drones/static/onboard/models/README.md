@@ -6,7 +6,8 @@ dossier, puis le copier ici (et le commiter, il pèse ~200 ko).
 
 | Fichier | Rôle |
 |---|---|
-| `train_ok_nao.ipynb` | Notebook Colab : tout l'entraînement, du début au `.onnx` |
+| `train_ok_nao.sh` | Tout l'entraînement dans un terminal Ubuntu ou WSL2, sans Jupyter |
+| `train_ok_nao.ipynb` | Le même en notebook, pour Google Colab |
 | `generate_clips_fr.py` | Voix de synthèse françaises (edge-tts + Piper), positives et négatives |
 | `ok_nao.yml` | Configuration de `openwakeword.train` |
 
@@ -31,7 +32,15 @@ Le plus simple : ouvrir `train_ok_nao.ipynb` dans
 notebook > GitHub*, dépôt `Monolithoid/ia-agent`), choisir un GPU T4 et tout
 exécuter. Compter 1 à 2 h. Le dernier bloc télécharge `ok_nao.onnx`.
 
-Ce que fait le notebook, pour le refaire ailleurs (PC Linux avec GPU) :
+Sur un PC Ubuntu ou sous Windows avec WSL2 (GPU NVIDIA conseillé, ~30 Go
+de disque), sans Jupyter :
+
+```bash
+curl -LO https://raw.githubusercontent.com/Monolithoid/ia-agent/main/robotics/drones/static/onboard/models/train_ok_nao.sh
+bash train_ok_nao.sh            # travaille dans ~/ok-nao, relançable
+```
+
+Ce que font le script et le notebook :
 
 1. **Voix françaises** : le générateur d'openWakeWord ne parle qu'anglais,
    `generate_clips_fr.py` le remplace :
@@ -53,7 +62,10 @@ Ce que fait le notebook, pour le refaire ailleurs (PC Linux avec GPU) :
      l'entraînement. `--no-edge` pour travailler hors ligne (Piper seul).
 
 2. **Augmentation** : réverbération (réponses impulsionnelles MIT), bruits de
-   fond (AudioSet, musique FMA), puis calcul des caractéristiques :
+   fond (2000 extraits AudioSet, bruits blanc, rose et brun fabriqués sur
+   place, musique FMA si elle se télécharge, et vos enregistrements
+   d'ambiance de la pièce s'il y en a dans `fma/`), puis calcul des
+   caractéristiques :
    `python -m openwakeword.train --training_config ok_nao.yml --augment_clips`.
    `train.py` importe toujours `generate_samples` : un module vide dans
    `./stub` suffit (ne jamais passer `--generate_clips`).

@@ -139,10 +139,15 @@ async def edge_generate(todo, out, kind, rnd, concurrency=8):
             for attempt in range(3):
                 try:
                     buf = io.BytesIO()
-                    async for chunk in edge_tts.Communicate(text, voice, rate=rate,
-                                                            pitch=pitch).stream():
-                        if chunk["type"] == "audio":
-                            buf.write(chunk["data"])
+
+                    async def fetch():
+                        async for chunk in edge_tts.Communicate(text, voice, rate=rate,
+                                                                pitch=pitch).stream():
+                            if chunk["type"] == "audio":
+                                buf.write(chunk["data"])
+
+                    # Sans délai, une connexion qui ne répond plus bloque tout.
+                    await asyncio.wait_for(fetch(), timeout=30)
                     pcm = mp3_to_pcm(buf.getvalue())
                     break
                 except Exception as exc:
@@ -207,6 +212,8 @@ def piper_generate(todo, loaded, out, kind, rnd):
 # ----------------------------------------------------------------------
 
 def main():
+    # Progression visible même hors terminal (Jupyter, journal) : ligne par ligne.
+    sys.stdout.reconfigure(line_buffering=True)
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--out", required=True, help="dossier <output_dir>/<model_name> du YAML")
     ap.add_argument("--n-train", type=int, default=3000, help="clips positifs (et négatifs) d'entraînement")
