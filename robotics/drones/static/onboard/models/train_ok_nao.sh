@@ -35,7 +35,7 @@ step "2/7 Code et environnement Python (.venv)"
 [[ -x .venv/bin/python ]] || python3 -m venv .venv
 PY="$WORK/.venv/bin/python"
 "$PY" -m pip install -q --upgrade pip
-"$PY" -m pip install -q torch torchaudio
+"$PY" -m pip install -q "torch<2.9" "torchaudio<2.9" soundfile   # 2.9 exige torchcodec pour lire les WAV
 "$PY" -m pip install -q --no-deps ./openWakeWord
 "$PY" -m pip install -q onnxruntime onnx onnxscript "scipy<1.15" scikit-learn tqdm requests pyyaml \
     mutagen torchinfo torchmetrics speechbrain==0.5.14 audiomentations torch-audiomentations \
