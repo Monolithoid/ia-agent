@@ -68,11 +68,22 @@ else
     echo "déjà fait"
 fi
 
-step "5/7 Bruits de fond (bruits fabriqués + musique FMA facultative)"
-# Le fichier AudioSet bal_train09.tar n'existe plus sur Hugging Face (404) :
-# bruits blanc, rose et brun fabriqués ici. Des enregistrements de l'ambiance
-# réelle de la pièce (WAV 16 kHz mono) ajoutés dans fma/ aident beaucoup.
+step "5/7 Bruits de fond (AudioSet, bruits fabriqués, musique FMA facultative)"
+# 2000 extraits AudioSet (version figée du dépôt Hugging Face : les fichiers
+# ont changé de place depuis) et bruits blanc, rose et brun fabriqués ici.
+# Des enregistrements de l'ambiance réelle de la pièce (WAV 16 kHz mono)
+# ajoutés dans fma/ aident beaucoup.
 if [[ ! -f audioset_16k/.fait ]]; then
+    mkdir -p audioset audioset_16k
+    if wget -q --show-progress -c -O audioset/bal_train01.tar \
+        "https://huggingface.co/datasets/agkphysics/AudioSet/resolve/196c0900867eff791b8f4d4be57db277e9a5b131/bal_train01.tar"; then
+        tar -xf audioset/bal_train01.tar -C audioset
+        find audioset -name "*.flac" | while read -r f; do
+            ffmpeg -loglevel error -y -i "$f" -ac 1 -ar 16000 "audioset_16k/$(basename "${f%.flac}").wav"
+        done
+    else
+        echo "AudioSet indisponible : bruits fabriqués seulement"
+    fi
     "$PY" - <<'PYEOF'
 import numpy as np, scipy.io.wavfile, os
 os.makedirs("audioset_16k", exist_ok=True)
