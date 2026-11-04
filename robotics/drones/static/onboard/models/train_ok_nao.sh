@@ -79,7 +79,7 @@ if [[ ! -f audioset_16k/.fait ]]; then
         "https://huggingface.co/datasets/agkphysics/AudioSet/resolve/196c0900867eff791b8f4d4be57db277e9a5b131/bal_train01.tar"; then
         tar -xf audioset/bal_train01.tar -C audioset
         find audioset -name "*.flac" | while read -r f; do
-            ffmpeg -loglevel error -y -i "$f" -ac 1 -ar 16000 "audioset_16k/$(basename "${f%.flac}").wav"
+            ffmpeg -nostdin -loglevel error -y -i "$f" -ac 1 -ar 16000 "audioset_16k/$(basename "${f%.flac}").wav"
         done
     else
         echo "AudioSet indisponible : bruits fabriqués seulement"
