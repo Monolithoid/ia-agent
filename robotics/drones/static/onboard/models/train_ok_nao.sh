@@ -68,22 +68,29 @@ else
     echo "déjà fait"
 fi
 
-step "5/7 Bruits de fond (AudioSet + musique FMA)"
+step "5/7 Bruits de fond (bruits fabriqués + musique FMA facultative)"
+# Le fichier AudioSet bal_train09.tar n'existe plus sur Hugging Face (404) :
+# bruits blanc, rose et brun fabriqués ici. Des enregistrements de l'ambiance
+# réelle de la pièce (WAV 16 kHz mono) ajoutés dans fma/ aident beaucoup.
 if [[ ! -f audioset_16k/.fait ]]; then
-    mkdir -p audioset audioset_16k
-    [[ -f audioset/bal_train09.tar ]] || wget -q --show-progress -O audioset/bal_train09.tar \
-        "$HF/agkphysics/AudioSet/resolve/main/bal_train09.tar"
-    tar -xf audioset/bal_train09.tar -C audioset
-    find audioset -name "*.flac" | while read -r f; do
-        ffmpeg -loglevel error -y -i "$f" -ac 1 -ar 16000 "audioset_16k/$(basename "${f%.flac}").wav"
-    done
+    "$PY" - <<'PYEOF'
+import numpy as np, scipy.io.wavfile, os
+os.makedirs("audioset_16k", exist_ok=True)
+rng = np.random.default_rng(0)
+for i in range(150):
+    n = rng.standard_normal(16000 * 30)
+    f = np.fft.rfft(n); k = np.arange(1, len(f) + 1)
+    f /= k ** rng.choice([0, 0.5, 1.0])          # bruit blanc, rose ou brun
+    x = np.fft.irfft(f, len(n)); x = x / np.abs(x).max() * rng.uniform(0.05, 0.5)
+    scipy.io.wavfile.write(f"audioset_16k/bruit_{i}.wav", 16000, (x * 32767).astype(np.int16))
+PYEOF
     touch audioset_16k/.fait
 fi
-echo "AudioSet : $(ls audioset_16k | wc -l) fichiers"
+echo "Bruits : $(ls audioset_16k | wc -l) fichiers"
 if [[ ! -f fma/.fait ]]; then
     mkdir -p fma
     # Musique facultative : sans elle (streaming FMA cassé selon la version de
-    # datasets), AudioSet suffit.
+    # datasets), les bruits ci-dessus suffisent.
     "$PY" - <<'EOF' || echo "FMA ignoré"
 import numpy as np, scipy.io.wavfile, datasets
 from tqdm import tqdm

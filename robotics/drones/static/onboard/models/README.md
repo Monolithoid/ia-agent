@@ -62,7 +62,9 @@ Ce que font le script et le notebook :
      l'entraînement. `--no-edge` pour travailler hors ligne (Piper seul).
 
 2. **Augmentation** : réverbération (réponses impulsionnelles MIT), bruits de
-   fond (AudioSet, musique FMA), puis calcul des caractéristiques :
+   fond (bruits blanc, rose et brun fabriqués sur place, musique FMA si elle
+   se télécharge, et vos enregistrements d'ambiance de la pièce s'il y en a
+   dans `fma/`), puis calcul des caractéristiques :
    `python -m openwakeword.train --training_config ok_nao.yml --augment_clips`.
    `train.py` importe toujours `generate_samples` : un module vide dans
    `./stub` suffit (ne jamais passer `--generate_clips`).
