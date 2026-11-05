@@ -60,6 +60,10 @@ HISTORY         = int(os.environ.get("HISTORY", "300"))
 
 PAGE_HTML = pathlib.Path(__file__).with_name("regie.html")
 ROBOT_HTML = pathlib.Path(__file__).with_name("robot.html")
+# Same icons as the nao-emotion-motion calibration/learning site; served without
+# the token since browsers fetch /favicon.ico without the page's query string.
+ICONS = {"/favicon.svg": "image/svg+xml", "/favicon.ico": "image/x-icon",
+         "/apple-touch-icon.png": "image/png"}
 # What the robot page may publish, and where.
 COMMAND_TOPICS = {"calibration": "/nao/calibration", "components": "/nao/components"}
 
@@ -227,7 +231,7 @@ BRIDGE = Rosbridge(ROSBRIDGE_URL, ROSBRIDGE_TOKEN, on_link)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HTTP: / (page), /robot, /obs (redirect), /stream (SSE), /ping
+# HTTP: / (page), /robot, /favicon.*, /obs (redirect), /stream (SSE), /ping
 # ─────────────────────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
@@ -238,6 +242,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"ok": True, "service": "regie",
                                         "viewers": HUB.client_count()}).encode(),
                        "application/json")
+            return
+        if url.path in ICONS:
+            icon = pathlib.Path(__file__).with_name(url.path.lstrip("/"))
+            self._send(200, icon.read_bytes(), ICONS[url.path])
             return
         token = urllib.parse.parse_qs(url.query).get("token", [""])[0]
         if not hmac.compare_digest(token.encode(), REGIE_TOKEN.encode()):
